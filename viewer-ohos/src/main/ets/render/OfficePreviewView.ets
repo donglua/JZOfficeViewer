@@ -73,12 +73,19 @@ export struct OfficePreviewView {
       } else if (this.document) {
         if (this.document.kind === 'DOCX') {
           DocxFlowView({ document: this.document })
+            .width('100%')
+            .height('100%')
         } else if (this.document.kind === 'PPTX') {
           PptxSlidesView({ document: this.document })
+            .width('100%')
+            .height('100%')
         } else if (this.document.kind === 'XLSX') {
           SpreadsheetView({ document: this.document })
+            .width('100%')
+            .height('100%')
         }
       }
+
     }
     .width('100%')
     .height('100%')
