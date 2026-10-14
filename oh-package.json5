@@ -1,8 +1,8 @@
 {
   "modelVersion": "5.0.0",
-  "description": "JZOffice HarmonyOS NEXT workspace",
+  "name": "jzoffice-harmonyos",
+  "version": "0.3.0",
+  "description": "JZOffice HarmonyOS NEXT Workspace",
   "dependencies": {},
-  "devDependencies": {
-    "@ohos/hypium": "1.0.19"
-  }
+  "devDependencies": {}
 }

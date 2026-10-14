@@ -1,12 +1,11 @@
 {
-  "name": "demo-ohos",
-  "version": "1.0.0",
-  "description": "JZOffice HarmonyOS NEXT Demo Application",
+  "name": "demo_ohos",
+  "version": "0.3.0",
+  "description": "JZOffice HarmonyOS Demo Application",
   "main": "",
   "author": "donglua",
   "license": "Apache-2.0",
   "dependencies": {
     "@donglua/jzoffice": "file:../viewer-ohos"
-  },
-  "devDependencies": {}
+  }
 }

@@ -6,7 +6,6 @@
         "name": "default",
         "signingConfig": "default",
         "compatibleSdkVersion": "5.0.0(12)",
-        "targetSdkVersion": "5.0.0(12)",
         "runtimeOS": "HarmonyOS"
       }
     ],
@@ -21,6 +20,10 @@
   },
   "modules": [
     {
+      "name": "viewer_ohos",
+      "srcPath": "./viewer-ohos"
+    },
+    {
       "name": "demo_ohos",
       "srcPath": "./demo-ohos",
       "targets": [
@@ -29,15 +32,6 @@
           "applyToProducts": [
             "default"
           ]
-        }
-      ]
-    },
-    {
-      "name": "viewer_ohos",
-      "srcPath": "./viewer-ohos",
-      "targets": [
-        {
-          "name": "default"
         }
       ]
     }
