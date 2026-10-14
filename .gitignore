@@ -4,5 +4,7 @@
 **/build/
 local.properties
 *.iml
-target/
+**/target/
+**/dist/
+.cargo/
 /VERIFICATION.md

@@ -88,7 +88,7 @@ fn showcase_package_has_namespaced_dependencies_content_types_and_unique_shape_i
             }
         }
     }
-    assert_eq!(layout_ids.len(), 7);
+    assert_eq!(layout_ids.len(), 8);
     for name in [
         "base",
         "compat",
@@ -97,6 +97,7 @@ fn showcase_package_has_namespaced_dependencies_content_types_and_unique_shape_i
         "typography",
         "wrapping",
         "backgrounds",
+        "compatibility",
     ] {
         assert!(package.has(&format!("ppt/showcase/{name}/theme/theme1.xml")));
         assert!(package.has(&format!(

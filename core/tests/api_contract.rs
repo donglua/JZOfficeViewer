@@ -128,7 +128,7 @@ fn sample_deliverables_match_rust_generator_and_parse_through_path_api() -> Test
         assert_eq!(serde_json::to_value(&document.kind)?, expected);
         match document.kind {
             Kind::DOCX => assert!(!document.blocks.is_empty()),
-            Kind::PPTX => assert_eq!(document.pages.len(), 16),
+            Kind::PPTX => assert_eq!(document.pages.len(), support::pptx_showcase::PAGE_COUNT),
             Kind::XLSX => assert_eq!(document.sheets.len(), 2),
         }
     }
