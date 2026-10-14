@@ -7,4 +7,7 @@ local.properties
 **/target/
 **/dist/
 .cargo/
+**/oh_modules/
+*.so
+viewer-ohos/libs/
 /VERIFICATION.md
