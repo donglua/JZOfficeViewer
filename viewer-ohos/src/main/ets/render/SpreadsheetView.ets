@@ -12,7 +12,7 @@ const HEADER_TEXT = '#52606d';
  */
 @Component
 export struct SpreadsheetView {
-  @Prop document: model.OfficeDocument;
+  @Watch('onDocumentUpdated') @Prop document: model.OfficeDocument;
   @State currentSheetIndex: number = 0;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
@@ -23,29 +23,42 @@ export struct SpreadsheetView {
   private canvasWidth: number = 0;
   private canvasHeight: number = 0;
 
-  // 手势暂存变量
   private panStartX: number = 0;
   private panStartY: number = 0;
   private pinchStartScale: number = 1.0;
 
+  onDocumentUpdated(): void {
+    this.currentSheetIndex = 0;
+    this.offsetX = 0;
+    this.offsetY = 0;
+    this.scaleVal = 1.0;
+    this.redraw();
+  }
+
   private get currentSheet(): model.Sheet | undefined {
-    if (!this.document.sheets || this.document.sheets.length === 0) return undefined;
+    if (!this.document || !this.document.sheets || this.document.sheets.length === 0) {
+      return undefined;
+    }
     const idx = Math.min(Math.max(0, this.currentSheetIndex), this.document.sheets.length - 1);
     return this.document.sheets[idx];
   }
 
   private redraw(): void {
     const sheet = this.currentSheet;
+    const ctx = this.context2D;
+    if (this.canvasWidth <= 0 && ctx.width > 0) {
+      this.canvasWidth = ctx.width;
+    }
+    if (this.canvasHeight <= 0 && ctx.height > 0) {
+      this.canvasHeight = ctx.height;
+    }
     if (!sheet || this.canvasWidth <= 0 || this.canvasHeight <= 0) return;
 
-    const ctx = this.context2D;
     ctx.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+    ctx.fillStyle = '#e9ecef';
+    ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
 
     const s = this.scaleVal;
-    const ox = this.offsetX;
-    const oy = this.offsetY;
-
-    // 计算行列累加偏移位置
     const colOffsets: number[] = [0];
     for (let c = 0; c < sheet.columnWidths.length; c++) {
       colOffsets.push(colOffsets[c] + sheet.columnWidths[c] * s);
@@ -58,153 +71,294 @@ export struct SpreadsheetView {
     const totalGridWidth = colOffsets[colOffsets.length - 1] ?? 0;
     const totalGridHeight = rowOffsets[rowOffsets.length - 1] ?? 0;
 
-    // 1. 绘制表格主体背景与单元格 (受剪裁与视口滚动影响)
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(HEADER_WIDTH, HEADER_HEIGHT, this.canvasWidth - HEADER_WIDTH, this.canvasHeight - HEADER_HEIGHT);
-    ctx.clip();
+    // 限制滚动边界，避免拖出左上角空白
+    const minOx = Math.min(0, this.canvasWidth - HEADER_WIDTH - totalGridWidth);
+    const minOy = Math.min(0, this.canvasHeight - HEADER_HEIGHT - totalGridHeight);
+    const ox = Math.min(0, Math.max(minOx, this.offsetX));
+    const oy = Math.min(0, Math.max(minOy, this.offsetY));
 
-    // 白色底板
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(HEADER_WIDTH + ox, HEADER_HEIGHT + oy, totalGridWidth, totalGridHeight);
+    const bodyRight = Math.min(this.canvasWidth, HEADER_WIDTH + ox + totalGridWidth);
+    const bodyBottom = Math.min(this.canvasHeight, HEADER_HEIGHT + oy + totalGridHeight);
 
-    // 构建合并单元格索引
-    const mergedSubordinates = new Set<string>();
-    const mergeAnchors = new Map<string, model.CellRange>();
-    if (sheet.merges && sheet.merges.length > 0) {
-      for (const m of sheet.merges) {
-        mergeAnchors.set(`${m.startRow}:${m.startColumn}`, m);
-        for (let r = m.startRow; r <= m.endRow; r++) {
-          for (let c = m.startColumn; c <= m.endColumn; c++) {
-            if (r !== m.startRow || c !== m.startColumn) {
-              mergedSubordinates.add(`${r}:${c}`);
+    // 1. 表格主体区域
+    if (bodyRight > HEADER_WIDTH && bodyBottom > HEADER_HEIGHT) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(
+        HEADER_WIDTH,
+        HEADER_HEIGHT,
+        bodyRight - HEADER_WIDTH,
+        bodyBottom - HEADER_HEIGHT
+      );
+      ctx.clip();
+
+      // 1.1 白色底板
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(HEADER_WIDTH, HEADER_HEIGHT, bodyRight - HEADER_WIDTH, bodyBottom - HEADER_HEIGHT);
+
+      // 1.2 建立合并单元格锚点映射，避免合并区域内子单元格重复绘制
+      const mergedSkip = new Set<string>();
+      const anchorCellMap = new Map<string, model.Cell>();
+      for (const cell of sheet.cells) {
+        anchorCellMap.set(`${cell.row}:${cell.column}`, cell);
+      }
+      if (sheet.merges) {
+        for (const m of sheet.merges) {
+          for (let r = m.startRow; r <= m.endRow; r++) {
+            for (let c = m.startColumn; c <= m.endColumn; c++) {
+              mergedSkip.add(`${r}:${c}`);
             }
           }
         }
       }
-    }
 
-    // 绘制单元格内容
-    for (const cell of sheet.cells) {
-      const c = cell.column;
-      const r = cell.row;
-      const key = `${r}:${c}`;
-      if (mergedSubordinates.has(key)) {
-        continue;
+      // 1.3 绘制普通非合并单元格填充与文本
+      for (const cell of sheet.cells) {
+        if (mergedSkip.has(`${cell.row}:${cell.column}`)) continue;
+        if (sheet.columnWidths[cell.column] === 0 || sheet.rowHeights[cell.row] === 0) continue;
+        const left = HEADER_WIDTH + ox + colOffsets[cell.column];
+        const top = HEADER_HEIGHT + oy + rowOffsets[cell.row];
+        const colW = colOffsets[cell.column + 1] - colOffsets[cell.column];
+        const rowH = rowOffsets[cell.row + 1] - rowOffsets[cell.row];
+        if (left + colW < HEADER_WIDTH || left > bodyRight) continue;
+        if (top + rowH < HEADER_HEIGHT || top > bodyBottom) continue;
+
+        this.drawSingleCell(ctx, cell, left, top, colW, rowH, s);
       }
 
-      const mergeRange = mergeAnchors.get(key);
-      const left = HEADER_WIDTH + ox + (colOffsets[c] ?? 0);
-      const top = HEADER_HEIGHT + oy + (rowOffsets[r] ?? 0);
-      const colW = mergeRange
-        ? (colOffsets[mergeRange.endColumn + 1] ?? left) - (colOffsets[c] ?? left)
-        : (colOffsets[c + 1] ?? left) - (colOffsets[c] ?? left);
-      const rowH = mergeRange
-        ? (rowOffsets[mergeRange.endRow + 1] ?? top) - (rowOffsets[r] ?? top)
-        : (rowOffsets[r + 1] ?? top) - (rowOffsets[r] ?? top);
-
-      // 视口外裁剪优化
-      if (left + colW < HEADER_WIDTH || left > this.canvasWidth) continue;
-      if (top + rowH < HEADER_HEIGHT || top > this.canvasHeight) continue;
-
-      const style = this.document.cellStyles?.[cell.style];
-
-      // 单元格背景填色
-      if (style && style.fill !== 0) {
-        const fillCss = RenderUtils.argbToCss(style.fill);
-        if (fillCss) {
-          ctx.fillStyle = fillCss;
-          ctx.fillRect(left, top, colW, rowH);
-        }
-      }
-
-      // 单元格边框
+      // 1.4 绘制整表网格线（包括空白单元格）
       ctx.strokeStyle = GRID_COLOR;
       ctx.lineWidth = 0.5;
-      ctx.strokeRect(left, top, colW, rowH);
-
-      // 单元格文字
-      if (cell.text) {
-        const fontSize = Math.max(9, (style?.fontSize ?? 11) * s);
-        const bold = style?.bold ? 'bold ' : '';
-        const italic = style?.italic ? 'italic ' : '';
-        ctx.font = `${italic}${bold}${fontSize}px sans-serif`;
-        ctx.fillStyle = style?.color ? (RenderUtils.argbToCss(style.color) ?? '#202124') : '#202124';
-
-        const textMetrics = ctx.measureText(cell.text);
-        const textW = textMetrics.width;
-
-        // 对齐方式 (数字靠右，普通文字默认靠左)
-        let textX = left + 4;
-        if (cell.numeric || style?.alignment === 3) {
-          textX = Math.max(left + 4, left + colW - textW - 4);
-        } else if (style?.alignment === 2) {
-          textX = left + (colW - textW) / 2;
-        }
-
-        const textY = top + (rowH + fontSize * 0.7) / 2;
-        ctx.fillText(cell.text, textX, textY);
+      ctx.beginPath();
+      for (let r = 0; r < sheet.rowHeights.length; r++) {
+        if (sheet.rowHeights[r] <= 0) continue;
+        const y = HEADER_HEIGHT + oy + rowOffsets[r + 1];
+        if (y < HEADER_HEIGHT) continue;
+        if (y > bodyBottom) break;
+        ctx.moveTo(HEADER_WIDTH, y);
+        ctx.lineTo(bodyRight, y);
       }
+      for (let c = 0; c < sheet.columnWidths.length; c++) {
+        if (sheet.columnWidths[c] <= 0) continue;
+        const x = HEADER_WIDTH + ox + colOffsets[c + 1];
+        if (x < HEADER_WIDTH) continue;
+        if (x > bodyRight) break;
+        ctx.moveTo(x, HEADER_HEIGHT);
+        ctx.lineTo(x, bodyBottom);
+      }
+      ctx.stroke();
+
+      // 1.5 绘制合并单元格（覆盖内部网格线并绘制锚点文本）
+      if (sheet.merges) {
+        for (const m of sheet.merges) {
+          const left = HEADER_WIDTH + ox + colOffsets[m.startColumn];
+          const top = HEADER_HEIGHT + oy + rowOffsets[m.startRow];
+          const right = HEADER_WIDTH + ox + colOffsets[m.endColumn + 1];
+          const bottom = HEADER_HEIGHT + oy + rowOffsets[m.endRow + 1];
+          const w = right - left;
+          const h = bottom - top;
+          if (w <= 0 || h <= 0 || right < HEADER_WIDTH || left > bodyRight || bottom < HEADER_HEIGHT || top > bodyBottom) {
+            continue;
+          }
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(left, top, w, h);
+          const anchor = anchorCellMap.get(`${m.startRow}:${m.startColumn}`);
+          if (anchor) {
+            this.drawSingleCell(ctx, anchor, left, top, w, h, s);
+          }
+          ctx.strokeStyle = GRID_COLOR;
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(left, top, w, h);
+        }
+      }
+
+      // 1.6 绘制自定义单元格四周边框 (style.borders)
+      for (const cell of sheet.cells) {
+        if (mergedSkip.has(`${cell.row}:${cell.column}`)) continue;
+        const style = this.document.cellStyles?.[cell.style];
+        if (!style || !style.borders) continue;
+        const left = HEADER_WIDTH + ox + colOffsets[cell.column];
+        const top = HEADER_HEIGHT + oy + rowOffsets[cell.row];
+        const colW = colOffsets[cell.column + 1] - colOffsets[cell.column];
+        const rowH = rowOffsets[cell.row + 1] - rowOffsets[cell.row];
+        if (left + colW < HEADER_WIDTH || left > bodyRight || top + rowH < HEADER_HEIGHT || top > bodyBottom) continue;
+        this.drawCellBorders(ctx, left, top, left + colW, top + rowH, style);
+      }
+      if (sheet.merges) {
+        for (const m of sheet.merges) {
+          const anchor = anchorCellMap.get(`${m.startRow}:${m.startColumn}`);
+          const style = anchor ? this.document.cellStyles?.[anchor.style] : undefined;
+          if (!style || !style.borders) continue;
+          const left = HEADER_WIDTH + ox + colOffsets[m.startColumn];
+          const top = HEADER_HEIGHT + oy + rowOffsets[m.startRow];
+          const right = HEADER_WIDTH + ox + colOffsets[m.endColumn + 1];
+          const bottom = HEADER_HEIGHT + oy + rowOffsets[m.endRow + 1];
+          this.drawCellBorders(ctx, left, top, right, bottom, style);
+        }
+      }
+
+      ctx.restore();
     }
 
-    ctx.restore();
-
-    // 2. 绘制顶部列头 (A, B, C...) 随 X 滚动，Y 固定
+    // 2. 顶部列头 (A, B, C...)
     ctx.save();
     ctx.beginPath();
     ctx.rect(HEADER_WIDTH, 0, this.canvasWidth - HEADER_WIDTH, HEADER_HEIGHT);
     ctx.clip();
     ctx.fillStyle = HEADER_BG;
     ctx.fillRect(HEADER_WIDTH, 0, this.canvasWidth - HEADER_WIDTH, HEADER_HEIGHT);
-
     ctx.strokeStyle = GRID_COLOR;
     ctx.lineWidth = 0.5;
     ctx.fillStyle = HEADER_TEXT;
-    ctx.font = '10px sans-serif';
+    ctx.font = '10vp sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
 
     for (let c = 0; c < sheet.columnWidths.length; c++) {
-      const left = HEADER_WIDTH + ox + (colOffsets[c] ?? 0);
-      const colW = (colOffsets[c + 1] ?? left) - (colOffsets[c] ?? left);
-      if (left + colW < HEADER_WIDTH || left > this.canvasWidth) continue;
+      if (sheet.columnWidths[c] <= 0) continue;
+      const left = HEADER_WIDTH + ox + colOffsets[c];
+      const colW = colOffsets[c + 1] - colOffsets[c];
+      if (left + colW < HEADER_WIDTH) continue;
+      if (left > this.canvasWidth) break;
 
       ctx.strokeRect(left, 0, colW, HEADER_HEIGHT);
-      const colLetter = this.indexToColumnLetter(c);
-      const tw = ctx.measureText(colLetter).width;
-      ctx.fillText(colLetter, left + (colW - tw) / 2, 14);
+      ctx.fillText(this.indexToColumnLetter(c), left + colW / 2, HEADER_HEIGHT / 2);
     }
     ctx.restore();
 
-    // 3. 绘制左侧行头 (1, 2, 3...) 随 Y 滚动，X 固定
+    // 3. 左侧行头 (1, 2, 3...)
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, HEADER_HEIGHT, HEADER_WIDTH, this.canvasHeight - HEADER_HEIGHT);
     ctx.clip();
     ctx.fillStyle = HEADER_BG;
     ctx.fillRect(0, HEADER_HEIGHT, HEADER_WIDTH, this.canvasHeight - HEADER_HEIGHT);
-
     ctx.strokeStyle = GRID_COLOR;
     ctx.lineWidth = 0.5;
     ctx.fillStyle = HEADER_TEXT;
-    ctx.font = '10px sans-serif';
+    ctx.font = '10vp sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'right';
 
     for (let r = 0; r < sheet.rowHeights.length; r++) {
-      const top = HEADER_HEIGHT + oy + (rowOffsets[r] ?? 0);
-      const rowH = (rowOffsets[r + 1] ?? top) - (rowOffsets[r] ?? top);
-      if (top + rowH < HEADER_HEIGHT || top > this.canvasHeight) continue;
+      if (sheet.rowHeights[r] <= 0) continue;
+      const top = HEADER_HEIGHT + oy + rowOffsets[r];
+      const rowH = rowOffsets[r + 1] - rowOffsets[r];
+      if (top + rowH < HEADER_HEIGHT) continue;
+      if (top > this.canvasHeight) break;
 
       ctx.strokeRect(0, top, HEADER_WIDTH, rowH);
-      const rowNum = (r + 1).toString();
-      const tw = ctx.measureText(rowNum).width;
-      ctx.fillText(rowNum, (HEADER_WIDTH - tw) / 2, top + (rowH + 7) / 2);
+      ctx.fillText(`${r + 1}`, HEADER_WIDTH - 6, top + rowH / 2);
     }
     ctx.restore();
 
-    // 4. 左上角空白交叉块 (固定不动)
+    // 4. 左上角交叉块与表头分隔线
     ctx.fillStyle = HEADER_BG;
     ctx.fillRect(0, 0, HEADER_WIDTH, HEADER_HEIGHT);
-    ctx.strokeStyle = GRID_COLOR;
-    ctx.lineWidth = 0.5;
-    ctx.strokeRect(0, 0, HEADER_WIDTH, HEADER_HEIGHT);
+    ctx.strokeStyle = '#bfc7cd';
+    ctx.lineWidth = 0.75;
+    ctx.beginPath();
+    ctx.moveTo(HEADER_WIDTH, 0);
+    ctx.lineTo(HEADER_WIDTH, this.canvasHeight);
+    ctx.moveTo(0, HEADER_HEIGHT);
+    ctx.lineTo(this.canvasWidth, HEADER_HEIGHT);
+    ctx.stroke();
+  }
+
+  private drawSingleCell(
+    ctx: CanvasRenderingContext2D,
+    cell: model.Cell,
+    left: number,
+    top: number,
+    colW: number,
+    rowH: number,
+    scale: number
+  ): void {
+    const style = this.document.cellStyles?.[cell.style];
+    if (style && style.fill !== 0) {
+      const fillCss = RenderUtils.argbToCss(style.fill);
+      if (fillCss) {
+        ctx.fillStyle = fillCss;
+        ctx.fillRect(left, top, colW, rowH);
+      }
+    }
+
+    if (!cell.text || colW <= 4 || rowH <= 2) return;
+
+    const fontSize = Math.max(8, (style?.fontSize ?? 11) * scale);
+    const bold = style?.bold ? 'bold ' : '';
+    const italic = style?.italic ? 'italic ' : '';
+    // 关键修复：使用 vp 单位而非 px
+    ctx.font = `${italic}${bold}${fontSize}vp sans-serif`;
+    ctx.fillStyle = style?.color ? (RenderUtils.argbToCss(style.color) ?? '#202124') : '#202124';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+
+    const align = style?.alignment === 3 ? (cell.numeric ? 2 : 0) : (style?.alignment ?? 0);
+    const textW = ctx.measureText(cell.text).width;
+    const availW = colW - 4;
+
+    let textX = left + 2;
+    if (align === 1) {
+      textX += (availW - textW) / 2;
+    } else if (align === 2) {
+      textX += availW - textW;
+    }
+
+    let textY = top + rowH / 2;
+    if (style?.verticalAlignment === 'TOP') {
+      textY = top + 2 + fontSize * 0.6;
+    } else if (style?.verticalAlignment === 'BOTTOM') {
+      textY = top + rowH - 2 - fontSize * 0.5;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left + 2, top + 1, Math.max(0, colW - 4), Math.max(0, rowH - 2));
+    ctx.clip();
+    ctx.fillText(cell.text, textX, textY);
+    if (style?.underline && textW > 0) {
+      ctx.strokeStyle = ctx.fillStyle;
+      ctx.lineWidth = Math.max(0.75, fontSize * 0.06);
+      ctx.beginPath();
+      ctx.moveTo(textX, textY + fontSize * 0.45);
+      ctx.lineTo(textX + textW, textY + fontSize * 0.45);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private drawCellBorders(
+    ctx: CanvasRenderingContext2D,
+    left: number,
+    top: number,
+    right: number,
+    bottom: number,
+    style: model.CellStyle
+  ): void {
+    ctx.lineWidth = 1;
+    for (let side = 0; side < 4; side++) {
+      const colorInt = style.borders[side];
+      if (colorInt === null || colorInt === undefined) continue;
+      const css = RenderUtils.argbToCss(colorInt);
+      if (!css) continue;
+      ctx.strokeStyle = css;
+      ctx.beginPath();
+      if (side === 0) {
+        ctx.moveTo(left, top);
+        ctx.lineTo(left, bottom);
+      } else if (side === 1) {
+        ctx.moveTo(left, top);
+        ctx.lineTo(right, top);
+      } else if (side === 2) {
+        ctx.moveTo(right, top);
+        ctx.lineTo(right, bottom);
+      } else {
+        ctx.moveTo(left, bottom);
+        ctx.lineTo(right, bottom);
+      }
+      ctx.stroke();
+    }
   }
 
   private indexToColumnLetter(index: number): string {
@@ -219,11 +373,12 @@ export struct SpreadsheetView {
 
   build() {
     Column() {
-      // 1. 表格主视图 Canvas (支持手势滚动与缩放)
       Canvas(this.context2D)
         .width('100%')
         .layoutWeight(1)
         .onReady(() => {
+          this.canvasWidth = this.context2D.width;
+          this.canvasHeight = this.context2D.height;
           this.redraw();
         })
         .onAreaChange((_oldArea, newArea) => {
@@ -234,7 +389,6 @@ export struct SpreadsheetView {
         .gesture(
           GestureGroup(
             GestureMode.Parallel,
-            // 缩放手势
             PinchGesture({ fingers: 2 })
               .onActionStart(() => {
                 this.pinchStartScale = this.scaleVal;
@@ -243,7 +397,6 @@ export struct SpreadsheetView {
                 this.scaleVal = Math.min(3.0, Math.max(0.5, this.pinchStartScale * event.scale));
                 this.redraw();
               }),
-            // 平移拖拽手势
             PanGesture()
               .onActionStart(() => {
                 this.panStartX = this.offsetX;
@@ -257,7 +410,6 @@ export struct SpreadsheetView {
           )
         )
 
-      // 2. 底部工作表 (Sheet) 切换标签栏
       if (this.document.sheets && this.document.sheets.length > 1) {
         Scroll() {
           Row({ space: 8 }) {
@@ -275,12 +427,14 @@ export struct SpreadsheetView {
                   this.offsetY = 0;
                   this.redraw();
                 })
-            })
+            }, (_sheet: model.Sheet, idx: number) => `sheet-${idx}`)
           }
-          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+          .padding({ left: 12, right: 12 })
+          .alignItems(VerticalAlign.Center)
         }
         .scrollable(ScrollDirection.Horizontal)
         .width('100%')
+        .height(44) // 关键修复：固定底部页签栏高度，防止 Scroll 默认占满 100% 高度挤压 Canvas
         .backgroundColor('#ffffff')
         .border({ width: { top: 0.5 }, color: '#e0e0e0' })
       }

@@ -2,17 +2,26 @@ import { image } from '@kit.ImageKit';
 import * as model from '../core/OfficeModel';
 import { RenderUtils } from './RenderUtils';
 
-/**
- * 共享图元绘制器：在 CanvasRenderingContext2D 上绘制单个 model.Element
- * 适用于 PPTX 幻灯片矢量画布渲染与通用 Canvas 图元绘制
- */
+interface TextSegment {
+  text: string;
+  font: string;
+  fontSize: number;
+  color: string;
+  underline: boolean;
+  width: number;
+}
+
+interface WrappedLine {
+  segments: TextSegment[];
+  width: number;
+  height: number;
+  maxFontSize: number;
+}
+
 export class CanvasElementDrawer {
-  /**
-   * 绘制单个 Element
-   * @param ctx 鸿蒙 2D 绘图上下文
-   * @param element 待绘制的图元模型
-   * @param imageCache 可选的 PixelMap 图片缓存
-   */
+  // 缓存已构建的 Path2D，避免滑动时每帧重复解析成百上千条矢量指令
+  private static readonly pathCache: WeakMap<model.Path, Path2D> = new WeakMap();
+
   public static drawElement(
     ctx: CanvasRenderingContext2D,
     element: model.Element,
@@ -30,47 +39,49 @@ export class CanvasElementDrawer {
 
     const w = element.width;
     const h = element.height;
+    const fillStyle = CanvasElementDrawer.resolveFillStyle(ctx, element);
+    const strokeCss = RenderUtils.argbToCss(element.stroke);
 
     // 2. 绘制 PATH 复杂几何路径
     if (element.type === 'PATH' && element.paths && element.paths.length > 0) {
       for (const p of element.paths) {
         if (!p.commands || p.commands.length === 0) continue;
-        const path2d = RenderUtils.buildPath2D(p.commands);
+        let path2d = CanvasElementDrawer.pathCache.get(p);
+        if (!path2d) {
+          path2d = RenderUtils.buildPath2D(p.commands);
+          CanvasElementDrawer.pathCache.set(p, path2d);
+        }
 
-        // 填充
-        if (p.fill && CanvasElementDrawer.applyFill(ctx, element, w, h)) {
+        if (p.fill && fillStyle) {
+          ctx.fillStyle = fillStyle;
           ctx.fill(path2d);
         }
 
-        // 描边
-        if (p.stroke && element.stroke !== 0) {
-          const strokeCss = RenderUtils.argbToCss(element.stroke);
-          if (strokeCss) {
-            ctx.strokeStyle = strokeCss;
-            ctx.lineWidth = Math.max(0.5, element.strokeWidth || 1);
-            ctx.stroke(path2d);
-          }
+        if (p.stroke && strokeCss) {
+          ctx.strokeStyle = strokeCss;
+          ctx.lineWidth = Math.max(0.5, element.strokeWidth || 1);
+          ctx.stroke(path2d);
         }
       }
     } else {
-      // 3. 基础几何图形 (RECT / ELLIPSE / LINE)
-      if (element.type !== 'LINE' && CanvasElementDrawer.applyFill(ctx, element, w, h)) {
+      // 3. 基础几何图形 (RECT / ELLIPSE / LINE)，支持纯色与线性渐变填充
+      if (fillStyle && element.type !== 'LINE') {
+        ctx.fillStyle = fillStyle;
         if (element.type === 'ELLIPSE') {
           ctx.beginPath();
-          ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+          ctx.ellipse(w / 2, h / 2, Math.max(0, w / 2), Math.max(0, h / 2), 0, 0, Math.PI * 2);
           ctx.fill();
         } else {
           ctx.fillRect(0, 0, w, h);
         }
       }
 
-      const strokeCss = RenderUtils.argbToCss(element.stroke);
       if (strokeCss) {
         ctx.strokeStyle = strokeCss;
         ctx.lineWidth = Math.max(0.5, element.strokeWidth || 1);
         if (element.type === 'ELLIPSE') {
           ctx.beginPath();
-          ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+          ctx.ellipse(w / 2, h / 2, Math.max(0, w / 2), Math.max(0, h / 2), 0, 0, Math.PI * 2);
           ctx.stroke();
         } else if (element.type === 'LINE') {
           ctx.beginPath();
@@ -85,10 +96,7 @@ export class CanvasElementDrawer {
 
     // 4. 绘制图片 (IMAGE)
     if (element.type === 'IMAGE') {
-      let pixelMap: image.PixelMap | undefined;
-      if (element.image && imageCache) {
-        pixelMap = imageCache.get(element.image);
-      }
+      const pixelMap = element.image && imageCache ? imageCache.get(element.image) : undefined;
       if (pixelMap) {
         if (element.imageBounds && element.imageBounds.length >= 4) {
           const ib = element.imageBounds;
@@ -97,7 +105,6 @@ export class CanvasElementDrawer {
           ctx.drawImage(pixelMap, 0, 0, w, h);
         }
       } else {
-        // 图片加载中或未命中缓存时的占位灰框
         ctx.fillStyle = '#e8eaed';
         ctx.fillRect(0, 0, w, h);
       }
@@ -108,7 +115,7 @@ export class CanvasElementDrawer {
       CanvasElementDrawer.drawTable(ctx, element);
     }
 
-    // 6. 绘制文本段落 (TEXT 或 形状内文字)
+    // 6. 绘制文本段落 (TEXT 或形状内文字)
     if (element.paragraphs && element.paragraphs.length > 0) {
       CanvasElementDrawer.drawParagraphs(ctx, element);
     }
@@ -116,27 +123,75 @@ export class CanvasElementDrawer {
     ctx.restore();
   }
 
-  /**
-   * 绘制表格单元格与文字
-   */
+  private static resolveFillStyle(
+    ctx: CanvasRenderingContext2D,
+    e: model.Element
+  ): string | CanvasGradient | null {
+    if (e.fillGradient && e.fillGradient.colors && e.fillGradient.colors.length >= 2) {
+      const g = e.fillGradient;
+      let x0 = g.points[0];
+      let y0 = g.points[1];
+      let x1 = g.points[2];
+      let y1 = g.points[3];
+      if (g.transform && g.transform.length >= 6) {
+        const m = g.transform;
+        const nx0 = m[0] * x0 + m[2] * y0 + m[4];
+        const ny0 = m[1] * x0 + m[3] * y0 + m[5];
+        const nx1 = m[0] * x1 + m[2] * y1 + m[4];
+        const ny1 = m[1] * x1 + m[3] * y1 + m[5];
+        x0 = nx0;
+        y0 = ny0;
+        x1 = nx1;
+        y1 = ny1;
+      }
+      const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+      for (let i = 0; i < g.colors.length; i++) {
+        const stopCss = RenderUtils.argbToCss(g.colors[i]) ?? 'rgba(0,0,0,0)';
+        grad.addColorStop(Math.min(1, Math.max(0, g.positions[i] ?? 0)), stopCss);
+      }
+      return grad;
+    }
+    return RenderUtils.argbToCss(e.fill);
+  }
+
   private static drawTable(ctx: CanvasRenderingContext2D, element: model.Element): void {
     const rows = element.rows;
-    const colWidths = element.columnWidths ?? [];
-    const cellFills = element.cellFills ?? [];
+    let cols = 0;
+    for (const r of rows) {
+      cols = Math.max(cols, r.length);
+    }
+    if (cols === 0) return;
 
+    const colWidths = element.columnWidths ?? [];
+    let totalWeight = 0;
+    for (const cw of colWidths) {
+      totalWeight += Math.max(1, cw);
+    }
+
+    const cellFills = element.cellFills ?? [];
     let currentY = 0;
-    // 粗略按行数均分行高
-    const rowHeight = element.height > 0 ? element.height / rows.length : 24;
 
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
+      // 先计算每列宽度并预排版测量当前行最大高度（对齐 OfficeRenderer.java）
+      const computedColWidths: number[] = [];
+      let rowHeight = 20;
+      for (let c = 0; c < cols; c++) {
+        const colW =
+          colWidths.length === cols && totalWeight > 0
+            ? (element.width * Math.max(1, colWidths[c])) / totalWeight
+            : element.width / cols;
+        computedColWidths.push(colW);
+        const cellParas = c < row.length ? row[c] : [];
+        if (cellParas && cellParas.length > 0) {
+          const h = CanvasElementDrawer.measureParagraphsHeight(ctx, cellParas, Math.max(1, colW - 10), true);
+          rowHeight = Math.max(rowHeight, h + 10);
+        }
+      }
+
       let currentX = 0;
-
-      for (let c = 0; c < row.length; c++) {
-        const colW = colWidths[c] ?? (element.width / row.length);
-        const cellParas = row[c];
-
-        // 单元格背景填充
+      for (let c = 0; c < cols; c++) {
+        const colW = computedColWidths[c];
         const fillInt = cellFills[r]?.[c] ?? 0;
         const fillCss = RenderUtils.argbToCss(fillInt);
         if (fillCss) {
@@ -144,113 +199,306 @@ export class CanvasElementDrawer {
           ctx.fillRect(currentX, currentY, colW, rowHeight);
         }
 
-        // 单元格边框
         ctx.strokeStyle = '#b7bec7';
-        ctx.lineWidth = 0.5;
+        ctx.lineWidth = 0.6;
         ctx.strokeRect(currentX, currentY, colW, rowHeight);
 
-        // 绘制单元格内文字
+        const cellParas = c < row.length ? row[c] : [];
         if (cellParas && cellParas.length > 0) {
           ctx.save();
-          ctx.translate(currentX + 2, currentY + 2);
+          ctx.beginPath();
+          ctx.rect(currentX, currentY, colW, rowHeight);
+          ctx.clip();
+          let paraY = currentY + 5;
           for (const para of cellParas) {
-            CanvasElementDrawer.drawSingleParagraph(ctx, para, colW - 4);
+            paraY += Math.max(0, para.before || 0);
+            const h = CanvasElementDrawer.drawParagraphLines(
+              ctx,
+              para,
+              currentX + 5,
+              paraY,
+              Math.max(1, colW - 10),
+              true
+            );
+            paraY += h + Math.max(0, para.after || 0);
           }
           ctx.restore();
         }
-
         currentX += colW;
       }
       currentY += rowHeight;
     }
   }
 
-  /**
-   * 绘制段落文字
-   */
   private static drawParagraphs(ctx: CanvasRenderingContext2D, element: model.Element): void {
-    const padding = Math.max(0, element.padding || 4);
-    let offsetY = padding;
+    const padding = Math.max(0, element.padding ?? 4);
     const availableWidth = Math.max(1, element.width - padding * 2);
+    const wrap = element.textWrap !== false;
+
+    const totalTextHeight = CanvasElementDrawer.measureParagraphsHeight(
+      ctx,
+      element.paragraphs,
+      availableWidth,
+      wrap
+    );
+
+    let offsetY = padding;
+    const remaining = Math.max(0, element.height - padding * 2 - totalTextHeight);
+    if (element.verticalAlignment === 'CENTER') {
+      offsetY += remaining / 2;
+    } else if (element.verticalAlignment === 'BOTTOM') {
+      offsetY += remaining;
+    }
+
+    ctx.save();
+    if (wrap && element.width > 0 && element.height > 0) {
+      ctx.beginPath();
+      ctx.rect(0, 0, element.width, element.height);
+      ctx.clip();
+    }
 
     for (const para of element.paragraphs) {
-      const lineHeight = CanvasElementDrawer.drawSingleParagraph(ctx, para, availableWidth, padding, offsetY);
-      offsetY += lineHeight + (para.after || 2);
+      offsetY += Math.max(0, para.before || 0);
+      const h = CanvasElementDrawer.drawParagraphLines(ctx, para, padding, offsetY, availableWidth, wrap);
+      offsetY += h + Math.max(0, para.after || 0);
     }
+    ctx.restore();
+  }
+
+  private static measureParagraphsHeight(
+    ctx: CanvasRenderingContext2D,
+    paragraphs: model.Paragraph[],
+    availableWidth: number,
+    wrap: boolean
+  ): number {
+    let total = 0;
+    for (const para of paragraphs) {
+      total += Math.max(0, para.before || 0);
+      const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
+      for (const line of lines) {
+        total += line.height;
+      }
+      total += Math.max(0, para.after || 0);
+    }
+    return total;
+  }
+
+  private static drawParagraphLines(
+    ctx: CanvasRenderingContext2D,
+    para: model.Paragraph,
+    startX: number,
+    startY: number,
+    availableWidth: number,
+    wrap: boolean
+  ): number {
+    const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
+    const rightIndent = Math.max(0, para.rightIndent || 0);
+    const baseIndent = Math.max(0, para.indent || 0);
+    const firstIndent = Math.max(0, baseIndent + (para.firstLineIndent || 0));
+
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+
+    let curY = startY;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const leftIndent = i === 0 ? firstIndent : baseIndent;
+      const lineAvailWidth = Math.max(1, availableWidth - leftIndent - rightIndent);
+
+      let lineX = startX + leftIndent;
+      if (para.alignment === 1) {
+        lineX += (lineAvailWidth - line.width) / 2;
+      } else if (para.alignment === 2) {
+        lineX += lineAvailWidth - line.width;
+      }
+
+      const baselineY = curY + line.height - (line.height - line.maxFontSize) / 2 - line.maxFontSize * 0.15;
+      let segX = lineX;
+      for (const seg of line.segments) {
+        ctx.font = seg.font;
+        ctx.fillStyle = seg.color;
+        // 整段一次性绘制，不再逐字调用 fillText
+        ctx.fillText(seg.text, segX, baselineY);
+        if (seg.underline && seg.width > 0) {
+          ctx.strokeStyle = seg.color;
+          ctx.lineWidth = Math.max(0.75, seg.fontSize * 0.06);
+          ctx.beginPath();
+          ctx.moveTo(segX, baselineY + seg.fontSize * 0.12);
+          ctx.lineTo(segX + seg.width, baselineY + seg.fontSize * 0.12);
+          ctx.stroke();
+        }
+        segX += seg.width;
+      }
+      curY += line.height;
+    }
+    return curY - startY;
   }
 
   /**
-   * 绘制单条段落（支持粗斜体、颜色、字号与自动换行折叠）
+   * 高性能段落折行：整段测量优先，仅在超出宽度时按需切分，使用 vp 字号单位对齐画布坐标系
    */
-  private static drawSingleParagraph(
+  private static layoutParagraph(
     ctx: CanvasRenderingContext2D,
     para: model.Paragraph,
     availableWidth: number,
-    startX: number = 0,
-    startY: number = 0
-  ): number {
-    let curX = startX + (para.firstLineIndent || 0);
-    let curY = startY;
-    let maxRunHeight = 14;
+    wrap: boolean
+  ): WrappedLine[] {
+    const rightIndent = Math.max(0, para.rightIndent || 0);
+    const baseIndent = Math.max(0, para.indent || 0);
+    const firstIndent = Math.max(0, baseIndent + (para.firstLineIndent || 0));
 
-    for (const run of para.runs) {
-      const fontSize = Math.max(8, run.size || 12);
-      maxRunHeight = Math.max(maxRunHeight, fontSize * (para.lineSpacing || 1.2));
-
-      const fontStyle = run.italic ? 'italic' : 'normal';
-      const fontWeight = run.bold ? 'bold' : 'normal';
-      ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px sans-serif`;
-
-      const colorCss = RenderUtils.argbToCss(run.color) ?? '#202124';
-      ctx.fillStyle = colorCss;
-
-      // 简单断词换行
-      const words = run.text.split('');
-      for (const char of words) {
-        const metrics = ctx.measureText(char);
-        const charW = metrics.width;
-
-        if (curX + charW > startX + availableWidth && curX > startX) {
-          curX = startX;
-          curY += maxRunHeight;
+    const runs: model.Run[] = [];
+    if (para.bullet && para.bullet.length > 0) {
+      const firstRun = para.runs && para.runs.length > 0 ? para.runs[0] : null;
+      runs.push({
+        text: para.bullet,
+        fontFace: firstRun?.fontFace ?? '',
+        size: firstRun?.size ?? 12,
+        bold: firstRun?.bold ?? false,
+        italic: firstRun?.italic ?? false,
+        underline: false,
+        color: firstRun?.color ?? 0xff202124,
+      });
+    }
+    if (para.runs) {
+      for (const r of para.runs) {
+        if (r.text && r.text.length > 0) {
+          runs.push(r);
         }
+      }
+    }
+    if (runs.length === 0) {
+      const defaultSize = para.runs && para.runs.length > 0 ? Math.max(1, para.runs[0].size) : 12;
+      return [{
+        segments: [],
+        width: 0,
+        height: CanvasElementDrawer.computeLineHeight(para, defaultSize),
+        maxFontSize: defaultSize,
+      }];
+    }
 
-        ctx.fillText(char, curX, curY + fontSize);
-        curX += charW;
+    const rawLines: TextSegment[][] = [[]];
+    let currentLineWidth = 0;
+    const maxLineW = (lineIdx: number): number => {
+      if (!wrap) return 1000000;
+      const indent = lineIdx === 0 ? firstIndent : baseIndent;
+      return Math.max(1, availableWidth - indent - rightIndent);
+    };
+
+    for (const run of runs) {
+      const fontSize = Math.max(1, run.size || 12);
+      const fontStyle = run.italic ? 'italic ' : '';
+      const fontWeight = run.bold ? 'bold ' : '';
+      // 关键修复：使用 vp 作为字号单位，与 Canvas 逻辑坐标系保持 1:1
+      const fontStr = `${fontStyle}${fontWeight}${fontSize}vp sans-serif`;
+      const colorCss = RenderUtils.argbToCss(run.color) ?? '#202124';
+      ctx.font = fontStr;
+
+      const subParts = run.text.split('\n');
+      for (let p = 0; p < subParts.length; p++) {
+        if (p > 0) {
+          rawLines.push([]);
+          currentLineWidth = 0;
+        }
+        let remainingText = subParts[p];
+        if (remainingText.length === 0) continue;
+
+        while (remainingText.length > 0) {
+          const limit = maxLineW(rawLines.length - 1);
+          const fullW = ctx.measureText(remainingText).width;
+
+          // 快路径：如果整段文字直接放得下，0 拆分直接入列！
+          if (!wrap || currentLineWidth + fullW <= limit) {
+            rawLines[rawLines.length - 1].push({
+              text: remainingText,
+              font: fontStr,
+              fontSize,
+              color: colorCss,
+              underline: run.underline,
+              width: fullW,
+            });
+            currentLineWidth += fullW;
+            break;
+          }
+
+          // 若当前行已有内容且放不下，先换新行再试
+          const availInLine = limit - currentLineWidth;
+          if (availInLine <= fontSize * 0.5 && currentLineWidth > 0) {
+            rawLines.push([]);
+            currentLineWidth = 0;
+            continue;
+          }
+
+          // 二分查找当前行能容纳的最大字符数，避免逐字遍历测量
+          let low = 1;
+          let high = remainingText.length;
+          let bestCount = 1;
+          let bestWidth = ctx.measureText(remainingText.substring(0, 1)).width;
+
+          while (low <= high) {
+            const mid = (low + high) >>> 1;
+            const sub = remainingText.substring(0, mid);
+            const w = ctx.measureText(sub).width;
+            if (w <= availInLine) {
+              bestCount = mid;
+              bestWidth = w;
+              low = mid + 1;
+            } else {
+              high = mid - 1;
+            }
+          }
+
+          if (bestCount === 1 && currentLineWidth > 0 && bestWidth > availInLine) {
+            rawLines.push([]);
+            currentLineWidth = 0;
+            continue;
+          }
+
+          const fitText = remainingText.substring(0, bestCount);
+          rawLines[rawLines.length - 1].push({
+            text: fitText,
+            font: fontStr,
+            fontSize,
+            color: colorCss,
+            underline: run.underline,
+            width: bestWidth,
+          });
+          remainingText = remainingText.substring(bestCount);
+          if (remainingText.length > 0) {
+            rawLines.push([]);
+            currentLineWidth = 0;
+          } else {
+            currentLineWidth += bestWidth;
+          }
+        }
       }
     }
 
-    return (curY - startY) + maxRunHeight;
+    return rawLines.map((segs): WrappedLine => {
+      let w = 0;
+      let maxFs = runs[0].size || 12;
+      for (const s of segs) {
+        w += s.width;
+        if (s.fontSize > maxFs) maxFs = s.fontSize;
+      }
+      return {
+        segments: segs,
+        width: w,
+        height: CanvasElementDrawer.computeLineHeight(para, maxFs),
+        maxFontSize: maxFs,
+      };
+    });
   }
 
-  /**
-   * 应用图元的背景填充（优先处理线性渐变 fillGradient，回退至纯色 ARGB）
-   */
-  private static applyFill(
-    ctx: CanvasRenderingContext2D,
-    element: model.Element,
-    _w: number,
-    _h: number
-  ): boolean {
-    if (element.fillGradient && element.fillGradient.colors && element.fillGradient.colors.length > 0) {
-      const gf = element.fillGradient;
-      const pts = gf.points;
-      const grad = ctx.createLinearGradient(pts[0], pts[1], pts[2], pts[3]);
-      const len = Math.min(gf.colors.length, gf.positions.length);
-      for (let i: number = 0; i < len; i++) {
-        const css = RenderUtils.argbToCss(gf.colors[i]) ?? '#ffffff';
-        grad.addColorStop(Math.min(1, Math.max(0, gf.positions[i])), css);
-      }
-      ctx.fillStyle = grad;
-      return true;
+  private static computeLineHeight(para: model.Paragraph, maxFontSize: number): number {
+    const natural = maxFontSize * 1.2;
+    if (para.lineSpacingRule === 'EXACT') {
+      return Math.max(1, para.lineSpacing || natural);
     }
-    if (element.fill !== 0) {
-      const fillCss = RenderUtils.argbToCss(element.fill);
-      if (fillCss) {
-        ctx.fillStyle = fillCss;
-        return true;
-      }
+    if (para.lineSpacingRule === 'AT_LEAST') {
+      return Math.max(natural, para.lineSpacing || natural);
     }
-    return false;
+    const factor = para.lineSpacing && para.lineSpacing > 0 ? para.lineSpacing : 1;
+    return Math.max(1, natural * factor);
   }
 }
