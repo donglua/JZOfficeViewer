@@ -37,8 +37,8 @@ afterEvaluate {
                         }
                     }
                     scm {
-                        connection = 'scm:git:git://github.com/donglua/JZOfficeAndroid.git'
-                        developerConnection = 'scm:git:ssh://git@github.com/donglua/JZOfficeAndroid.git'
+                        connection = 'scm:git:git://github.com/donglua/JZOfficeViewer.git'
+                        developerConnection = 'scm:git:ssh://git@github.com/donglua/JZOfficeViewer.git'
                         url = rootProject.publishedUrl
                     }
                 }

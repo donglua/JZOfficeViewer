@@ -1,4 +1,4 @@
-# JZOfficeAndroid
+# JZOfficeViewer
 
 轻量级 Android Office 文档预览库，**核心 AAR 不到 1 MB**，支持 DOCX、PPTX 和 XLSX 离线预览。0.3.0 本地 Release 构建的核心 AAR 约 **782 KiB**，已包含 `arm64-v8a` 和 `armeabi-v7a` 两种架构。
 
@@ -6,11 +6,11 @@
 
 这是基础预览实现，不保证与 Microsoft Office 的版式一致。旧版 `.doc/.ppt/.xls`、加密文档、ZIP64/分卷容器和编辑功能不在支持范围内。
 
-当前版本为 **0.3.0**，包含 PPTX 按需排版、最近图片缓存复用和小数字号修复，变更与已知问题见 [CHANGELOG](CHANGELOG.md)。发布产物见 [v0.3.0 Release](https://github.com/donglua/JZOfficeAndroid/releases/tag/v0.3.0)，Maven Central 坐标为 [viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.3.0) 和 [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.3.0)。发布可用性以对应仓库为准；完整设备回归仍有未通过项。
+当前版本为 **0.3.0**，包含 PPTX 按需排版、最近图片缓存复用和小数字号修复，变更与已知问题见 [CHANGELOG](CHANGELOG.md)。发布产物见 [v0.3.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.3.0)，Maven Central 坐标为 [viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.3.0) 和 [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.3.0)。发布可用性以对应仓库为准；完整设备回归仍有未通过项。
 
 ## 体积
 
-以下为 0.3.0 本地 Release 构建的实际文件大小，1 KiB = 1024 字节；CI 构建的最终附件见 [v0.3.0 Release](https://github.com/donglua/JZOfficeAndroid/releases/tag/v0.3.0)：
+以下为 0.3.0 本地 Release 构建的实际文件大小，1 KiB = 1024 字节；CI 构建的最终附件见 [v0.3.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.3.0)：
 
 | 产物 | 文件大小 | 包含内容 |
 | --- | --- | --- |
@@ -131,7 +131,7 @@ dependencies {
 }
 ```
 
-也可以引用源码模块或本地构建的 AAR，产物位置见「构建」。历史版本见 [v0.1.0 Release](https://github.com/donglua/JZOfficeAndroid/releases/tag/v0.1.0)。
+也可以引用源码模块或本地构建的 AAR，产物位置见「构建」。历史版本见 [v0.1.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.1.0)。
 
 ```kotlin
 import cn.jingzhuan.lib.office.OfficePreviewView
@@ -432,7 +432,7 @@ adb install -r viewer/build/outputs/apk/androidTest/debug/viewer-debug-androidTe
 adb shell am instrument -w -e suite compatibility cn.jingzhuan.lib.office.test/cn.jingzhuan.lib.office.OfficeInstrumentation
 ```
 
-0.3.0 验证记录：Debug/Release 构建、Release lint、47 项网络检查、缓存检查和 Rust 检查已通过。双模块本地发布产物检查已通过；独立消费项目使用 Gradle 元数据和纯 POM 均能从新坐标的 `viewer-online:0.3.0` 解析出同版本 `viewer`。容器限制、图片、PPTX、XLSX、排版、Demo 三种样例和在线模块生命周期专项均已在 Android 真机通过。正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeAndroid/actions/workflows/publish-sonatype.yml)。
+0.3.0 验证记录：Debug/Release 构建、Release lint、47 项网络检查、缓存检查和 Rust 检查已通过。双模块本地发布产物检查已通过；独立消费项目使用 Gradle 元数据和纯 POM 均能从新坐标的 `viewer-online:0.3.0` 解析出同版本 `viewer`。容器限制、图片、PPTX、XLSX、排版、Demo 三种样例和在线模块生命周期专项均已在 Android 真机通过。正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeViewer/actions/workflows/publish-sonatype.yml)。
 
 约 26 万字符的 XLSX 单元格曾在主线程断行计算中持续阻塞：缓存预算在布局完成后才检查，最大行数也无法限制首次断行的输入量。现已在测宽和断行前限制预览文字，并缓存实际预览布局。同一 Android 真机上，修复前单元格首次绘制耗时 32044 ms；修复后换行及对齐组合专项的最慢首次绘制为 20 ms，真实 XLSX 中六个超长单元格的首次绘制合计为 63 ms。`xlsx-text` 和完整 `xlsx` 专项通过，普通表格五张前后截图像素一致；以上为单次设备回归结果，不代表所有设备的性能上限。**完整设备回归仍有未通过项**：重跑已通过 XLSX 和 PPTX 背景检查，随后停在此前已有的双击缩放断言。
 

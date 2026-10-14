@@ -13,7 +13,7 @@ ext {
     publishedVersion = configuredValue('publishedVersion', 'PUBLISHED_VERSION', '0.3.0')
     publishedName = configuredValue('publishedName', 'PUBLISHED_NAME', 'JZ Office Android')
     publishedDescription = configuredValue('publishedDescription', 'PUBLISHED_DESCRIPTION', 'Limited offline DOCX, PPTX and XLSX preview for Android.')
-    publishedUrl = configuredValue('publishedUrl', 'PUBLISHED_URL', 'https://github.com/donglua/JZOfficeAndroid')
+    publishedUrl = configuredValue('publishedUrl', 'PUBLISHED_URL', 'https://github.com/donglua/JZOfficeViewer')
     publishedLicenseName = configuredValue('publishedLicenseName', 'PUBLISHED_LICENSE_NAME', '')
     publishedLicenseUrl = configuredValue('publishedLicenseUrl', 'PUBLISHED_LICENSE_URL', '')
     publishedDeveloperId = configuredValue('publishedDeveloperId', 'PUBLISHED_DEVELOPER_ID', 'donglua')

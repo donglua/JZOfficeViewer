@@ -2,7 +2,7 @@
 
 ## 0.3.0
 
-发布页面：[v0.3.0 Release](https://github.com/donglua/JZOfficeAndroid/releases/tag/v0.3.0)。
+发布页面：[v0.3.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.3.0)。
 
 ### 升级说明
 
@@ -27,11 +27,11 @@
 - `0.3.0` 候选版本的双模块本地发布、Release 构建与 lint、Rust 检查、47 项下载器检查及缓存检查已通过。独立消费项目已验证新坐标的 Gradle 元数据和纯 POM 传递依赖；容器限制、图片、PPTX、XLSX、排版、Demo 样例及在线模块生命周期专项均在真机通过。
 - 完整设备套件仍有未通过项：曾出现输入分发 ANR，诊断运行捕获到约 26 万字符的 XLSX 单元格在主线程断行计算中持续阻塞；另有 PPTX 屏幕背景色断言失败，截图中已绘出内容。这两项作为本版本已知问题保留。
 - 性能收益分别对应排版和图片请求阶段，不代表整份文档打开耗时按相同比例下降；缓存预算不包含解码中的图片和应用其他内存。
-- 仍为有限内容预览，格式、资源和在线预览限制见 [README](README.md)。正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeAndroid/actions/workflows/publish-sonatype.yml)。
+- 仍为有限内容预览，格式、资源和在线预览限制见 [README](README.md)。正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeViewer/actions/workflows/publish-sonatype.yml)。
 
 ## 0.2.0
 
-发布页面：[v0.2.0 Release](https://github.com/donglua/JZOfficeAndroid/releases/tag/v0.2.0)。
+发布页面：[v0.2.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.2.0)。
 
 ### 在线预览与缓存
 
@@ -59,9 +59,9 @@
 
 - Debug/Release 构建、lint、47 项网络检查、缓存检查及 Rust 检查已通过。
 - 双模块本地发布产物检查已通过。独立消费项目使用 Gradle 元数据和纯 POM 均能从 `viewer-online:0.2.0` 解析出同版本的 `viewer`。
-- 正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeAndroid/actions/workflows/publish-sonatype.yml)。
+- 正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeViewer/actions/workflows/publish-sonatype.yml)。
 - Android Instrumentation APK 已编译，尚无可用设备或 AVD 执行，设备验收未完成。
 
 ## 0.1.0（已发布）
 
-`viewer` 的历史版本已发布至 [Maven Central](https://central.sonatype.com/artifact/io.github.donglua/viewer/0.1.0)，AAR 附件见 [v0.1.0 Release](https://github.com/donglua/JZOfficeAndroid/releases/tag/v0.1.0)。
+`viewer` 的历史版本已发布至 [Maven Central](https://central.sonatype.com/artifact/io.github.donglua/viewer/0.1.0)，AAR 附件见 [v0.1.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.1.0)。
