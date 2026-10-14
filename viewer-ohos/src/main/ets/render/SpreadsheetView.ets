@@ -68,14 +68,40 @@ export struct SpreadsheetView {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(HEADER_WIDTH + ox, HEADER_HEIGHT + oy, totalGridWidth, totalGridHeight);
 
+    // 构建合并单元格索引
+    const mergedSubordinates = new Set<string>();
+    const mergeAnchors = new Map<string, model.CellRange>();
+    if (sheet.merges && sheet.merges.length > 0) {
+      for (const m of sheet.merges) {
+        mergeAnchors.set(`${m.startRow}:${m.startColumn}`, m);
+        for (let r = m.startRow; r <= m.endRow; r++) {
+          for (let c = m.startColumn; c <= m.endColumn; c++) {
+            if (r !== m.startRow || c !== m.startColumn) {
+              mergedSubordinates.add(`${r}:${c}`);
+            }
+          }
+        }
+      }
+    }
+
     // 绘制单元格内容
     for (const cell of sheet.cells) {
       const c = cell.column;
       const r = cell.row;
+      const key = `${r}:${c}`;
+      if (mergedSubordinates.has(key)) {
+        continue;
+      }
+
+      const mergeRange = mergeAnchors.get(key);
       const left = HEADER_WIDTH + ox + (colOffsets[c] ?? 0);
       const top = HEADER_HEIGHT + oy + (rowOffsets[r] ?? 0);
-      const colW = (colOffsets[c + 1] ?? left) - (colOffsets[c] ?? left);
-      const rowH = (rowOffsets[r + 1] ?? top) - (rowOffsets[r] ?? top);
+      const colW = mergeRange
+        ? (colOffsets[mergeRange.endColumn + 1] ?? left) - (colOffsets[c] ?? left)
+        : (colOffsets[c + 1] ?? left) - (colOffsets[c] ?? left);
+      const rowH = mergeRange
+        ? (rowOffsets[mergeRange.endRow + 1] ?? top) - (rowOffsets[r] ?? top)
+        : (rowOffsets[r + 1] ?? top) - (rowOffsets[r] ?? top);
 
       // 视口外裁剪优化
       if (left + colW < HEADER_WIDTH || left > this.canvasWidth) continue;

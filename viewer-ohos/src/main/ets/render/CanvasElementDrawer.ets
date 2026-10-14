@@ -38,12 +38,8 @@ export class CanvasElementDrawer {
         const path2d = RenderUtils.buildPath2D(p.commands);
 
         // 填充
-        if (p.fill && element.fill !== 0) {
-          const fillCss = RenderUtils.argbToCss(element.fill);
-          if (fillCss) {
-            ctx.fillStyle = fillCss;
-            ctx.fill(path2d);
-          }
+        if (p.fill && CanvasElementDrawer.applyFill(ctx, element, w, h)) {
+          ctx.fill(path2d);
         }
 
         // 描边
@@ -58,9 +54,7 @@ export class CanvasElementDrawer {
       }
     } else {
       // 3. 基础几何图形 (RECT / ELLIPSE / LINE)
-      const fillCss = RenderUtils.argbToCss(element.fill);
-      if (fillCss && element.type !== 'LINE') {
-        ctx.fillStyle = fillCss;
+      if (element.type !== 'LINE' && CanvasElementDrawer.applyFill(ctx, element, w, h)) {
         if (element.type === 'ELLIPSE') {
           ctx.beginPath();
           ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
@@ -227,5 +221,34 @@ export class CanvasElementDrawer {
     }
 
     return (curY - startY) + maxRunHeight;
+  }
+
+  /**
+   * 应用图元的背景填充（优先处理线性渐变 fillGradient，回退至纯色 ARGB）
+   */
+  private static applyFill(
+    ctx: CanvasRenderingContext2D,
+    element: model.Element,
+    w: number,
+    h: number
+  ): boolean {
+    if (element.fillGradient && element.fillGradient.stops && element.fillGradient.stops.length > 0) {
+      const pts = RenderUtils.gradientPoints(element.fillGradient, w, h);
+      const grad = ctx.createLinearGradient(pts[0], pts[1], pts[2], pts[3]);
+      for (const stop of element.fillGradient.stops) {
+        const css = RenderUtils.argbToCss(stop.color) ?? '#ffffff';
+        grad.addColorStop(Math.min(1, Math.max(0, stop.position)), css);
+      }
+      ctx.fillStyle = grad;
+      return true;
+    }
+    if (element.fill !== 0) {
+      const fillCss = RenderUtils.argbToCss(element.fill);
+      if (fillCss) {
+        ctx.fillStyle = fillCss;
+        return true;
+      }
+    }
+    return false;
   }
 }

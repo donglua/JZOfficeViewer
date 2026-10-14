@@ -1,3 +1,4 @@
+import { image } from '@kit.ImageKit';
 import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
 import { RenderUtils } from './RenderUtils';
@@ -72,9 +73,9 @@ export struct OfficePreviewView {
         .justifyContent(FlexAlign.Center)
       } else if (this.document) {
         if (this.document.kind === 'DOCX') {
-          DocxFlowView({ document: this.document })
+          DocxFlowView({ document: this.document, filePath: this.filePath })
         } else if (this.document.kind === 'PPTX') {
-          PptxSlidesView({ document: this.document })
+          PptxSlidesView({ document: this.document, filePath: this.filePath })
         } else if (this.document.kind === 'XLSX') {
           SpreadsheetView({ document: this.document })
         }
@@ -92,6 +93,7 @@ export struct OfficePreviewView {
 @Component
 struct DocxFlowView {
   @Prop document: model.OfficeDocument;
+  @Prop filePath: string = '';
 
   build() {
     List({ space: 8 }) {
@@ -108,13 +110,7 @@ struct DocxFlowView {
             .width('100%')
             .alignItems(HorizontalAlign.Start)
           } else if (element.type === 'IMAGE') {
-            Row() {
-              Text('[图片]').fontSize(12).fontColor('#80868b')
-            }
-            .width('100%')
-            .height(Math.min(240, element.height || 120))
-            .backgroundColor('#e8eaed')
-            .justifyContent(FlexAlign.Center)
+            DocxImageView({ filePath: this.filePath, element: element })
           }
         }
       })
@@ -123,6 +119,54 @@ struct DocxFlowView {
     .height('100%')
     .padding({ left: 16, right: 16, top: 16, bottom: 24 })
     .backgroundColor('#ffffff')
+  }
+}
+
+/**
+ * DOCX 内嵌图片异步解码与展示组件
+ */
+@Component
+struct DocxImageView {
+  @Prop filePath: string = '';
+  @Prop element: model.Element;
+  @State pixelMap: image.PixelMap | null = null;
+  @State isLoading: boolean = true;
+
+  aboutToAppear(): void {
+    if (this.element.image && this.filePath) {
+      this.loadImage();
+    } else {
+      this.isLoading = false;
+    }
+  }
+
+  private async loadImage(): Promise<void> {
+    try {
+      const buffer = await NativeCore.readPartAsync(this.filePath, this.element.image!);
+      this.pixelMap = await RenderUtils.decodeImageBuffer(buffer);
+    } catch (_e) {
+      // 容错处理
+    } finally {
+      this.isLoading = false;
+    }
+  }
+
+  build() {
+    Row() {
+      if (this.pixelMap) {
+        Image(this.pixelMap)
+          .objectFit(ImageFit.Contain)
+          .width(this.element.width > 0 ? this.element.width : '100%')
+          .height(this.element.height > 0 ? this.element.height : 180)
+      } else if (this.isLoading) {
+        LoadingProgress().width(24).height(24).color('#0a59f7')
+      } else {
+        Text('[图片]').fontSize(12).fontColor('#80868b')
+      }
+    }
+    .width('100%')
+    .justifyContent(FlexAlign.Center)
+    .margin({ top: 4, bottom: 4 })
   }
 }
 
@@ -206,13 +250,14 @@ struct DocxTableView {
 @Component
 struct PptxSlidesView {
   @Prop document: model.OfficeDocument;
+  @Prop filePath: string = '';
 
   build() {
     List({ space: 16 }) {
       ForEach(this.document.pages, (page: model.Page, index: number) => {
         ListItem() {
           Column({ space: 6 }) {
-            PptxSlideCanvas({ page: page })
+            PptxSlideCanvas({ page: page, filePath: this.filePath })
             Text(`${index + 1} / ${this.document.pages.length}`)
               .fontSize(12)
               .fontColor('#80868b')
@@ -234,11 +279,44 @@ struct PptxSlidesView {
 @Component
 struct PptxSlideCanvas {
   @Prop page: model.Page;
+  @Prop filePath: string = '';
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
   private canvasWidth: number = 0;
   private canvasHeight: number = 0;
+  private imageCache: Map<string, image.PixelMap> = new Map();
+
+  aboutToAppear(): void {
+    this.preloadImages();
+  }
+
+  private async preloadImages(): Promise<void> {
+    if (!this.filePath || !this.page?.elements) return;
+    const promises: Promise<void>[] = [];
+    for (const elem of this.page.elements) {
+      if (elem.type === 'IMAGE' && elem.image && !this.imageCache.has(elem.image)) {
+        const imgPath = elem.image;
+        promises.push(
+          (async () => {
+            try {
+              const buf = await NativeCore.readPartAsync(this.filePath, imgPath);
+              const pm = await RenderUtils.decodeImageBuffer(buf);
+              if (pm) {
+                this.imageCache.set(imgPath, pm);
+              }
+            } catch (_e) {
+              // 容错处理
+            }
+          })()
+        );
+      }
+    }
+    if (promises.length > 0) {
+      await Promise.all(promises);
+      this.drawSlide();
+    }
+  }
 
   private drawSlide(): void {
     if (this.canvasWidth <= 0 || this.canvasHeight <= 0 || !this.page) return;
@@ -266,7 +344,7 @@ struct PptxSlideCanvas {
     // 绘制所有图元
     if (this.page.elements) {
       for (const element of this.page.elements) {
-        CanvasElementDrawer.drawElement(ctx, element);
+        CanvasElementDrawer.drawElement(ctx, element, this.imageCache);
       }
     }
 

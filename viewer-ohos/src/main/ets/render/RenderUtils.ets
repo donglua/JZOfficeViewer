@@ -94,4 +94,38 @@ export class RenderUtils {
       }
     }
   }
+
+  /**
+   * 计算线性渐变在线段两端的起始与终止坐标 [x0, y0, x1, y1]
+   */
+  public static gradientPoints(
+    fill: model.GradientFill,
+    width: number,
+    height: number
+  ): [number, number, number, number] {
+    const radians = (fill.angle * Math.PI) / 180.0;
+    let dx = Math.cos(radians);
+    let dy = Math.sin(radians);
+    if (fill.scaled) {
+      dx *= width;
+      dy *= height;
+    }
+    let length = Math.hypot(dx, dy);
+    if (length < 0.0001) {
+      dx = 1.0;
+      dy = 0.0;
+      length = 1.0;
+    }
+    dx /= length;
+    dy /= length;
+    const span = Math.abs(width * dx) + Math.abs(height * dy);
+    const cx = width / 2.0;
+    const cy = height / 2.0;
+    return [
+      cx - (dx * span) / 2.0,
+      cy - (dy * span) / 2.0,
+      cx + (dx * span) / 2.0,
+      cy + (dy * span) / 2.0
+    ];
+  }
 }

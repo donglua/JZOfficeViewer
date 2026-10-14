@@ -308,6 +308,7 @@ dependencies = [
  "napi-derive-ohos",
  "napi-ohos",
  "serde_json",
+ "zip",
 ]
 
 [[package]]
