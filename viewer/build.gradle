@@ -34,11 +34,18 @@ def nativeOutput = layout.buildDirectory.dir('generated/jniLibs/' + officeAbis.j
 android.sourceSets.main.jniLibs.srcDir(nativeOutput.get().asFile)
 def testFixtures = layout.buildDirectory.dir('generated/test-fixtures')
 android.sourceSets.androidTest.assets.srcDir(rootProject.file('demo/src/main/assets'))
+def cargoHomeBin = new File(System.getProperty('user.home'), '.cargo/bin')
+def cargoBinFile = new File(cargoHomeBin, 'cargo')
+def cargoCmd = cargoBinFile.exists() ? cargoBinFile.absolutePath : 'cargo'
+
 def generateTestFixtures = tasks.register('generateTestFixtures', GenerateOfficeFixtures) {
     inputs.files(rootProject.fileTree('core/tests/support'), rootProject.file('core/examples/fixtures.rs'), rootProject.file('Cargo.lock'))
     outputDirectory.set(testFixtures)
     workingDir rootProject.projectDir
-    commandLine(['cargo', 'run', '-p', 'jz-office-core', '--example', 'fixtures']
+    if (cargoHomeBin.exists()) {
+        environment 'PATH', "${cargoHomeBin.absolutePath}:${System.getenv('PATH') ?: ''}"
+    }
+    commandLine([cargoCmd, 'run', '-p', 'jz-office-core', '--example', 'fixtures']
         + (gradle.startParameter.offline ? ['--offline'] : []) + ['--', '--tests', testFixtures.get().asFile.absolutePath])
 }
 androidComponents.onVariants(androidComponents.selector().all()) { variant ->
@@ -51,6 +58,9 @@ tasks.register('buildNative', Exec) {
     workingDir rootProject.projectDir
     environment 'ANDROID_NDK_HOME', androidComponents.sdkComponents.ndkDirectory.get().asFile.absolutePath
     environment 'OFFICE_OFFLINE', gradle.startParameter.offline.toString()
+    if (cargoHomeBin.exists()) {
+        environment 'PATH', "${cargoHomeBin.absolutePath}:${System.getenv('PATH') ?: ''}"
+    }
     commandLine(['bash', rootProject.file('scripts/build-native.sh').absolutePath, nativeOutput.get().asFile.absolutePath] + officeAbis)
 }
 tasks.named('preBuild').configure { dependsOn tasks.named('buildNative') }

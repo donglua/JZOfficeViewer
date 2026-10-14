@@ -3,6 +3,10 @@ set -euo pipefail
 
 native_output="$1"
 shift
+if [[ -d "${HOME}/.cargo/bin" ]] && [[ ":${PATH}:" != *":${HOME}/.cargo/bin:"* ]]; then
+    export PATH="${HOME}/.cargo/bin:${PATH}"
+fi
+
 for tool in rustup cargo; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "Missing $tool. Install Rust 1.87 or newer with rustup (https://rustup.rs), and add its bin directory to PATH." >&2
