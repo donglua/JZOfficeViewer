@@ -1,0 +1,3 @@
+# Obfuscation rules for viewer-ohos
+-keep-property-name
+-keep-global-name

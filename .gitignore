@@ -10,4 +10,7 @@ local.properties
 **/oh_modules/
 *.so
 viewer-ohos/libs/
+.hvigor/
+**/BuildProfile.ets
 /VERIFICATION.md
+.openbitfun/

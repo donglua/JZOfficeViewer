@@ -229,15 +229,17 @@ export class CanvasElementDrawer {
   private static applyFill(
     ctx: CanvasRenderingContext2D,
     element: model.Element,
-    w: number,
-    h: number
+    _w: number,
+    _h: number
   ): boolean {
-    if (element.fillGradient && element.fillGradient.stops && element.fillGradient.stops.length > 0) {
-      const pts = RenderUtils.gradientPoints(element.fillGradient, w, h);
+    if (element.fillGradient && element.fillGradient.colors && element.fillGradient.colors.length > 0) {
+      const gf = element.fillGradient;
+      const pts = gf.points;
       const grad = ctx.createLinearGradient(pts[0], pts[1], pts[2], pts[3]);
-      for (const stop of element.fillGradient.stops) {
-        const css = RenderUtils.argbToCss(stop.color) ?? '#ffffff';
-        grad.addColorStop(Math.min(1, Math.max(0, stop.position)), css);
+      const len = Math.min(gf.colors.length, gf.positions.length);
+      for (let i: number = 0; i < len; i++) {
+        const css = RenderUtils.argbToCss(gf.colors[i]) ?? '#ffffff';
+        grad.addColorStop(Math.min(1, Math.max(0, gf.positions[i])), css);
       }
       ctx.fillStyle = grad;
       return true;

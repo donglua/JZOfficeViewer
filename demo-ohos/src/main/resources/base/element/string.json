@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "JZOffice 鸿蒙文档预览演示模块"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "JZOffice 文档预览 Ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "JZOffice Demo"
+    }
+  ]
+}

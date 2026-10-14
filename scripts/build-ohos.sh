@@ -25,4 +25,12 @@ TYPES_DIR="${HAR_DIR}/src/main/cpp/types/libjz_office_ohos"
 mkdir -p "${TYPES_DIR}"
 cp -f "${NATIVE_DIR}/dist/index.d.ts" "${TYPES_DIR}/index.d.ts"
 
+HVIGORW="${DEVECO_HVIGOR:-/Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw}"
+if [[ -x "${HVIGORW}" ]]; then
+    echo "==> [4/4] Assembling viewer-ohos HAR package via hvigor..."
+    export NODE_HOME="${NODE_HOME:-/Applications/DevEco-Studio.app/Contents/tools/node}"
+    cd "${ROOT_DIR}"
+    "${HVIGORW}" --mode module -p module=viewer_ohos assembleHar
+fi
+
 echo "==> Done!"
