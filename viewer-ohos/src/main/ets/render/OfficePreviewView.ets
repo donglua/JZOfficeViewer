@@ -2,6 +2,7 @@ import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
 import { RenderUtils } from './RenderUtils';
 import { CanvasElementDrawer } from './CanvasElementDrawer';
+import { ImageStore } from './ImageStore';
 import { SpreadsheetView } from './SpreadsheetView';
 
 /**
@@ -76,7 +77,7 @@ export struct OfficePreviewView {
             .width('100%')
             .height('100%')
         } else if (this.document.kind === 'PPTX') {
-          PptxSlidesView({ document: this.document })
+          PptxSlidesView({ document: this.document, filePath: this.filePath })
             .width('100%')
             .height('100%')
         } else if (this.document.kind === 'XLSX') {
@@ -232,6 +233,16 @@ struct DocxTableView {
 @Component
 struct PptxSlidesView {
   document: model.OfficeDocument | null = null;
+  filePath: string = '';
+  private imageStore: ImageStore = new ImageStore('');
+
+  aboutToAppear(): void {
+    this.imageStore = new ImageStore(this.filePath);
+  }
+
+  aboutToDisappear(): void {
+    this.imageStore.release();
+  }
 
   build() {
     if (this.document) {
@@ -241,7 +252,7 @@ struct PptxSlidesView {
           (page: model.Page, index: number) => {
             ListItem() {
               Column({ space: 6 }) {
-                PptxSlideCanvas({ page: page })
+                PptxSlideCanvas({ page: page, imageStore: this.imageStore })
                 Text(`${index + 1} / ${this.document?.pages.length ?? 0}`)
                   .fontSize(12)
                   .fontColor('#80868b')
@@ -264,12 +275,31 @@ struct PptxSlidesView {
 @Component
 struct PptxSlideCanvas {
   page: model.Page | null = null;
+  imageStore: ImageStore = new ImageStore('');
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
   private isReady: boolean = false;
   private lastDrawnWidth: number = 0;
   private lastDrawnHeight: number = 0;
+
+  aboutToAppear(): void {
+    this.loadImages();
+  }
+
+  /** 收集本页引用的全部图片，异步加载完成后强制重绘 */
+  private async loadImages(): Promise<void> {
+    if (!this.page || !this.page.elements) return;
+    const parts: string[] = [];
+    for (const element of this.page.elements) {
+      if (element.type === 'IMAGE' && element.image && parts.indexOf(element.image) < 0) {
+        parts.push(element.image);
+      }
+    }
+    if (parts.length === 0) return;
+    await Promise.all(parts.map((part: string) => this.imageStore.load(part)));
+    this.drawSlide(true);
+  }
 
   private drawSlide(force: boolean = false): void {
     if (!this.isReady || !this.page) return;
@@ -305,7 +335,7 @@ struct PptxSlideCanvas {
 
     if (this.page.elements) {
       for (const element of this.page.elements) {
-        CanvasElementDrawer.drawElement(ctx, element);
+        CanvasElementDrawer.drawElement(ctx, element, this.imageStore.cache);
       }
     }
 

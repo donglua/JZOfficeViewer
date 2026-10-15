@@ -29,13 +29,27 @@ struct ShapeTree<'a> {
 }
 
 impl Render<'_> {
-    pub fn background(&mut self, page: &mut Page, sources: [&Node; 3]) -> Result<()> {
-        for root in sources {
-            let Some(bg) = root.child("cSld").and_then(|n| n.child("bg")) else {
+    pub fn background(&mut self, page: &mut Page, sources: [&Part; 3]) -> Result<()> {
+        for part in sources {
+            let Some(bg) = part.root.child("cSld").and_then(|n| n.child("bg")) else {
                 continue;
             };
             if let Some(properties) = bg.child("bgPr") {
-                if let Some(gradient) = self.theme.gradient(properties, self.doc) {
+                let picture = properties
+                    .child("blipFill")
+                    .and_then(|n| n.child("blip"))
+                    .and_then(|n| part.rels.get(relation_id(n, "embed")))
+                    .filter(|p| self.pkg.has(p));
+                if let Some(path) = picture {
+                    let background = Element {
+                        kind: ElementType::IMAGE,
+                        width: page.width,
+                        height: page.height,
+                        image: Some(path.clone()),
+                        ..Element::default()
+                    };
+                    self.emit(page, background, Transform::IDENTITY)?;
+                } else if let Some(gradient) = self.theme.gradient(properties, self.doc) {
                     self.background_gradient = Some(gradient.clone());
                     let background = Element {
                         kind: ElementType::RECT,

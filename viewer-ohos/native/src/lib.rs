@@ -13,10 +13,13 @@ use zip::ZipArchive;
 const MEDIA_PART_LIMIT: usize = 16 * 1024 * 1024; // 16 MiB
 
 fn parse_path_to_json(path: &str) -> Result<String> {
-    let result = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<String, String> {
-        let document = jz_office_core::parse_path(Path::new(path)).map_err(|e| e.to_string())?;
-        serde_json::to_string(&document).map_err(|e| e.to_string())
-    }));
+    let result = catch_unwind(AssertUnwindSafe(
+        || -> std::result::Result<String, String> {
+            let document =
+                jz_office_core::parse_path(Path::new(path)).map_err(|e| e.to_string())?;
+            serde_json::to_string(&document).map_err(|e| e.to_string())
+        },
+    ));
 
     match result {
         Ok(Ok(json)) => Ok(json),
@@ -26,32 +29,36 @@ fn parse_path_to_json(path: &str) -> Result<String> {
 }
 
 fn read_zip_part(path: &str, part: &str) -> Result<Buffer> {
-    let result = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<Vec<u8>, String> {
-        let file = File::open(path).map_err(|e| e.to_string())?;
-        let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
-        let entry = archive.by_name(part).map_err(|e| e.to_string())?;
+    let result = catch_unwind(AssertUnwindSafe(
+        || -> std::result::Result<Vec<u8>, String> {
+            let file = File::open(path).map_err(|e| e.to_string())?;
+            let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
+            let entry = archive.by_name(part).map_err(|e| e.to_string())?;
 
-        let size = entry.size();
-        if size > MEDIA_PART_LIMIT as u64 {
-            return Err("Document part exceeds 16 MiB limit".to_string());
-        }
+            let size = entry.size();
+            if size > MEDIA_PART_LIMIT as u64 {
+                return Err("Document part exceeds 16 MiB limit".to_string());
+            }
 
-        let cap = usize::try_from(size).unwrap_or(0);
-        let mut buf = Vec::with_capacity(cap);
-        entry
-            .take((MEDIA_PART_LIMIT as u64) + 1)
-            .read_to_end(&mut buf)
-            .map_err(|e| e.to_string())?;
-        if buf.len() > MEDIA_PART_LIMIT {
-            return Err("Document part exceeds 16 MiB limit".to_string());
-        }
-        Ok(buf)
-    }));
+            let cap = usize::try_from(size).unwrap_or(0);
+            let mut buf = Vec::with_capacity(cap);
+            entry
+                .take((MEDIA_PART_LIMIT as u64) + 1)
+                .read_to_end(&mut buf)
+                .map_err(|e| e.to_string())?;
+            if buf.len() > MEDIA_PART_LIMIT {
+                return Err("Document part exceeds 16 MiB limit".to_string());
+            }
+            Ok(buf)
+        },
+    ));
 
     match result {
         Ok(Ok(data)) => Ok(Buffer::from(data)),
         Ok(Err(error)) => Err(Error::from_reason(error)),
-        Err(_) => Err(Error::from_reason("Failed to read document part".to_owned())),
+        Err(_) => Err(Error::from_reason(
+            "Failed to read document part".to_owned(),
+        )),
     }
 }
 

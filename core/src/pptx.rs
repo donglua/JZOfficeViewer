@@ -124,9 +124,9 @@ pub(crate) fn parse(pkg: &mut Package, main_part: &str) -> Result<Document> {
         renderer.background(
             &mut page,
             [
-                &slide.root,
-                layout_root.unwrap_or(&slide.root),
-                master_root.unwrap_or(&slide.root),
+                &slide,
+                layout.as_deref().unwrap_or(&slide),
+                master.as_deref().unwrap_or(&slide),
             ],
         )?;
         if flag(slide.root.attr("showMasterSp"), true) {
