@@ -25,6 +25,14 @@ echo "==> [3/4] Syncing index.d.ts to viewer-ohos types..."
 TYPES_DIR="${HAR_DIR}/src/main/cpp/types/libjz_office_ohos"
 mkdir -p "${TYPES_DIR}"
 cp -f "${NATIVE_DIR}/dist/index.d.ts" "${TYPES_DIR}/index.d.ts"
+cp -f "${ROOT_DIR}/LICENSE" "${HAR_DIR}/LICENSE"
+if [[ ! -f "${HAR_DIR}/README.md" && -f "${ROOT_DIR}/README.md" ]]; then
+    cp -f "${ROOT_DIR}/README.md" "${HAR_DIR}/README.md"
+fi
+if [[ ! -f "${HAR_DIR}/CHANGELOG.md" && -f "${ROOT_DIR}/CHANGELOG.md" ]]; then
+    cp -f "${ROOT_DIR}/CHANGELOG.md" "${HAR_DIR}/CHANGELOG.md"
+    cp -f "${ROOT_DIR}/CHANGELOG.md" "${HAR_DIR}/changelog.md"
+fi
 
 echo "==> [4/4] Generating showcase fixtures to demo-ohos rawfile..."
 cd "${ROOT_DIR}"

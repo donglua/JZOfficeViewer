@@ -28,20 +28,31 @@ def main():
     )
     os.close(slave)
 
-    time.sleep(1)
-    os.write(master, (passphrase + "\r").encode())
+    sent = False
+    output = b""
 
     while proc.poll() is None:
-        r, _, _ = select.select([master], [], [], 1.0)
+        r, _, _ = select.select([master], [], [], 0.5)
         if r:
             try:
                 data = os.read(master, 1024)
                 if not data:
                     break
+                output += data
                 sys.stdout.buffer.write(data)
                 sys.stdout.flush()
-                if b"passphrase" in data.lower():
-                    os.write(master, (passphrase + "\r").encode())
+
+                # When ohpm prompts for passphrase, send characters one by one with a small delay.
+                # In raw mode, ohpm's readline unhooks the data listener on newline before reading
+                # if characters are sent in a single chunk.
+                if not sent and b"passphrase" in output.lower():
+                    time.sleep(0.3)
+                    for ch in passphrase:
+                        os.write(master, ch.encode())
+                        time.sleep(0.05)
+                    time.sleep(0.1)
+                    os.write(master, b"\r")
+                    sent = True
             except OSError:
                 break
 

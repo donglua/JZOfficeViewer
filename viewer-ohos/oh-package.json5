@@ -3,7 +3,8 @@
   "version": "0.3.0",
   "description": "Lightweight DOCX, PPTX and XLSX offline preview library for HarmonyOS NEXT",
   "main": "Index.ets",
-  "author": "donglua",
+  "author": "donglua <dongluh@gmail.com>",
+  "repository": "https://github.com/donglua/JZOfficeViewer",
   "license": "Apache-2.0",
   "dependencies": {
     "libjz_office_ohos.so": "file:./src/main/cpp/types/libjz_office_ohos"

@@ -306,7 +306,21 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 
 该模块仍在开发中，尚未发布到 ohpm，也没有自动化设备测试。当前实现包括 DOCX 段落、表格与内嵌图片的流式视图，PPTX 幻灯片 Canvas（含异步图片和线性渐变填充），以及支持合并单元格、多行文字、滚动、缩放和切表的 XLSX 视图。上文 Android 的生命周期、页码、缓存和资源预算约定不适用于鸿蒙端。
 
-在同一 DevEco Studio 工程中，以本地依赖引用 HAR：
+### 安装依赖
+
+```shell
+ohpm install @jzdy/office
+```
+
+或直接在模块的 `oh-package.json5` 中配置依赖：
+
+```json5
+"dependencies": {
+  "@jzdy/office": "^0.3.0"
+}
+```
+
+在同一 DevEco Studio 工程中，也可通过本地路径引用：
 
 ```json5
 // oh-package.json5
