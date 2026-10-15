@@ -15,3 +15,5 @@ viewer-ohos/libs/
 /VERIFICATION.md
 .openbitfun/
 build-profile.json5.local
+__pycache__/
+*.pyc
