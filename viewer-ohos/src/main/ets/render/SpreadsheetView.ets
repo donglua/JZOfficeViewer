@@ -30,6 +30,33 @@ export struct SpreadsheetView {
   private panStartX: number = 0;
   private panStartY: number = 0;
   private pinchStartScale: number = 1.0;
+  private pinchStartOffsetX: number = 0;
+  private pinchStartOffsetY: number = 0;
+
+  // 缓存当前 Sheet 的合并单元格与锚点，避免每次手势重绘全量分配
+  private cachedSheet: model.Sheet | null = null;
+  private cachedMergedSkip: Set<string> = new Set();
+  private cachedAnchorMap: Map<string, model.Cell> = new Map();
+
+  private ensureSheetCache(sheet: model.Sheet): void {
+    if (this.cachedSheet === sheet) return;
+    this.cachedSheet = sheet;
+    this.cachedMergedSkip.clear();
+    this.cachedAnchorMap.clear();
+
+    for (const cell of sheet.cells) {
+      this.cachedAnchorMap.set(`${cell.row}:${cell.column}`, cell);
+    }
+    if (sheet.merges) {
+      for (const m of sheet.merges) {
+        for (let r = m.startRow; r <= m.endRow; r++) {
+          for (let c = m.startColumn; c <= m.endColumn; c++) {
+            this.cachedMergedSkip.add(`${r}:${c}`);
+          }
+        }
+      }
+    }
+  }
 
   aboutToAppear(): void {
     this.currentSheetIndex = 0;
@@ -117,21 +144,10 @@ export struct SpreadsheetView {
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(HEADER_WIDTH, HEADER_HEIGHT, bodyRight - HEADER_WIDTH, bodyBottom - HEADER_HEIGHT);
 
-      // 1.2 建立合并单元格锚点映射，避免合并区域内子单元格重复绘制
-      const mergedSkip = new Set<string>();
-      const anchorCellMap = new Map<string, model.Cell>();
-      for (const cell of sheet.cells) {
-        anchorCellMap.set(`${cell.row}:${cell.column}`, cell);
-      }
-      if (sheet.merges) {
-        for (const m of sheet.merges) {
-          for (let r = m.startRow; r <= m.endRow; r++) {
-            for (let c = m.startColumn; c <= m.endColumn; c++) {
-              mergedSkip.add(`${r}:${c}`);
-            }
-          }
-        }
-      }
+      // 1.2 使用已缓存的合并单元格与锚点映射，避免每帧重绘高频分配
+      this.ensureSheetCache(sheet);
+      const mergedSkip = this.cachedMergedSkip;
+      const anchorCellMap = this.cachedAnchorMap;
 
       // 1.3 绘制普通非合并单元格填充与文本
       for (const cell of sheet.cells) {
@@ -443,14 +459,49 @@ export struct SpreadsheetView {
         .gesture(
           GestureGroup(
             GestureMode.Parallel,
-            PinchGesture({ fingers: 2 })
-              .onActionStart(() => {
-                this.pinchStartScale = this.scaleVal;
-              })
-              .onActionUpdate((event: GestureEvent) => {
-                this.scaleVal = Math.min(3.0, Math.max(0.5, this.pinchStartScale * event.scale));
+            // 双击快速缩放：已放大则恢复 1.0x，否则放大为 2.0x（完全对齐安卓端）
+            TapGesture({ count: 2 })
+              .onAction((event: GestureEvent) => {
+                if (this.scaleVal > 1.2) {
+                  this.scaleVal = 1.0;
+                  this.offsetX = 0;
+                  this.offsetY = 0;
+                } else {
+                  const focusX = event.fingerList && event.fingerList.length > 0
+                    ? event.fingerList[0].localX
+                    : (this.canvasWidth / 2);
+                  const focusY = event.fingerList && event.fingerList.length > 0
+                    ? event.fingerList[0].localY
+                    : (this.canvasHeight / 2);
+                  const oldS = this.scaleVal;
+                  const newS = 2.0;
+                  const worldX = (focusX - HEADER_WIDTH - this.offsetX) / oldS;
+                  const worldY = (focusY - HEADER_HEIGHT - this.offsetY) / oldS;
+                  this.offsetX = focusX - HEADER_WIDTH - worldX * newS;
+                  this.offsetY = focusY - HEADER_HEIGHT - worldY * newS;
+                  this.scaleVal = newS;
+                }
                 this.redraw();
               }),
+            // 双指缩放：以双指中心点为锚点动态补偿对齐，平滑不漂移
+            PinchGesture({ fingers: 2 })
+              .onActionStart((event: GestureEvent) => {
+                this.pinchStartScale = this.scaleVal;
+                this.pinchStartOffsetX = this.offsetX;
+                this.pinchStartOffsetY = this.offsetY;
+              })
+              .onActionUpdate((event: GestureEvent) => {
+                const newScale = Math.min(3.5, Math.max(0.5, this.pinchStartScale * event.scale));
+                const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.canvasWidth / 2);
+                const focusY = event.pinchCenterY > 0 ? event.pinchCenterY : (this.canvasHeight / 2);
+                const worldX = (focusX - HEADER_WIDTH - this.pinchStartOffsetX) / this.pinchStartScale;
+                const worldY = (focusY - HEADER_HEIGHT - this.pinchStartOffsetY) / this.pinchStartScale;
+                this.offsetX = focusX - HEADER_WIDTH - worldX * newScale;
+                this.offsetY = focusY - HEADER_HEIGHT - worldY * newScale;
+                this.scaleVal = newScale;
+                this.redraw();
+              }),
+            // 单指拖拽平移表格
             PanGesture()
               .onActionStart(() => {
                 this.panStartX = this.offsetX;

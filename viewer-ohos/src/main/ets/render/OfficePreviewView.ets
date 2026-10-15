@@ -91,6 +91,7 @@ export struct OfficePreviewView {
     .width('100%')
     .height('100%')
     .backgroundColor('#f8f9fa')
+    .clip(true)
   }
 }
 
@@ -99,45 +100,153 @@ struct DocxFlowView {
   // 使用普通属性替代 @Prop，避免对整棵文档 AST 进行深拷贝
   document: model.OfficeDocument | null = null;
 
+  @State zoom: number = 1.0;
+  @State offsetX: number = 0;
+  @State offsetY: number = 0;
+
+  private pinchStartZoom: number = 1.0;
+  private panStartX: number = 0;
+  private panStartY: number = 0;
+  private viewportWidth: number = 0;
+  private viewportHeight: number = 0;
+
+  private clampOffsets(): void {
+    if (this.zoom <= 1.05) {
+      this.offsetX = 0;
+      this.offsetY = 0;
+      return;
+    }
+    const maxOx = Math.max(0, (this.viewportWidth * (this.zoom - 1)) / 2);
+    const maxOy = Math.max(0, (this.viewportHeight * (this.zoom - 1)) / 2);
+    this.offsetX = Math.min(maxOx, Math.max(-maxOx, this.offsetX));
+    this.offsetY = Math.min(maxOy, Math.max(-maxOy, this.offsetY));
+  }
+
+  private setZoom(value: number, focusX: number, focusY: number): void {
+    if (isNaN(value) || !isFinite(value)) return;
+    const oldZoom = this.zoom;
+    const newZoom = Math.max(1.0, Math.min(3.0, value));
+
+    const cX = this.viewportWidth / 2;
+    const cY = this.viewportHeight / 2;
+    const dx = focusX - cX;
+    const dy = focusY - cY;
+
+    if (newZoom <= 1.05) {
+      this.zoom = 1.0;
+      this.offsetX = 0;
+      this.offsetY = 0;
+    } else {
+      const worldX = (dx - this.offsetX) / oldZoom;
+      const worldY = (dy - this.offsetY) / oldZoom;
+      this.offsetX = dx - worldX * newZoom;
+      this.offsetY = dy - worldY * newZoom;
+      this.zoom = newZoom;
+      this.clampOffsets();
+    }
+  }
+
   build() {
     if (this.document) {
-      List({ space: 8 }) {
-        ForEach(
-          this.document.blocks,
-          (element: model.Element) => {
-            ListItem() {
-              if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
-                DocxTableView({ element: element })
-              } else if (element.paragraphs && element.paragraphs.length > 0) {
-                Column({ space: 4 }) {
-                  ForEach(
-                    element.paragraphs,
-                    (para: model.Paragraph) => {
-                      DocxParagraphView({ para: para })
-                    },
-                    (_para: model.Paragraph, pIdx: number) => `p-${pIdx}`
-                  )
+      Stack() {
+        Stack() {
+          List({ space: 8 }) {
+            ForEach(
+              this.document.blocks,
+              (element: model.Element) => {
+                ListItem() {
+                  if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
+                    DocxTableView({ element: element })
+                  } else if (element.paragraphs && element.paragraphs.length > 0) {
+                    Column({ space: 4 }) {
+                      ForEach(
+                        element.paragraphs,
+                        (para: model.Paragraph) => {
+                          DocxParagraphView({ para: para })
+                        },
+                        (_para: model.Paragraph, pIdx: number) => `p-${pIdx}`
+                      )
+                    }
+                    .width('100%')
+                    .alignItems(HorizontalAlign.Start)
+                  } else if (element.type === 'IMAGE') {
+                    Row() {
+                      Text('[图片]').fontSize(12).fontColor('#80868b')
+                    }
+                    .width('100%')
+                    .height(Math.min(240, element.height || 120))
+                    .backgroundColor('#e8eaed')
+                    .justifyContent(FlexAlign.Center)
+                  }
                 }
-                .width('100%')
-                .alignItems(HorizontalAlign.Start)
-              } else if (element.type === 'IMAGE') {
-                Row() {
-                  Text('[图片]').fontSize(12).fontColor('#80868b')
-                }
-                .width('100%')
-                .height(Math.min(240, element.height || 120))
-                .backgroundColor('#e8eaed')
-                .justifyContent(FlexAlign.Center)
-              }
-            }
-          },
-          (_element: model.Element, index: number) => `block-${index}`
-        )
+              },
+              (_element: model.Element, index: number) => `block-${index}`
+            )
+          }
+          .width('100%')
+          .height('100%')
+          .padding({ left: 16, right: 16, top: 16, bottom: 24 })
+          .backgroundColor('#ffffff')
+          .enabled(this.zoom <= 1.05)
+        }
+        .width('100%')
+        .height('100%')
+        .scale({ x: this.zoom, y: this.zoom })
+        .translate({ x: this.offsetX, y: this.offsetY })
+        .animation({ duration: 150, curve: Curve.EaseOut })
       }
       .width('100%')
       .height('100%')
-      .padding({ left: 16, right: 16, top: 16, bottom: 24 })
-      .backgroundColor('#ffffff')
+      .clip(true)
+      .onAreaChange((_oldArea: Area, newArea: Area) => {
+        const w = Number(newArea.width);
+        const h = Number(newArea.height);
+        if (w > 0) this.viewportWidth = w;
+        if (h > 0) this.viewportHeight = h;
+      })
+      .gesture(
+        GestureGroup(
+          GestureMode.Parallel,
+          TapGesture({ count: 2 })
+            .onAction((event: GestureEvent) => {
+              const focusX = event.fingerList && event.fingerList.length > 0
+                ? event.fingerList[0].localX
+                : (this.viewportWidth / 2);
+              const focusY = event.fingerList && event.fingerList.length > 0
+                ? event.fingerList[0].localY
+                : (this.viewportHeight / 2);
+              this.setZoom(this.zoom > 1.1 ? 1.0 : 1.8, focusX, focusY);
+            }),
+          PinchGesture({ fingers: 2 })
+            .onActionStart((event: GestureEvent) => {
+              this.pinchStartZoom = this.zoom;
+            })
+            .onActionUpdate((event: GestureEvent) => {
+              const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
+              const focusY = event.pinchCenterY > 0 ? event.pinchCenterY : (this.viewportHeight / 2);
+              this.setZoom(this.pinchStartZoom * event.scale, focusX, focusY);
+            })
+            .onActionEnd(() => {
+              if (this.zoom <= 1.05) {
+                this.zoom = 1.0;
+                this.offsetX = 0;
+                this.offsetY = 0;
+              }
+            }),
+          PanGesture()
+            .onActionStart(() => {
+              this.panStartX = this.offsetX;
+              this.panStartY = this.offsetY;
+            })
+            .onActionUpdate((event: GestureEvent) => {
+              if (this.zoom > 1.05) {
+                this.offsetX = this.panStartX + event.offsetX;
+                this.offsetY = this.panStartY + event.offsetY;
+                this.clampOffsets();
+              }
+            })
+        )
+      )
     }
   }
 }
@@ -236,6 +345,16 @@ struct PptxSlidesView {
   filePath: string = '';
   private imageStore: ImageStore = new ImageStore('');
 
+  @State zoom: number = 1.0;
+  @State offsetX: number = 0;
+  @State offsetY: number = 0;
+
+  private pinchStartZoom: number = 1.0;
+  private panStartX: number = 0;
+  private panStartY: number = 0;
+  private viewportWidth: number = 0;
+  private viewportHeight: number = 0;
+
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
   }
@@ -244,30 +363,128 @@ struct PptxSlidesView {
     this.imageStore.release();
   }
 
+  private clampOffsets(): void {
+    if (this.zoom <= 1.05) {
+      this.offsetX = 0;
+      this.offsetY = 0;
+      return;
+    }
+    const maxOx = Math.max(0, (this.viewportWidth * (this.zoom - 1)) / 2);
+    const maxOy = Math.max(0, (this.viewportHeight * (this.zoom - 1)) / 2);
+    this.offsetX = Math.min(maxOx, Math.max(-maxOx, this.offsetX));
+    this.offsetY = Math.min(maxOy, Math.max(-maxOy, this.offsetY));
+  }
+
+  private setZoom(value: number, focusX: number, focusY: number): void {
+    if (isNaN(value) || !isFinite(value)) return;
+    const oldZoom = this.zoom;
+    const newZoom = Math.max(1.0, Math.min(4.0, value));
+
+    const cX = this.viewportWidth / 2;
+    const cY = this.viewportHeight / 2;
+    const dx = focusX - cX;
+    const dy = focusY - cY;
+
+    if (newZoom <= 1.05) {
+      this.zoom = 1.0;
+      this.offsetX = 0;
+      this.offsetY = 0;
+    } else {
+      const worldX = (dx - this.offsetX) / oldZoom;
+      const worldY = (dy - this.offsetY) / oldZoom;
+      this.offsetX = dx - worldX * newZoom;
+      this.offsetY = dy - worldY * newZoom;
+      this.zoom = newZoom;
+      this.clampOffsets();
+    }
+  }
+
   build() {
     if (this.document) {
-      List({ space: 16 }) {
-        ForEach(
-          this.document.pages,
-          (page: model.Page, index: number) => {
-            ListItem() {
-              Column({ space: 6 }) {
-                PptxSlideCanvas({ page: page, imageStore: this.imageStore })
-                Text(`${index + 1} / ${this.document?.pages.length ?? 0}`)
-                  .fontSize(12)
-                  .fontColor('#80868b')
-              }
-              .width('100%')
-              .alignItems(HorizontalAlign.Center)
-            }
-          },
-          (_page: model.Page, index: number) => `slide-${index}`
-        )
+      Stack() {
+        Stack() {
+          List({ space: 16 }) {
+            ForEach(
+              this.document.pages,
+              (page: model.Page, index: number) => {
+                ListItem() {
+                  Column({ space: 6 }) {
+                    PptxSlideCanvas({ page: page, imageStore: this.imageStore })
+                    Text(`${index + 1} / ${this.document?.pages.length ?? 0}`)
+                      .fontSize(12)
+                      .fontColor('#80868b')
+                  }
+                  .width('100%')
+                  .alignItems(HorizontalAlign.Center)
+                }
+              },
+              (_page: model.Page, index: number) => `slide-${index}`
+            )
+          }
+          .cachedCount(2)
+          .width('100%')
+          .height('100%')
+          .padding({ left: 16, right: 16, top: 16, bottom: 24 })
+          .enabled(this.zoom <= 1.05)
+        }
+        .width('100%')
+        .height('100%')
+        .scale({ x: this.zoom, y: this.zoom })
+        .translate({ x: this.offsetX, y: this.offsetY })
+        .animation({ duration: 150, curve: Curve.EaseOut })
       }
-      .cachedCount(2)
       .width('100%')
       .height('100%')
-      .padding({ left: 16, right: 16, top: 16, bottom: 24 })
+      .clip(true)
+      .onAreaChange((_oldArea: Area, newArea: Area) => {
+        const w = Number(newArea.width);
+        const h = Number(newArea.height);
+        if (w > 0) this.viewportWidth = w;
+        if (h > 0) this.viewportHeight = h;
+      })
+      .gesture(
+        GestureGroup(
+          GestureMode.Parallel,
+          TapGesture({ count: 2 })
+            .onAction((event: GestureEvent) => {
+              const focusX = event.fingerList && event.fingerList.length > 0
+                ? event.fingerList[0].localX
+                : (this.viewportWidth / 2);
+              const focusY = event.fingerList && event.fingerList.length > 0
+                ? event.fingerList[0].localY
+                : (this.viewportHeight / 2);
+              this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
+            }),
+          PinchGesture({ fingers: 2 })
+            .onActionStart((event: GestureEvent) => {
+              this.pinchStartZoom = this.zoom;
+            })
+            .onActionUpdate((event: GestureEvent) => {
+              const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
+              const focusY = event.pinchCenterY > 0 ? event.pinchCenterY : (this.viewportHeight / 2);
+              this.setZoom(this.pinchStartZoom * event.scale, focusX, focusY);
+            })
+            .onActionEnd(() => {
+              if (this.zoom <= 1.05) {
+                this.zoom = 1.0;
+                this.offsetX = 0;
+                this.offsetY = 0;
+              }
+            }),
+          PanGesture()
+            .onActionStart(() => {
+              this.panStartX = this.offsetX;
+              this.panStartY = this.offsetY;
+            })
+            .onActionUpdate((event: GestureEvent) => {
+              if (this.zoom > 1.05) {
+                this.offsetX = this.panStartX + event.offsetX;
+                this.offsetY = this.panStartY + event.offsetY;
+                this.clampOffsets();
+              }
+            })
+        )
+      )
     }
   }
 }
