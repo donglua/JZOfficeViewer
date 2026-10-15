@@ -1,3 +1,4 @@
+import { image } from '@kit.ImageKit';
 import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
 import { RenderUtils } from './RenderUtils';
@@ -73,7 +74,7 @@ export struct OfficePreviewView {
         .justifyContent(FlexAlign.Center)
       } else if (this.document) {
         if (this.document.kind === 'DOCX') {
-          DocxFlowView({ document: this.document })
+          DocxFlowView({ document: this.document, filePath: this.filePath })
             .width('100%')
             .height('100%')
         } else if (this.document.kind === 'PPTX') {
@@ -99,10 +100,20 @@ export struct OfficePreviewView {
 struct DocxFlowView {
   // 使用普通属性替代 @Prop，避免对整棵文档 AST 进行深拷贝
   document: model.OfficeDocument | null = null;
+  filePath: string = '';
+  private imageStore: ImageStore = new ImageStore('');
 
   @State zoom: number = 1.0;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
+
+  aboutToAppear(): void {
+    this.imageStore = new ImageStore(this.filePath);
+  }
+
+  aboutToDisappear(): void {
+    this.imageStore.release();
+  }
 
   private pinchStartZoom: number = 1.0;
   private panStartX: number = 0;
@@ -157,6 +168,8 @@ struct DocxFlowView {
                 ListItem() {
                   if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
                     DocxTableView({ element: element })
+                  } else if (element.type === 'IMAGE') {
+                    DocxImageView({ element: element, imageStore: this.imageStore })
                   } else if (element.paragraphs && element.paragraphs.length > 0) {
                     Column({ space: 4 }) {
                       ForEach(
@@ -169,14 +182,6 @@ struct DocxFlowView {
                     }
                     .width('100%')
                     .alignItems(HorizontalAlign.Start)
-                  } else if (element.type === 'IMAGE') {
-                    Row() {
-                      Text('[图片]').fontSize(12).fontColor('#80868b')
-                    }
-                    .width('100%')
-                    .height(Math.min(240, element.height || 120))
-                    .backgroundColor('#e8eaed')
-                    .justifyContent(FlexAlign.Center)
                   }
                 }
               },
@@ -248,6 +253,97 @@ struct DocxFlowView {
         )
       )
     }
+  }
+}
+
+/**
+ * DOCX 内嵌图片异步解码与展示组件
+ */
+@Component
+struct DocxImageView {
+  element: model.Element | null = null;
+  imageStore: ImageStore = new ImageStore('');
+
+  @State pixelMap: image.PixelMap | null = null;
+  @State isLoading: boolean = true;
+  @State loadFailed: boolean = false;
+
+  aboutToAppear(): void {
+    this.loadImage();
+  }
+
+  private async loadImage(): Promise<void> {
+    const part = this.element?.image;
+    if (!part) {
+      this.isLoading = false;
+      this.loadFailed = true;
+      return;
+    }
+    const cached = this.imageStore.cache.get(part);
+    if (cached) {
+      this.pixelMap = cached;
+      this.isLoading = false;
+      return;
+    }
+    this.isLoading = true;
+    this.loadFailed = false;
+    try {
+      await this.imageStore.load(part);
+      const loaded = this.imageStore.cache.get(part);
+      if (loaded) {
+        this.pixelMap = loaded;
+      } else {
+        this.loadFailed = true;
+      }
+    } catch (_e) {
+      this.loadFailed = true;
+    } finally {
+      this.isLoading = false;
+    }
+  }
+
+  build() {
+    Row() {
+      if (this.pixelMap) {
+        if (this.element?.width && this.element?.height && this.element.width > 0 && this.element.height > 0) {
+          Image(this.pixelMap)
+            .objectFit(ImageFit.Fill)
+            .width(this.element.width)
+            .height(this.element.height)
+            .aspectRatio(this.element.width / this.element.height)
+            .constraintSize({ maxWidth: '100%' })
+        } else if (this.element?.width && this.element.width > 0) {
+          Image(this.pixelMap)
+            .objectFit(ImageFit.Fill)
+            .width(this.element.width)
+            .constraintSize({ maxWidth: '100%' })
+        } else {
+          Image(this.pixelMap)
+            .objectFit(ImageFit.Fill)
+            .width('100%')
+            .height(this.element?.height && this.element.height > 0 ? this.element.height : 180)
+        }
+      } else if (this.isLoading) {
+        Row() {
+          LoadingProgress().width(24).height(24).color('#0a59f7')
+        }
+        .width(Math.min(240, this.element?.width || 120))
+        .height(Math.min(120, this.element?.height || 60))
+        .backgroundColor('#f8f9fa')
+        .justifyContent(FlexAlign.Center)
+      } else {
+        Row() {
+          Text('[图片]').fontSize(12).fontColor('#80868b')
+        }
+        .width(Math.min(240, this.element?.width || 120))
+        .height(Math.min(120, this.element?.height || 60))
+        .backgroundColor('#e8eaed')
+        .justifyContent(FlexAlign.Center)
+      }
+    }
+    .width('100%')
+    .justifyContent(FlexAlign.Center)
+    .margin({ top: 4, bottom: 6 })
   }
 }
 
