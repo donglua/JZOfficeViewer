@@ -103,17 +103,37 @@ jobs:
           fi
           echo "Publishing $HAR_PATH to OHPM..."
           if [[ -n "$OHPM_KEY_PASSPHRASE" ]]; then
-            expect -c "
-              set timeout 120
-              spawn ohpm publish $HAR_PATH
-              expect {
-                -nocase \"passphrase\" { send \"$env(OHPM_KEY_PASSPHRASE)\r\"; exp_continue }
-                eof
-              }
-              catch wait result
-              set exit_status [lindex \$result 3]
-              exit \$exit_status
-            "
+            python3 -c "
+import pty, os, sys, subprocess, select, time
+
+har_path = '$HAR_PATH'
+passphrase = os.environ.get('OHPM_KEY_PASSPHRASE', '')
+
+master, slave = pty.openpty()
+proc = subprocess.Popen(['ohpm', 'publish', har_path], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+os.close(slave)
+
+time.sleep(1)
+os.write(master, (passphrase + '\r').encode())
+
+while proc.poll() is None:
+    r, _, _ = select.select([master], [], [], 1.0)
+    if r:
+        try:
+            data = os.read(master, 1024)
+            if not data: break
+            sys.stdout.buffer.write(data)
+            sys.stdout.flush()
+            if b'passphrase' in data.lower():
+                os.write(master, (passphrase + '\r').encode())
+        except OSError:
+            break
+
+os.close(master)
+proc.wait()
+if proc.returncode != 0:
+    sys.exit(proc.returncode)
+"
           else
             ohpm publish "$HAR_PATH"
           fi
