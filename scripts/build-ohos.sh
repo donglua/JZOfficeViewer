@@ -31,9 +31,16 @@ cd "${ROOT_DIR}"
 mkdir -p "${DEMO_RAWFILE_DIR}"
 cargo run -p jz-office-core --example fixtures -- "${DEMO_RAWFILE_DIR}"
 
-HVIGORW="${DEVECO_HVIGOR:-/Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw}"
-if [[ -x "${HVIGORW}" ]]; then
-    export NODE_HOME="${NODE_HOME:-/Applications/DevEco-Studio.app/Contents/tools/node}"
+if command -v hvigorw >/dev/null 2>&1; then
+    HVIGORW="hvigorw"
+else
+    HVIGORW="${DEVECO_HVIGOR:-/Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw}"
+fi
+
+if command -v "${HVIGORW}" >/dev/null 2>&1 || [[ -x "${HVIGORW}" ]]; then
+    if ! command -v node >/dev/null 2>&1; then
+        export NODE_HOME="${NODE_HOME:-/Applications/DevEco-Studio.app/Contents/tools/node}"
+    fi
     "${HVIGORW}" --mode module -p module=viewer_ohos assembleHar
 fi
 

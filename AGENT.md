@@ -76,5 +76,5 @@ adb shell am instrument -w [-e suite <name>] cn.jingzhuan.lib.office.test/cn.jin
 - 根 `build-profile.json5` 默认保持 `"signingConfigs": []`，在 DevEco 中调试时自动生成的个人签名配置勿提交；发布凭据只放在用户级 Gradle 属性、环境变量或 GitHub Secrets。
 - 版本号需同时修改：根 `build.gradle` 的默认 `publishedVersion`（Demo `versionName` 由它派生）、`Cargo.toml` workspace 版本，以及鸿蒙的 `oh-package.json5`（根目录、`viewer-ohos`、`demo-ohos`）和 `AppScope/app.json5`。
 - `Cargo.toml` 声明 `rust-version = "1.88"`，修改 Rust 工具链要求时同步 README 与 CI 工作流。
-- 发布由 GitHub 正式 Release 触发（`publish-sonatype.yml`），Maven Central 版本不可覆盖，不要重用已发布版本号。
+- 发布流程：Android 端通过 GitHub 正式 Release 触发 Sonatype Central 发布（`publish-sonatype.yml`）；鸿蒙 HAR 包通过 `publish-ohpm.yml` 自动交叉编译并发布至 OHPM（依赖 Secrets `OHPM_PUBLISH_ID` 与 `OHPM_KEY`）。已发布版本号不可覆盖重用。
 - 功能或限制变化时同步更新 README（中文）和 CHANGELOG；未发布的新能力需注明“尚未包含在当前发布包中”。

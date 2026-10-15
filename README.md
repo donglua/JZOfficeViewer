@@ -341,6 +341,12 @@ rustup target add aarch64-unknown-linux-ohos armv7-unknown-linux-ohos x86_64-unk
 
 根目录 `build-profile.json5` 默认保持 `"signingConfigs": []`（未配置签名）。在 DevEco Studio 中真机运行演示模块时，可在 Project Structure 的 Signing Configs 中勾选自动生成调试证书；请勿将包含个人证书路径和密码的签名配置提交到仓库。
 
+### 发布到 OHPM
+
+仓库配置了自动化发布工作流 [Publish HAR to OHPM](.github/workflows/publish-ohpm.yml)。在 GitHub 发布正式 Release 时自动触发，也可在 Actions 中手动运行并指定版本号。
+
+工作流使用 Ubuntu 运行器交叉编译 OpenHarmony Rust 原生动态库（`arm64-v8a`、`x86_64`、`armeabi-v7a`），由 hvigor 打包 HAR 并执行 `ohpm publish` 发布到 [OpenHarmony 三方库中心仓](https://ohpm.openharmony.cn/)，同时将 `jzdy-office-<version>.har` 上传至对应 GitHub Release Assets。需在 GitHub Secrets 中配置 `OHPM_PUBLISH_ID` 与 `OHPM_KEY`。
+
 ## 构建
 
 源码构建需要 JDK 21、Android SDK 35、NDK `28.2.13676358`、通过 rustup 安装的 Rust 1.88 或更新版本。`gradle/gradle-daemon-jvm.properties` 已为 Gradle daemon 固定 JDK 21，本地与 CI 的构建和 Javadoc 生成使用同一版本，无需临时改写该文件。`rustup` 和 `cargo` 需要在构建进程的 `PATH` 中可用；Android Studio 也需要能找到这两个命令。使用 `ANDROID_HOME`、`ANDROID_SDK_ROOT` 或 `local.properties` 配置 SDK。鸿蒙模块的构建见「构建鸿蒙模块」。
