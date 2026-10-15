@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.3.1
+
+发布页面：[v0.3.1 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.3.1)。
+
+### 修复与显示
+
+- **PPTX 背景图支持**：解析幻灯片、版式和母版中的 `blipFill` 图片背景，输出全幅 IMAGE 元素供平台层绘制。
+- **鸿蒙端图片渲染**：`viewer-ohos` 新增 `ImageStore` 异步图片缓存与解码机制，修复 PPTX 内嵌图片与背景图缺失问题。
+
 ## 0.3.0
 
 发布页面：[v0.3.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.3.0)。

@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "jz-office-android"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "jni",
  "jz-office-core",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "jz-office-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "roxmltree",
  "serde",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "jz-office-ohos"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "jz-office-core",
  "napi-build-ohos",

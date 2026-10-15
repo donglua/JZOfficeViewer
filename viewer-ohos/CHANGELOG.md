@@ -2,6 +2,12 @@
 
 All notable changes to `@jzdy/office` will be documented in this file.
 
+## [0.3.1] - 2026-10-15
+
+### Fixed
+- Fixed PPTX picture background parsing (`blipFill`) in slide, layout, and master parts.
+- Fixed PPTX inline and background image loading and rendering via `ImageStore`.
+
 ## [0.3.0] - 2026-10-15
 
 ### Added
