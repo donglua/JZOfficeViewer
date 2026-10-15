@@ -25,8 +25,6 @@ export struct SpreadsheetView {
   @State canvasHeight: number = 0;
   private isReady: boolean = false;
   private retryCount: number = 0;
-  @State drawError: string = '';
-  @State diagLine: string = 'init';
   private lastDocument: model.OfficeDocument | null = null;
 
   private panStartX: number = 0;
@@ -64,22 +62,15 @@ export struct SpreadsheetView {
     if (!sheet || w <= 0 || h <= 0) {
       if (this.isReady && (this.canvasWidth <= 0 || this.canvasHeight <= 0) && this.retryCount < 20) {
         this.retryCount++;
-        this.diagLine = `retry#${this.retryCount} size=${Math.round(this.canvasWidth)}x${Math.round(this.canvasHeight)} sheet=${sheet ? 'yes' : 'no'}`;
         setTimeout(() => {
           if (this.isReady) this.redraw();
         }, 50);
-      } else if (!sheet) {
-        this.diagLine = 'no-sheet';
-      } else {
-        this.diagLine = `size-invalid ${Math.round(this.canvasWidth)}x${Math.round(this.canvasHeight)}`;
       }
       return;
     }
     this.retryCount = 0;
-    this.diagLine = `draw ${Math.round(w)}x${Math.round(h)}`;
 
     try {
-    this.drawError = '';
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = '#e9ecef';
     ctx.fillRect(0, 0, w, h);
@@ -304,7 +295,7 @@ export struct SpreadsheetView {
     ctx.lineTo(canvasW, HEADER_HEIGHT);
     ctx.stroke();
     } catch (err) {
-    this.drawError = String(err);
+    console.error(`SpreadsheetView draw failed: ${err}`);
     }
   }
 
@@ -435,7 +426,6 @@ export struct SpreadsheetView {
             .backgroundColor('#ffffff')
             .onReady(() => {
               this.isReady = true;
-              this.diagLine = 'onReady';
               this.redraw();
             })
         }
@@ -444,7 +434,6 @@ export struct SpreadsheetView {
         .onAreaChange((_oldArea: Area, newArea: Area) => {
           const areaW = Number(newArea.width);
           const areaH = Number(newArea.height);
-          this.diagLine = `area ${Math.round(areaW)}x${Math.round(areaH)}`;
           if (areaW > 0) this.canvasWidth = areaW;
           if (areaH > 0) this.canvasHeight = areaH;
           if (this.isReady) {
@@ -502,21 +491,6 @@ export struct SpreadsheetView {
           .height(44)
           .backgroundColor('#ffffff')
           .border({ width: { top: 0.5 }, color: '#e0e0e0' })
-        }
-        if (this.diagLine) {
-          Text(`diag: ${this.diagLine} | ready=${this.isReady} | cells=${this.getCurrentSheet()?.cells?.length ?? -1} | sheets=${this.document?.sheets?.length ?? -1} idx=${this.currentSheetIndex}`)
-            .fontSize(10)
-            .fontColor('#5f6368')
-            .maxLines(1)
-            .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-            .backgroundColor('#eef1f4')
-        }
-        if (this.drawError) {
-          Text(this.drawError)
-            .fontSize(10)
-            .fontColor('#d93025')
-            .maxLines(2)
-            .padding(8)
         }
       }
       .width('100%')
