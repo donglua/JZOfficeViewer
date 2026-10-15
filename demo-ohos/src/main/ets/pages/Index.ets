@@ -1,5 +1,5 @@
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { OfficePreviewView } from '@donglua/jzoffice';
+import { OfficePreviewView } from '@jzdy/office';
 
 interface SampleItem {
   title: string;

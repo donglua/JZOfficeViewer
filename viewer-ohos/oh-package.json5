@@ -1,5 +1,5 @@
 {
-  "name": "@donglua/jzoffice",
+  "name": "@jzdy/office",
   "version": "0.3.0",
   "description": "Lightweight DOCX, PPTX and XLSX offline preview library for HarmonyOS NEXT",
   "main": "Index.ets",

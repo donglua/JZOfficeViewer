@@ -13,7 +13,7 @@ JZOfficeViewer：轻量、离线、只读的 DOCX / PPTX / XLSX 预览库。Rust
 | `viewer/native/` | Rust | `jz-office-android`：JNI 桥接，生成 `libjz_office.so` |
 | `viewer-online/` | Java | 可选 AAR：HTTP 下载、取消、缓存清理 |
 | `demo/` | Java | Android 演示应用，样例在 `demo/src/main/assets/samples/` |
-| `viewer-ohos/` | ArkTS | 实验性 HarmonyOS NEXT HAR（`@donglua/jzoffice`） |
+| `viewer-ohos/` | ArkTS | 实验性 HarmonyOS NEXT HAR（`@jzdy/office`） |
 | `viewer-ohos/native/` | Rust | `jz-office-ohos`：`napi-ohos` 桥接，生成 `libjz_office_ohos.so` |
 | `demo-ohos/` | ArkTS | 鸿蒙演示应用，样例在 `resources/rawfile/` |
 | `scripts/` | Shell/Java | `build-native.sh`、`build-ohos.sh`、JVM 检查用例 |

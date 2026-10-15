@@ -6,6 +6,6 @@
   "author": "donglua",
   "license": "Apache-2.0",
   "dependencies": {
-    "@donglua/jzoffice": "file:../viewer-ohos"
+    "@jzdy/office": "file:../viewer-ohos"
   }
 }

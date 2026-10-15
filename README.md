@@ -51,7 +51,7 @@ Demo 内置样例的 Android 真机截图。点击图片查看大图。
 | `viewer/native/` | `jz-office-android`：JNI 桥接，生成 `libjz_office.so` |
 | `demo/` | 内置样例、文件选择器、`ACTION_VIEW`、在线预览和缓存清理示例 |
 | `demo/src/main/assets/samples/` | 每种格式一个综合样例，展示现有样例覆盖的场景 |
-| `viewer-ohos/` | 实验性 HarmonyOS NEXT HAR（`@donglua/jzoffice`）：ArkTS 文档模型、DOCX 流式视图、PPTX Canvas、XLSX 表格视图 |
+| `viewer-ohos/` | 实验性 HarmonyOS NEXT HAR（`@jzdy/office`）：ArkTS 文档模型、DOCX 流式视图、PPTX Canvas、XLSX 表格视图 |
 | `viewer-ohos/native/` | `jz-office-ohos`：基于 `napi-ohos` 的 N-API 桥接，生成 `libjz_office_ohos.so` |
 | `demo-ohos/` | HarmonyOS 演示应用，从 `rawfile` 读取三个综合样例 |
 | `AppScope/`、`hvigor/`、`build-profile.json5` | DevEco Studio 根工程配置，包含 `viewer_ohos` 与 `demo_ohos` 两个模块 |
@@ -302,7 +302,7 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 
 ## HarmonyOS 接入（实验性）
 
-`viewer-ohos` 是 HarmonyOS NEXT 的 HAR 模块（包名 `@donglua/jzoffice`，Stage 模型，`compatibleSdkVersion` 为 `5.0.0(12)`），与 Android 共用 `jz-office-core`。`viewer-ohos/native` 通过 `napi-ohos` 暴露 `parse`/`parseAsync` 和 `readPart`/`readPartAsync`：异步接口在 libuv 工作线程中解析文档、读取 ZIP 部件，单个部件最多 16 MiB。ArkTS 层将 core 文档模型的 JSON 解析为 `OfficeModel`，再由 ArkUI 与 Canvas 绘制。
+`viewer-ohos` 是 HarmonyOS NEXT 的 HAR 模块（包名 `@jzdy/office`，Stage 模型，`compatibleSdkVersion` 为 `5.0.0(12)`），与 Android 共用 `jz-office-core`。`viewer-ohos/native` 通过 `napi-ohos` 暴露 `parse`/`parseAsync` 和 `readPart`/`readPartAsync`：异步接口在 libuv 工作线程中解析文档、读取 ZIP 部件，单个部件最多 16 MiB。ArkTS 层将 core 文档模型的 JSON 解析为 `OfficeModel`，再由 ArkUI 与 Canvas 绘制。
 
 该模块仍在开发中，尚未发布到 ohpm，也没有自动化设备测试。当前实现包括 DOCX 段落、表格与内嵌图片的流式视图，PPTX 幻灯片 Canvas（含异步图片和线性渐变填充），以及支持合并单元格、多行文字、滚动、缩放和切表的 XLSX 视图。上文 Android 的生命周期、页码、缓存和资源预算约定不适用于鸿蒙端。
 
@@ -311,14 +311,14 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 ```json5
 // oh-package.json5
 "dependencies": {
-  "@donglua/jzoffice": "file:../viewer-ohos"
+  "@jzdy/office": "file:../viewer-ohos"
 }
 ```
 
 组件接收应用沙箱中的文件路径；`rawfile` 或文件选择器得到的内容需先复制到 `cacheDir` 等沙箱目录。`filePath` 变化时会重新解析：
 
 ```typescript
-import { OfficePreviewView } from '@donglua/jzoffice';
+import { OfficePreviewView } from '@jzdy/office';
 
 OfficePreviewView({ filePath: `${getContext(this).cacheDir}/sample.docx` })
   .width('100%')
