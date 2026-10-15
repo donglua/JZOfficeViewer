@@ -2,6 +2,21 @@
 
 All notable changes to `@jzdy/office` will be documented in this file.
 
+## [0.4.0] - 2026-10-15
+
+### Added
+- Viewport gesture navigation: pinch-to-zoom (1.0x-4.0x) and double-tap zoom (1.0x/2.0x) with focus anchoring for PPTX and DOCX.
+- Viewport boundary damping and panning in magnified state, with container hardware clipping (`.clip(true)`).
+- DOCX asynchronous inline image extraction and PixelMap decoding via `ImageStore` and `DocxImageView`.
+- DOCX `ImageFit.Fill` rendering for stretched vector/solid shapes and responsive `maxWidth: 100%` viewport constraints.
+- Fling inertial scrolling physics simulation for XLSX spreadsheet navigation.
+
+### Optimized
+- Highly optimized XLSX viewport cell rendering using binary search prefix-sum axis lookups instead of O(N) full-sheet scans.
+- Replaced string-based merge tracking with `Uint8Array` dense byte flags to eliminate per-frame GC pressure.
+- Removed ArkUI state dirty-tracking on high-frequency gesture coordinates to prevent redundant re-renders.
+- Hardened OHPM automated release pipeline (`publish-ohpm.py`) to disable PTY echo and enforce timeout limits.
+
 ## [0.3.1] - 2026-10-15
 
 ### Fixed
