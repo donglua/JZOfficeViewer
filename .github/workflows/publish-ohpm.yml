@@ -67,7 +67,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgl1-mesa-dev
+          sudo apt-get install -y libgl1-mesa-dev expect
 
       - name: Setup HarmonyOS / OpenHarmony CLI tools
         uses: ErBWs/setup-ohos@v2
@@ -93,6 +93,8 @@ jobs:
           ohpm config set key_path "$KEY_PATH"
 
       - name: Publish HAR to OHPM
+        env:
+          OHPM_KEY_PASSPHRASE: ${{ secrets.OHPM_KEY_PASSPHRASE }}
         run: |
           HAR_PATH="viewer-ohos/build/default/outputs/default/viewer_ohos.har"
           if [[ ! -f "$HAR_PATH" ]]; then
@@ -100,7 +102,21 @@ jobs:
             exit 1
           fi
           echo "Publishing $HAR_PATH to OHPM..."
-          ohpm publish "$HAR_PATH"
+          if [[ -n "$OHPM_KEY_PASSPHRASE" ]]; then
+            expect -c "
+              set timeout 120
+              spawn ohpm publish $HAR_PATH
+              expect {
+                -nocase \"passphrase\" { send \"$env(OHPM_KEY_PASSPHRASE)\r\"; exp_continue }
+                eof
+              }
+              catch wait result
+              set exit_status [lindex \$result 3]
+              exit \$exit_status
+            "
+          else
+            ohpm publish "$HAR_PATH"
+          fi
 
       - name: Attach HAR to GitHub Release
         env:
