@@ -4,6 +4,8 @@
 
 通过 Android `Uri` 打开文档。Rust crate `jz-office-core` 解析文档，Android `viewer` 模块负责离线显示，不依赖服务器、WebView、Office 应用或内置字体。可选 `viewer-online` 模块支持下载在线文档后预览。
 
+源码另包含**实验性**的 HarmonyOS NEXT 版本：`viewer-ohos` HAR 复用同一个 Rust 核心，通过 N-API 桥接 ArkTS，提供 `OfficePreviewView` 组件，详见「HarmonyOS 接入（实验性）」。该模块尚未发布到 ohpm，渲染能力少于 Android 版本。
+
 这是基础预览实现，不保证与 Microsoft Office 的版式一致。旧版 `.doc/.ppt/.xls`、加密文档、ZIP64/分卷容器和编辑功能不在支持范围内。
 
 当前版本为 **0.3.0**，包含 PPTX 按需排版、最近图片缓存复用和小数字号修复，变更与已知问题见 [CHANGELOG](CHANGELOG.md)。发布产物见 [v0.3.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.3.0)，Maven Central 坐标为 [viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.3.0) 和 [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.3.0)。发布可用性以对应仓库为准；完整设备回归仍有未通过项。
@@ -49,6 +51,11 @@ Demo 内置样例的 Android 真机截图。点击图片查看大图。
 | `viewer/native/` | `jz-office-android`：JNI 桥接，生成 `libjz_office.so` |
 | `demo/` | 内置样例、文件选择器、`ACTION_VIEW`、在线预览和缓存清理示例 |
 | `demo/src/main/assets/samples/` | 每种格式一个综合样例，展示现有样例覆盖的场景 |
+| `viewer-ohos/` | 实验性 HarmonyOS NEXT HAR（`@donglua/jzoffice`）：ArkTS 文档模型、DOCX 流式视图、PPTX Canvas、XLSX 表格视图 |
+| `viewer-ohos/native/` | `jz-office-ohos`：基于 `napi-ohos` 的 N-API 桥接，生成 `libjz_office_ohos.so` |
+| `demo-ohos/` | HarmonyOS 演示应用，从 `rawfile` 读取三个综合样例 |
+| `AppScope/`、`hvigor/`、`build-profile.json5` | DevEco Studio 根工程配置，包含 `viewer_ohos` 与 `demo_ohos` 两个模块 |
+| `scripts/` | `build-native.sh`（Android 原生库）、`build-ohos.sh`（鸿蒙原生库与 HAR）、JVM 检查用例 |
 
 `core` 不依赖 Android，不持有 `Context`、`Uri`、`Bitmap` 或 JNI 对象。坐标、尺寸、字号统一使用 point。图片以 ZIP 包内路径引用；Android 层从同一份私有缓存读取图片。
 
@@ -293,9 +300,50 @@ adb install -r viewer-online/build/outputs/apk/androidTest/debug/viewer-online-d
 adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.office.online.OnlineInstrumentation
 ```
 
+## HarmonyOS 接入（实验性）
+
+`viewer-ohos` 是 HarmonyOS NEXT 的 HAR 模块（包名 `@donglua/jzoffice`，Stage 模型，`compatibleSdkVersion` 为 `5.0.0(12)`），与 Android 共用 `jz-office-core`。`viewer-ohos/native` 通过 `napi-ohos` 暴露 `parse`/`parseAsync` 和 `readPart`/`readPartAsync`：异步接口在 libuv 工作线程中解析文档、读取 ZIP 部件，单个部件最多 16 MiB。ArkTS 层将 core 文档模型的 JSON 解析为 `OfficeModel`，再由 ArkUI 与 Canvas 绘制。
+
+该模块仍在开发中，尚未发布到 ohpm，也没有自动化设备测试。当前实现包括 DOCX 段落、表格与内嵌图片的流式视图，PPTX 幻灯片 Canvas（含异步图片和线性渐变填充），以及支持合并单元格、多行文字、滚动、缩放和切表的 XLSX 视图。上文 Android 的生命周期、页码、缓存和资源预算约定不适用于鸿蒙端。
+
+在同一 DevEco Studio 工程中，以本地依赖引用 HAR：
+
+```json5
+// oh-package.json5
+"dependencies": {
+  "@donglua/jzoffice": "file:../viewer-ohos"
+}
+```
+
+组件接收应用沙箱中的文件路径；`rawfile` 或文件选择器得到的内容需先复制到 `cacheDir` 等沙箱目录。`filePath` 变化时会重新解析：
+
+```typescript
+import { OfficePreviewView } from '@donglua/jzoffice';
+
+OfficePreviewView({ filePath: `${getContext(this).cacheDir}/sample.docx` })
+  .width('100%')
+  .height('100%')
+```
+
+需要直接获取文档模型时，可调用 `NativeCore.parseDocumentAsync(path)`；同步接口 `parseDocumentSync` 会阻塞调用线程，仅建议在 TaskPool 中使用。完整示例见 `demo-ohos/src/main/ets/pages/Index.ets`。
+
+### 构建鸿蒙模块
+
+需要 DevEco Studio（附带 OpenHarmony NDK、hvigor 与 Node）、Rust 工具链和 [ohrs](https://github.com/ohos-rs/ohos-rs)。默认使用 `/Applications/DevEco-Studio.app` 下的 SDK，可通过 `OHOS_NDK_HOME`、`DEVECO_HVIGOR`、`NODE_HOME` 覆盖：
+
+```sh
+cargo install ohrs
+rustup target add aarch64-unknown-linux-ohos armv7-unknown-linux-ohos x86_64-unknown-linux-ohos
+./scripts/build-ohos.sh
+```
+
+脚本依次执行 `ohrs build --release`，将 `.so` 复制到 `viewer-ohos/libs/<abi>/`，同步 `index.d.ts` 到 `viewer-ohos/src/main/cpp/types/libjz_office_ohos/`，用 fixtures 生成器刷新 `demo-ohos/src/main/resources/rawfile/` 的三个样例，最后在找到 hvigorw 时执行 `assembleHar`。`libs/`、`dist/` 和 `.so` 均不提交到仓库，新检出的工程需先运行该脚本，再用 DevEco Studio 打开仓库根目录运行 `demo_ohos`。
+
+根目录 `build-profile.json5` 默认保持 `"signingConfigs": []`（未配置签名）。在 DevEco Studio 中真机运行演示模块时，可在 Project Structure 的 Signing Configs 中勾选自动生成调试证书；请勿将包含个人证书路径和密码的签名配置提交到仓库。
+
 ## 构建
 
-源码构建需要 JDK 21、Android SDK 35、NDK `28.2.13676358`、通过 rustup 安装的 Rust 1.87 或更新版本。`gradle/gradle-daemon-jvm.properties` 已为 Gradle daemon 固定 JDK 21，本地与 CI 的构建和 Javadoc 生成使用同一版本，无需临时改写该文件。`rustup` 和 `cargo` 需要在构建进程的 `PATH` 中可用；Android Studio 也需要能找到这两个命令。使用 `ANDROID_HOME`、`ANDROID_SDK_ROOT` 或 `local.properties` 配置 SDK。
+源码构建需要 JDK 21、Android SDK 35、NDK `28.2.13676358`、通过 rustup 安装的 Rust 1.88 或更新版本。`gradle/gradle-daemon-jvm.properties` 已为 Gradle daemon 固定 JDK 21，本地与 CI 的构建和 Javadoc 生成使用同一版本，无需临时改写该文件。`rustup` 和 `cargo` 需要在构建进程的 `PATH` 中可用；Android Studio 也需要能找到这两个命令。使用 `ANDROID_HOME`、`ANDROID_SDK_ROOT` 或 `local.properties` 配置 SDK。鸿蒙模块的构建见「构建鸿蒙模块」。
 
 ```sh
 ./gradlew :viewer:assembleRelease :viewer-online:assembleRelease :demo:assembleDebug

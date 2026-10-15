@@ -9,7 +9,7 @@ fi
 
 for tool in rustup cargo; do
     if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "Missing $tool. Install Rust 1.87 or newer with rustup (https://rustup.rs), and add its bin directory to PATH." >&2
+        echo "Missing $tool. Install Rust 1.88 or newer with rustup (https://rustup.rs), and add its bin directory to PATH." >&2
         exit 1
     fi
 done

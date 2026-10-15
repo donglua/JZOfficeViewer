@@ -14,3 +14,4 @@ viewer-ohos/libs/
 **/BuildProfile.ets
 /VERIFICATION.md
 .openbitfun/
+build-profile.json5.local
