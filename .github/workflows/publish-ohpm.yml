@@ -72,7 +72,7 @@ jobs:
       - name: Setup HarmonyOS / OpenHarmony CLI tools
         uses: ErBWs/setup-ohos@v2
         with:
-          version: 5.0.0.12
+          version: '26.0.0.821'
           cache: true
 
       - name: Build HarmonyOS HAR via build-ohos.sh
