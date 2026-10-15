@@ -21,9 +21,12 @@ export struct SpreadsheetView {
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private context2D: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
-  private canvasWidth: number = 0;
-  private canvasHeight: number = 0;
+  @State canvasWidth: number = 0;
+  @State canvasHeight: number = 0;
   private isReady: boolean = false;
+  private retryCount: number = 0;
+  @State drawError: string = '';
+  @State diagLine: string = 'init';
   private lastDocument: model.OfficeDocument | null = null;
 
   private panStartX: number = 0;
@@ -37,7 +40,7 @@ export struct SpreadsheetView {
     this.scaleVal = 1.0;
   }
 
-  private get currentSheet(): model.Sheet | undefined {
+  private getCurrentSheet(): model.Sheet | undefined {
     if (!this.document || !this.document.sheets || this.document.sheets.length === 0) {
       return undefined;
     }
@@ -54,19 +57,29 @@ export struct SpreadsheetView {
       this.offsetY = 0;
       this.scaleVal = 1.0;
     }
-    const sheet = this.currentSheet;
+    const sheet = this.getCurrentSheet();
     const ctx = this.context2D;
-    const w = this.canvasWidth > 0 ? this.canvasWidth : ctx.width;
-    const h = this.canvasHeight > 0 ? this.canvasHeight : ctx.height;
+    const w = this.canvasWidth;
+    const h = this.canvasHeight;
     if (!sheet || w <= 0 || h <= 0) {
-      if (this.isReady && (!this.canvasWidth || !this.canvasHeight)) {
+      if (this.isReady && (this.canvasWidth <= 0 || this.canvasHeight <= 0) && this.retryCount < 20) {
+        this.retryCount++;
+        this.diagLine = `retry#${this.retryCount} size=${Math.round(this.canvasWidth)}x${Math.round(this.canvasHeight)} sheet=${sheet ? 'yes' : 'no'}`;
         setTimeout(() => {
           if (this.isReady) this.redraw();
         }, 50);
+      } else if (!sheet) {
+        this.diagLine = 'no-sheet';
+      } else {
+        this.diagLine = `size-invalid ${Math.round(this.canvasWidth)}x${Math.round(this.canvasHeight)}`;
       }
       return;
     }
+    this.retryCount = 0;
+    this.diagLine = `draw ${Math.round(w)}x${Math.round(h)}`;
 
+    try {
+    this.drawError = '';
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = '#e9ecef';
     ctx.fillRect(0, 0, w, h);
@@ -290,6 +303,9 @@ export struct SpreadsheetView {
     ctx.moveTo(0, HEADER_HEIGHT);
     ctx.lineTo(canvasW, HEADER_HEIGHT);
     ctx.stroke();
+    } catch (err) {
+    this.drawError = String(err);
+    }
   }
 
   private drawSingleCell(
@@ -412,47 +428,52 @@ export struct SpreadsheetView {
   build() {
     if (this.document) {
       Column() {
-        Canvas(this.context2D)
-          .width('100%')
-          .layoutWeight(1)
-          .onReady(() => {
-            this.isReady = true;
-            if (this.context2D.width > 0) this.canvasWidth = this.context2D.width;
-            if (this.context2D.height > 0) this.canvasHeight = this.context2D.height;
-            this.redraw();
-          })
-          .onAreaChange((_oldArea: Area, newArea: Area) => {
-            const areaW = Number(newArea.width);
-            const areaH = Number(newArea.height);
-            if (areaW > 0) this.canvasWidth = areaW;
-            if (areaH > 0) this.canvasHeight = areaH;
-            if (this.isReady) {
+        Stack() {
+          Canvas(this.context2D)
+            .width(this.canvasWidth > 0 ? this.canvasWidth : '100%')
+            .height(this.canvasHeight > 0 ? this.canvasHeight : '100%')
+            .backgroundColor('#ffffff')
+            .onReady(() => {
+              this.isReady = true;
+              this.diagLine = 'onReady';
               this.redraw();
-            }
-          })
-          .gesture(
-            GestureGroup(
-              GestureMode.Parallel,
-              PinchGesture({ fingers: 2 })
-                .onActionStart(() => {
-                  this.pinchStartScale = this.scaleVal;
-                })
-                .onActionUpdate((event: GestureEvent) => {
-                  this.scaleVal = Math.min(3.0, Math.max(0.5, this.pinchStartScale * event.scale));
-                  this.redraw();
-                }),
-              PanGesture()
-                .onActionStart(() => {
-                  this.panStartX = this.offsetX;
-                  this.panStartY = this.offsetY;
-                })
-                .onActionUpdate((event: GestureEvent) => {
-                  this.offsetX = this.panStartX + event.offsetX;
-                  this.offsetY = this.panStartY + event.offsetY;
-                  this.redraw();
-                })
-            )
+            })
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .onAreaChange((_oldArea: Area, newArea: Area) => {
+          const areaW = Number(newArea.width);
+          const areaH = Number(newArea.height);
+          this.diagLine = `area ${Math.round(areaW)}x${Math.round(areaH)}`;
+          if (areaW > 0) this.canvasWidth = areaW;
+          if (areaH > 0) this.canvasHeight = areaH;
+          if (this.isReady) {
+            this.redraw();
+          }
+        })
+        .gesture(
+          GestureGroup(
+            GestureMode.Parallel,
+            PinchGesture({ fingers: 2 })
+              .onActionStart(() => {
+                this.pinchStartScale = this.scaleVal;
+              })
+              .onActionUpdate((event: GestureEvent) => {
+                this.scaleVal = Math.min(3.0, Math.max(0.5, this.pinchStartScale * event.scale));
+                this.redraw();
+              }),
+            PanGesture()
+              .onActionStart(() => {
+                this.panStartX = this.offsetX;
+                this.panStartY = this.offsetY;
+              })
+              .onActionUpdate((event: GestureEvent) => {
+                this.offsetX = this.panStartX + event.offsetX;
+                this.offsetY = this.panStartY + event.offsetY;
+                this.redraw();
+              })
           )
+        )
 
         if (this.document.sheets && this.document.sheets.length > 1) {
           Scroll() {
@@ -481,6 +502,21 @@ export struct SpreadsheetView {
           .height(44)
           .backgroundColor('#ffffff')
           .border({ width: { top: 0.5 }, color: '#e0e0e0' })
+        }
+        if (this.diagLine) {
+          Text(`diag: ${this.diagLine} | ready=${this.isReady} | cells=${this.getCurrentSheet()?.cells?.length ?? -1} | sheets=${this.document?.sheets?.length ?? -1} idx=${this.currentSheetIndex}`)
+            .fontSize(10)
+            .fontColor('#5f6368')
+            .maxLines(1)
+            .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+            .backgroundColor('#eef1f4')
+        }
+        if (this.drawError) {
+          Text(this.drawError)
+            .fontSize(10)
+            .fontColor('#d93025')
+            .maxLines(2)
+            .padding(8)
         }
       }
       .width('100%')
