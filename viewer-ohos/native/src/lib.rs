@@ -13,11 +13,7 @@ const MEDIA_PART_LIMIT: u64 = 16 * 1024 * 1024; // 16 MiB
 fn parse_path_to_json(path: &str) -> Result<String> {
     let result = catch_unwind(AssertUnwindSafe(
         || -> std::result::Result<String, String> {
-            let document =
-                jz_office_core::parse_path(Path::new(path)).map_err(|e| e.to_string())?;
-            let json = serde_json::to_string(&document).map_err(|e| e.to_string());
-            drop(document);
-            json
+            jz_office_core::parse_path_to_json(Path::new(path)).map_err(|e| e.to_string())
         },
     ));
 

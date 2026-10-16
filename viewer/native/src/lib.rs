@@ -12,9 +12,8 @@ pub extern "system" fn Java_cn_jingzhuan_lib_office_NativeCore_parse(
 ) -> jstring {
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<jstring, String> {
         let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
-        let document = jz_office_core::parse_path(Path::new(&path)).map_err(|e| e.to_string())?;
-        let json = serde_json::to_string(&document).map_err(|e| e.to_string())?;
-        drop(document);
+        let json =
+            jz_office_core::parse_path_to_json(Path::new(&path)).map_err(|e| e.to_string())?;
         env.new_string(json)
             .map(JString::into_raw)
             .map_err(|e| e.to_string())

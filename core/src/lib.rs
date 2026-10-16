@@ -35,6 +35,13 @@ pub fn parse_path(path: &Path) -> Result<model::Document> {
     parse_reader(std::fs::File::open(path)?)
 }
 
+pub fn parse_path_to_json(path: &Path) -> Result<String> {
+    let document = parse_path(path)?;
+    let json = serde_json::to_string(&document)?;
+    drop(document);
+    Ok(json)
+}
+
 pub fn parse_reader(reader: impl Read + Seek + 'static) -> Result<model::Document> {
     let mut package = Package::new(reader)?;
     let part = package
