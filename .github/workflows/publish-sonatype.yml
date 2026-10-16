@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Existing v-prefixed release tag version to publish (e.g. 0.3.0)
+        description: Existing v-prefixed release tag version to publish (e.g. 0.5.0)
         required: true
-        default: 0.3.0
+        default: 0.5.0
         type: string
 
 permissions:

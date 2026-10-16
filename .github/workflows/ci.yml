@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-and-jvm:
+    name: Rust & JVM Checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy --no-self-update
+          rustup default 1.88.0
+
+      - name: Run Rust checks
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+
+      - name: Run online and cache checks
+        shell: bash
+        run: |
+          classes="$RUNNER_TEMP/office-checks"
+          mkdir -p "$classes"
+          javac --release 11 -Xlint:all -Werror -d "$classes" \
+            viewer/src/main/java/cn/jingzhuan/lib/office/OfficeCache.java \
+            viewer-online/src/main/java/cn/jingzhuan/lib/office/online/RemoteOfficeRequest.java \
+            viewer-online/src/main/java/cn/jingzhuan/lib/office/online/RemoteOfficeDownloader.java \
+            viewer-online/src/main/java/cn/jingzhuan/lib/office/online/HttpUrlConnectionOfficeDownloader.java \
+            scripts/tests/OfficeCacheChecks.java scripts/tests/RemoteDownloaderChecks.java
+          java -cp "$classes" cn.jingzhuan.lib.office.OfficeCacheChecks
+          java -cp "$classes" RemoteDownloaderChecks
+
+      - name: Run sheet layout checks
+        shell: bash
+        run: |
+          classes="$RUNNER_TEMP/sheet-layout-checks"
+          mkdir -p "$classes"
+          javac --release 11 -Xlint:all -Werror -d "$classes" \
+            viewer/src/main/java/cn/jingzhuan/lib/office/OfficeDocument.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/SpreadsheetDocument.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/SheetLayout.java \
+            viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutChecks.java \
+            viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutBenchmark.java
+          java -cp "$classes" cn.jingzhuan.lib.office.SheetLayoutChecks
+          java -cp "$classes" cn.jingzhuan.lib.office.SheetLayoutBenchmark
+
+  android:
+    name: Android Build & Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK and NDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+
+      - name: Build Android libraries and demo
+        run: |
+          ./gradlew --no-daemon --stacktrace :viewer:assembleRelease :viewer-online:assembleRelease :demo:assembleDebug :viewer-online:lintRelease
+
+  harmonyos:
+    name: HarmonyOS Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Cache ohrs
+        id: cache-ohrs
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/ohrs
+          key: ${{ runner.os }}-ohrs-1.88.0
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+          rustup target add aarch64-unknown-linux-ohos x86_64-unknown-linux-ohos armv7-unknown-linux-ohos
+          if ! command -v ohrs >/dev/null 2>&1; then
+            cargo install ohrs
+          fi
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev expect
+
+      - name: Setup HarmonyOS / OpenHarmony CLI tools
+        uses: ErBWs/setup-ohos@v2
+        with:
+          version: '26.0.0.821'
+          cache: true
+
+      - name: Build HarmonyOS HAR via build-ohos.sh
+        run: |
+          chmod +x scripts/build-ohos.sh
+          ./scripts/build-ohos.sh
