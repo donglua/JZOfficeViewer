@@ -14,6 +14,7 @@ pub extern "system" fn Java_cn_jingzhuan_lib_office_NativeCore_parse(
         let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
         let document = jz_office_core::parse_path(Path::new(&path)).map_err(|e| e.to_string())?;
         let json = serde_json::to_string(&document).map_err(|e| e.to_string())?;
+        drop(document);
         env.new_string(json)
             .map(JString::into_raw)
             .map_err(|e| e.to_string())
@@ -23,9 +24,10 @@ pub extern "system" fn Java_cn_jingzhuan_lib_office_NativeCore_parse(
         Ok(Err(error)) => error,
         Err(_) => "Document parser failed".to_owned(),
     };
-    if !env.exception_check().unwrap_or(true)
-        && env.throw_new("java/io/IOException", message).is_err()
-    {
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    if env.throw_new("java/io/IOException", message).is_err() {
         return std::ptr::null_mut();
     }
     std::ptr::null_mut()

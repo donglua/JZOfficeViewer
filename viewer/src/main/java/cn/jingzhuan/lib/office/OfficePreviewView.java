@@ -17,9 +17,10 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 public final class OfficePreviewView extends View {
     public interface Listener {
@@ -47,7 +48,12 @@ public final class OfficePreviewView extends View {
     }
 
     private final Handler main = new Handler(Looper.getMainLooper());
-    private ExecutorService executor;
+    private final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 5, TimeUnit.SECONDS,
+        new LinkedBlockingQueue<>(), runnable -> {
+            Thread thread = new Thread(runnable, "jz-office-open");
+            thread.setDaemon(true);
+            return thread;
+        });
     private Future<?> pending;
     private int generation;
     private OfficeDocument document;
@@ -103,7 +109,6 @@ public final class OfficePreviewView extends View {
         status = "Loading..."; invalidate();
         final int token = generation;
         final Context app = getContext().getApplicationContext();
-        if (executor == null) executor = Executors.newSingleThreadExecutor();
         pending = executor.submit(() -> {
             OfficePackage opened = null;
             try {
@@ -128,8 +133,10 @@ public final class OfficePreviewView extends View {
                     if (token == generation) updateCurrentPage();
                 });
                 opened = null;
-            } catch (IOException | RuntimeException | LinkageError failure) {
-                Exception error = failure instanceof Exception ? (Exception) failure : new IOException("Native core is unavailable for this device ABI", failure);
+            } catch (IOException | RuntimeException | LinkageError | OutOfMemoryError failure) {
+                Exception error = failure instanceof Exception ? (Exception) failure
+                    : failure instanceof OutOfMemoryError ? new IOException("Not enough memory to open document", failure)
+                    : new IOException("Native core is unavailable for this device ABI", failure);
                 main.post(() -> {
                     if (token != generation) return;
                     status = "Unable to open document"; invalidate(); listener.onError(error);
@@ -236,6 +243,8 @@ public final class OfficePreviewView extends View {
     private void cancel() {
         generation++;
         if (pending != null) { pending.cancel(true); pending = null; }
+        executor.getQueue().clear();
+        if (document == null && "Loading...".equals(status)) { status = ""; invalidate(); }
         scroller.forceFinished(true);
     }
 
@@ -256,7 +265,6 @@ public final class OfficePreviewView extends View {
     @Override protected void onDetachedFromWindow() {
         cancel();
         if (images != null) images.suspend();
-        if (executor != null) { executor.shutdownNow(); executor = null; }
         super.onDetachedFromWindow();
     }
 

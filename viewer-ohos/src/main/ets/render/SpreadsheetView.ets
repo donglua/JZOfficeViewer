@@ -171,6 +171,7 @@ export struct SpreadsheetView {
 
   // 惯性滑动 (Fling) 物理仿真状态
   private flingTimer: number = -1;
+  private retryTimer: number = -1;
   private flingVx: number = 0;
   private flingVy: number = 0;
   private lastFlingTime: number = 0;
@@ -196,7 +197,14 @@ export struct SpreadsheetView {
   }
 
   aboutToDisappear(): void {
+    this.isReady = false;
     this.stopFling();
+    if (this.retryTimer !== -1) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
+    this.cachedSheet = null;
+    this.cachedLayout = null;
   }
 
   private stopFling(): void {
@@ -297,11 +305,19 @@ export struct SpreadsheetView {
     if (!sheet || w <= 0 || h <= 0) {
       if (this.isReady && (this.canvasWidth <= 0 || this.canvasHeight <= 0) && this.retryCount < 20) {
         this.retryCount++;
-        setTimeout(() => {
+        if (this.retryTimer !== -1) {
+          clearTimeout(this.retryTimer);
+        }
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = -1;
           if (this.isReady) this.redraw();
         }, 50);
       }
       return;
+    }
+    if (this.retryTimer !== -1) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
     }
     this.retryCount = 0;
 

@@ -13,11 +13,13 @@ import { SpreadsheetView } from './SpreadsheetView';
 @Component
 export struct OfficePreviewView {
   @Watch('onFilePathChanged') @Prop filePath: string = '';
-  @Prop preloadedDoc: model.OfficeDocument | null = null;
+  // 使用普通属性替代 @Prop，避免对大型预加载文档 AST 触发递归深拷贝
+  preloadedDoc: model.OfficeDocument | null = null;
 
   @State document: model.OfficeDocument | null = null;
   @State isLoading: boolean = true;
   @State errorMessage: string = '';
+  private loadGeneration: number = 0;
 
   aboutToAppear(): void {
     if (this.preloadedDoc) {
@@ -30,6 +32,11 @@ export struct OfficePreviewView {
     }
   }
 
+  aboutToDisappear(): void {
+    this.loadGeneration++;
+    this.document = null;
+  }
+
   onFilePathChanged(): void {
     if (this.filePath) {
       this.loadDocument(this.filePath);
@@ -37,14 +44,21 @@ export struct OfficePreviewView {
   }
 
   private async loadDocument(path: string): Promise<void> {
+    const token = ++this.loadGeneration;
     this.isLoading = true;
     this.errorMessage = '';
+    this.document = null;
     try {
-      this.document = await NativeCore.parseDocumentAsync(path);
+      const parsed = await NativeCore.parseDocumentAsync(path);
+      if (token !== this.loadGeneration) return;
+      this.document = parsed;
     } catch (e) {
+      if (token !== this.loadGeneration) return;
       this.errorMessage = `文档加载失败: ${e}`;
     } finally {
-      this.isLoading = false;
+      if (token === this.loadGeneration) {
+        this.isLoading = false;
+      }
     }
   }
 
@@ -267,9 +281,21 @@ struct DocxImageView {
   @State pixelMap: image.PixelMap | null = null;
   @State isLoading: boolean = true;
   @State loadFailed: boolean = false;
+  private isDisappeared: boolean = false;
+  private acquiredPart: string = '';
 
   aboutToAppear(): void {
+    this.isDisappeared = false;
     this.loadImage();
+  }
+
+  aboutToDisappear(): void {
+    this.isDisappeared = true;
+    this.pixelMap = null;
+    if (this.acquiredPart) {
+      this.imageStore.releasePart(this.acquiredPart);
+      this.acquiredPart = '';
+    }
   }
 
   private async loadImage(): Promise<void> {
@@ -279,6 +305,8 @@ struct DocxImageView {
       this.loadFailed = true;
       return;
     }
+    this.acquiredPart = part;
+    this.imageStore.acquire(part);
     const cached = this.imageStore.cache.get(part);
     if (cached) {
       this.pixelMap = cached;
@@ -289,6 +317,7 @@ struct DocxImageView {
     this.loadFailed = false;
     try {
       await this.imageStore.load(part);
+      if (this.isDisappeared) return;
       const loaded = this.imageStore.cache.get(part);
       if (loaded) {
         this.pixelMap = loaded;
@@ -296,9 +325,13 @@ struct DocxImageView {
         this.loadFailed = true;
       }
     } catch (_e) {
-      this.loadFailed = true;
+      if (!this.isDisappeared) {
+        this.loadFailed = true;
+      }
     } finally {
-      this.isLoading = false;
+      if (!this.isDisappeared) {
+        this.isLoading = false;
+      }
     }
   }
 
@@ -593,11 +626,23 @@ struct PptxSlideCanvas {
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
   private isReady: boolean = false;
+  private isDisappeared: boolean = false;
+  private acquiredParts: string[] = [];
   private lastDrawnWidth: number = 0;
   private lastDrawnHeight: number = 0;
 
   aboutToAppear(): void {
+    this.isDisappeared = false;
     this.loadImages();
+  }
+
+  aboutToDisappear(): void {
+    this.isDisappeared = true;
+    this.isReady = false;
+    for (const part of this.acquiredParts) {
+      this.imageStore.releasePart(part);
+    }
+    this.acquiredParts = [];
   }
 
   /** 收集本页引用的全部图片，异步加载完成后强制重绘 */
@@ -610,7 +655,12 @@ struct PptxSlideCanvas {
       }
     }
     if (parts.length === 0) return;
+    this.acquiredParts = parts;
+    for (const part of parts) {
+      this.imageStore.acquire(part);
+    }
     await Promise.all(parts.map((part: string) => this.imageStore.load(part)));
+    if (this.isDisappeared) return;
     this.drawSlide(true);
   }
 

@@ -49,7 +49,7 @@ impl Package {
 
     pub(crate) fn xml(&mut self, part: &str) -> Result<Node> {
         let bytes = self.read(part, 4 * 1024 * 1024)?;
-        xml::parse(&bytes)
+        xml::parse(bytes)
     }
 
     pub(crate) fn optional_xml(&mut self, part: &str) -> Result<Option<Node>> {

@@ -27,7 +27,7 @@ final class OfficePackage implements Closeable {
     }
     final File file;
     final OfficeDocument document;
-    private final ZipFile zip;
+    private ZipFile zip;
     private final OfficeCache.Entry cache;
     private long readBytes;
     private final Map<String, Long> readSizes = new HashMap<>();
@@ -39,22 +39,28 @@ final class OfficePackage implements Closeable {
     static OfficePackage open(Context context, Uri uri) throws IOException {
         String scheme = uri.getScheme();
         if (!"content".equals(scheme) && !"file".equals(scheme)) throw new IOException("Only content:// and file:// URIs are supported");
-        OfficeCache.Entry cache = OfficeCache.create(context.getCacheDir());
+        OfficeCache.Entry retained = "file".equals(scheme) && uri.getPath() != null
+            ? OfficeCache.retain(new File(uri.getPath())) : null;
+        OfficeCache.Entry cache = retained != null ? retained : OfficeCache.create(context.getCacheDir());
         File file = cache.getFile();
         ZipFile zip = null;
         boolean complete = false;
         try {
             checkCancelled();
-            try (InputStream input = "file".equals(scheme) ? OfficeCache.openInput(new File(uri.getPath())) : context.getContentResolver().openInputStream(uri);
-                 FileOutputStream output = new FileOutputStream(file)) {
-                if (input == null) throw new IOException("Provider returned no stream");
-                byte[] buffer = new byte[32768];
-                long size = 0;
-                int count;
-                while ((count = input.read(buffer)) != -1) {
-                    checkCancelled();
-                    if ((size += count) > MAX_INPUT) throw new IOException("Document exceeds 128 MiB input limit");
-                    output.write(buffer, 0, count);
+            if (retained != null) {
+                if (file.length() > MAX_INPUT) throw new IOException("Document exceeds 128 MiB input limit");
+            } else {
+                try (InputStream input = "file".equals(scheme) ? OfficeCache.openInput(new File(uri.getPath())) : context.getContentResolver().openInputStream(uri);
+                     FileOutputStream output = new FileOutputStream(file)) {
+                    if (input == null) throw new IOException("Provider returned no stream");
+                    byte[] buffer = new byte[32768];
+                    long size = 0;
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                        checkCancelled();
+                        if ((size += count) > MAX_INPUT) throw new IOException("Document exceeds 128 MiB input limit");
+                        output.write(buffer, 0, count);
+                    }
                 }
             }
             checkCancelled();
@@ -73,8 +79,9 @@ final class OfficePackage implements Closeable {
         }
     }
 
-    byte[] read(String part) throws IOException {
+    synchronized byte[] read(String part) throws IOException {
         checkCancelled();
+        if (zip == null) zip = new ZipFile(file);
         ZipEntry entry = zip.getEntry(part);
         if (entry == null) throw new IOException("Missing document part: " + part);
         long limit = part.endsWith(".xml") || part.endsWith(".rels") ? 4L * 1024 * 1024 : 16L * 1024 * 1024;
@@ -143,7 +150,14 @@ final class OfficePackage implements Closeable {
         if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Document load cancelled");
     }
 
-    @Override public void close() throws IOException {
-        try { zip.close(); } finally { cache.close(); }
+    synchronized void closeZip() throws IOException {
+        if (zip != null) {
+            try { zip.close(); }
+            finally { zip = null; }
+        }
+    }
+
+    @Override public synchronized void close() throws IOException {
+        try { closeZip(); } finally { cache.close(); }
     }
 }

@@ -6,6 +6,8 @@ import java.io.FileInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -15,6 +17,8 @@ import java.util.Set;
 public final class OfficeCache {
     private static final Map<File, Integer> ACTIVE = new HashMap<>();
     private static final Set<File> INITIALIZED = new HashSet<>();
+    private static final ReferenceQueue<Entry> QUEUE = new ReferenceQueue<>();
+    private static final Set<EntryReference> REFERENCES = new HashSet<>();
 
     private OfficeCache() { }
 
@@ -27,30 +31,62 @@ public final class OfficeCache {
         }
     }
 
-    /** Keep the entry open until all writing or reading through its file has finished. */
-    public static final class Entry implements Closeable {
+    private static final class EntryReference extends WeakReference<Entry> {
         private final File file;
         private boolean closed;
 
-        private Entry(File file) { this.file = file; }
+        private EntryReference(Entry referent, File file) {
+            super(referent, QUEUE);
+            this.file = file;
+        }
+
+        private void release(boolean deleteFile) {
+            if (closed) return;
+            closed = true;
+            REFERENCES.remove(this);
+            clear();
+            Integer count = ACTIVE.get(file);
+            if (count == null) return;
+            int remaining = count - 1;
+            if (remaining > 0) ACTIVE.put(file, remaining);
+            else {
+                ACTIVE.remove(file);
+                if (deleteFile) file.delete();
+            }
+        }
+    }
+
+    /** Keep the entry open until all writing or reading through its file has finished. */
+    public static final class Entry implements Closeable {
+        private final File file;
+        private final EntryReference ref;
+
+        private Entry(File file) {
+            this.file = file;
+            this.ref = new EntryReference(this, file);
+            REFERENCES.add(this.ref);
+        }
+
         public File getFile() { return file; }
 
         @Override public void close() {
             synchronized (OfficeCache.class) {
-                if (closed) return;
-                closed = true;
-                int remaining = ACTIVE.get(file) - 1;
-                if (remaining > 0) ACTIVE.put(file, remaining);
-                else {
-                    ACTIVE.remove(file);
-                    file.delete();
-                }
+                reapUnreachable(true);
+                ref.release(true);
             }
+        }
+    }
+
+    private static void reapUnreachable(boolean deleteFiles) {
+        EntryReference ref;
+        while ((ref = (EntryReference) QUEUE.poll()) != null) {
+            ref.release(deleteFiles);
         }
     }
 
     /** Call on a worker thread. The first use also removes files left by a previous process. */
     public static synchronized Entry create(File appCacheDir) throws IOException {
+        reapUnreachable(true);
         File directory = directory(appCacheDir);
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Unable to create document cache");
         if (INITIALIZED.add(directory)) clear(appCacheDir);
@@ -61,6 +97,7 @@ public final class OfficeCache {
 
     /** Call on a worker thread. Active files are retained; other app caches are never traversed. */
     public static synchronized ClearResult clear(File appCacheDir) {
+        reapUnreachable(false);
         File directory;
         try { directory = directory(appCacheDir); }
         catch (IOException error) { return new ClearResult(0, 0, 0, 1); }
@@ -82,8 +119,20 @@ public final class OfficeCache {
         return new ClearResult(bytes, deleted, skipped, failed);
     }
 
+    /** If source is already an active cache entry, retain a new reference without copying bytes. */
+    static synchronized Entry retain(File source) throws IOException {
+        reapUnreachable(true);
+        if (source == null) return null;
+        File file = source.getCanonicalFile();
+        Integer references = ACTIVE.get(file);
+        if (references == null) return null;
+        ACTIVE.put(file, references + 1);
+        return new Entry(file);
+    }
+
     // Retain the download while OfficePackage copies it, even if the UI cancels its owner.
     static synchronized InputStream openInput(File source) throws IOException {
+        reapUnreachable(true);
         File file = source.getCanonicalFile();
         FileInputStream input = new FileInputStream(file);
         Integer references = ACTIVE.get(file);

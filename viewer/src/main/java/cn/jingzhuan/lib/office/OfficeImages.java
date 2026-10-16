@@ -29,8 +29,13 @@ final class OfficeImages {
     private final Runnable changed;
     private final OfficePreviewView.Listener listener;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ThreadPoolExecutor worker = new ThreadPoolExecutor(0, 1, 5, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
-    private boolean closed, suspended;
+    private final ThreadPoolExecutor worker = new ThreadPoolExecutor(0, 1, 5, TimeUnit.SECONDS,
+        new LinkedBlockingQueue<>(), runnable -> {
+            Thread thread = new Thread(runnable, "jz-office-images");
+            thread.setDaemon(true);
+            return thread;
+        });
+    private volatile boolean closed, suspended;
     private int revision;
 
     OfficeImages(OfficePackage source, Runnable changed, OfficePreviewView.Listener listener) {
@@ -44,11 +49,14 @@ final class OfficeImages {
             wanted.clear(); wanted.addAll(parts);
             long limit = pixelLimit();
             boolean fullSize = true;
+            long neededPixels = 0;
             for (String part : wanted) {
                 Bitmap bitmap = bitmaps.get(part);
                 Long next = nextPixels.get(part);
                 if (bitmap == null || next == null || next != Long.MAX_VALUE) fullSize = false;
+                neededPixels += bitmap != null ? pixels(bitmap) : limit;
             }
+            boolean needsDownsize = !fullSize && neededPixels > MAX_PIXELS;
             Iterator<Map.Entry<String, Bitmap>> entries = bitmaps.entrySet().iterator();
             while (entries.hasNext()) {
                 Map.Entry<String, Bitmap> entry = entries.next();
@@ -57,7 +65,7 @@ final class OfficeImages {
                     if (entry.getValue() == null) {
                         nextPixels.remove(entry.getKey()); entries.remove();
                     }
-                } else if (!fullSize && pixels(entry.getValue()) > limit) resizePending.add(entry.getKey());
+                } else if (needsDownsize && pixels(entry.getValue()) > limit) resizePending.add(entry.getKey());
                 else resizePending.remove(entry.getKey());
             }
             trimCache();
@@ -118,6 +126,12 @@ final class OfficeImages {
             }
             catch (IOException | RuntimeException failure) { error = failure; }
             catch (OutOfMemoryError failure) { error = new IOException("Not enough memory to decode image", failure); }
+            finally {
+                if (suspended && !closed) {
+                    try { source.closeZip(); }
+                    catch (IOException ignored) { }
+                }
+            }
             final Bitmap decoded = result == null ? null : result.bitmap;
             final long upgradePixels = result == null ? Long.MAX_VALUE : result.nextPixels;
             final Exception failure = error;
@@ -141,6 +155,10 @@ final class OfficeImages {
     void suspend() {
         suspended = true; revision++;
         wanted.clear(); bitmaps.clear(); resizePending.clear(); nextPixels.clear();
+        if (!loading) {
+            try { source.closeZip(); }
+            catch (IOException error) { Log.w("JZOffice", "Unable to suspend document image source", error); }
+        }
     }
 
     void resume() { suspended = false; }

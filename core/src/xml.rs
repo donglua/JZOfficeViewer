@@ -27,17 +27,13 @@ impl Node {
     }
 }
 
-pub(crate) fn parse(bytes: &[u8]) -> Result<Node> {
+pub(crate) fn parse(bytes: Vec<u8>) -> Result<Node> {
     let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
         if bytes.len() % 2 != 0 {
             return Err(Error::Invalid("Truncated UTF-16 XML"));
         }
         let little = bytes.starts_with(&[0xff, 0xfe]);
-        let units: Vec<u16> = bytes
-            .iter()
-            .skip(2)
-            .copied()
-            .collect::<Vec<_>>()
+        let units: Vec<u16> = bytes[2..]
             .chunks_exact(2)
             .map(|v| {
                 if little {
@@ -49,7 +45,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Node> {
             .collect();
         String::from_utf16(&units).map_err(|_| Error::Invalid("Invalid UTF-16 XML"))?
     } else {
-        String::from_utf8(bytes.to_vec()).map_err(|_| Error::Invalid("Invalid UTF-8 XML"))?
+        String::from_utf8(bytes).map_err(|_| Error::Invalid("Invalid UTF-8 XML"))?
     };
     let options = roxmltree::ParsingOptions {
         allow_dtd: false,

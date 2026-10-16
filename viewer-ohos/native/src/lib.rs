@@ -5,19 +5,19 @@ use napi_derive_ohos::napi;
 use napi_ohos::bindgen_prelude::*;
 use napi_ohos::{Env, Error, Result, Task};
 use std::fs::File;
-use std::io::Read;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use zip::ZipArchive;
 
-const MEDIA_PART_LIMIT: usize = 16 * 1024 * 1024; // 16 MiB
+const MEDIA_PART_LIMIT: u64 = 16 * 1024 * 1024; // 16 MiB
 
 fn parse_path_to_json(path: &str) -> Result<String> {
     let result = catch_unwind(AssertUnwindSafe(
         || -> std::result::Result<String, String> {
             let document =
                 jz_office_core::parse_path(Path::new(path)).map_err(|e| e.to_string())?;
-            serde_json::to_string(&document).map_err(|e| e.to_string())
+            let json = serde_json::to_string(&document).map_err(|e| e.to_string());
+            drop(document);
+            json
         },
     ));
 
@@ -32,24 +32,10 @@ fn read_zip_part(path: &str, part: &str) -> Result<Buffer> {
     let result = catch_unwind(AssertUnwindSafe(
         || -> std::result::Result<Vec<u8>, String> {
             let file = File::open(path).map_err(|e| e.to_string())?;
-            let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
-            let entry = archive.by_name(part).map_err(|e| e.to_string())?;
-
-            let size = entry.size();
-            if size > MEDIA_PART_LIMIT as u64 {
-                return Err("Document part exceeds 16 MiB limit".to_string());
-            }
-
-            let cap = usize::try_from(size).unwrap_or(0);
-            let mut buf = Vec::with_capacity(cap);
-            entry
-                .take((MEDIA_PART_LIMIT as u64) + 1)
-                .read_to_end(&mut buf)
-                .map_err(|e| e.to_string())?;
-            if buf.len() > MEDIA_PART_LIMIT {
-                return Err("Document part exceeds 16 MiB limit".to_string());
-            }
-            Ok(buf)
+            let mut package = jz_office_core::Package::new(file).map_err(|e| e.to_string())?;
+            package
+                .read(part, MEDIA_PART_LIMIT)
+                .map_err(|e| e.to_string())
         },
     ));
 

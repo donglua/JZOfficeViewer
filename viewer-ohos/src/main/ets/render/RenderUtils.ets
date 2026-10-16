@@ -50,6 +50,39 @@ export class RenderUtils {
     return path2d;
   }
 
+  private static readonly MAX_IMAGE_DIMENSION: number = 4096;
+  private static readonly DEFAULT_MAX_PIXELS: number = 4_000_000;
+
+  private static async createSampledPixelMap(
+    imageSource: image.ImageSource,
+    maxPixels: number = RenderUtils.DEFAULT_MAX_PIXELS
+  ): Promise<image.PixelMap> {
+    const info: image.ImageInfo = await imageSource.getImageInfo();
+    const srcW = info?.size?.width ?? 0;
+    const srcH = info?.size?.height ?? 0;
+    if (srcW <= 0 || srcH <= 0) {
+      return await imageSource.createPixelMap({ editable: false });
+    }
+    let sampleSize = 1;
+    while (
+      Math.ceil(srcW / sampleSize) * Math.ceil(srcH / sampleSize) > maxPixels ||
+      Math.ceil(srcW / sampleSize) > RenderUtils.MAX_IMAGE_DIMENSION ||
+      Math.ceil(srcH / sampleSize) > RenderUtils.MAX_IMAGE_DIMENSION
+    ) {
+      sampleSize *= 2;
+    }
+    if (sampleSize <= 1) {
+      return await imageSource.createPixelMap({ editable: false });
+    }
+    return await imageSource.createPixelMap({
+      editable: false,
+      desiredSize: {
+        width: Math.max(1, Math.floor(srcW / sampleSize)),
+        height: Math.max(1, Math.floor(srcH / sampleSize))
+      }
+    });
+  }
+
   /**
    * 将 Element.image 中的 Base64 字符串解码为鸿蒙 PixelMap
    */
@@ -68,7 +101,7 @@ export class RenderUtils {
       );
 
       imageSource = image.createImageSource(buffer);
-      return await imageSource.createPixelMap({ editable: false });
+      return await RenderUtils.createSampledPixelMap(imageSource);
     } catch (_e) {
       return null;
     } finally {
@@ -79,13 +112,16 @@ export class RenderUtils {
   }
 
   /**
-   * 将 ArrayBuffer 二进制流直接解码为鸿蒙 PixelMap
+   * 将 ArrayBuffer 二进制流直接解码为鸿蒙 PixelMap（自动按预算降采样）
    */
-  public static async decodeImageBuffer(buffer: ArrayBuffer): Promise<image.PixelMap | null> {
+  public static async decodeImageBuffer(
+    buffer: ArrayBuffer,
+    maxPixels: number = RenderUtils.DEFAULT_MAX_PIXELS
+  ): Promise<image.PixelMap | null> {
     let imageSource: image.ImageSource | null = null;
     try {
       imageSource = image.createImageSource(buffer);
-      return await imageSource.createPixelMap({ editable: false });
+      return await RenderUtils.createSampledPixelMap(imageSource, maxPixels);
     } catch (_e) {
       return null;
     } finally {

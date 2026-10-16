@@ -42,12 +42,35 @@ public final class OfficeCacheChecks {
             check(reader.read() == 1 && reader.read() == 2, "Copy can still read after owner cancellation");
         }
         check(!file.exists(), "Last reader releases temporary file");
+        OfficeCache.Entry shared = OfficeCache.create(root);
+        File sharedFile = shared.getFile();
+        Files.write(sharedFile.toPath(), new byte[] {7, 8, 9});
+        OfficeCache.Entry retained = OfficeCache.retain(sharedFile);
+        check(retained != null && retained.getFile().equals(sharedFile), "Active entry is retained without copying");
+        shared.close();
+        check(sharedFile.exists() && OfficeCache.clear(root).skippedFiles == 1, "Retained entry survives original owner close");
+        retained.close();
+        check(!sharedFile.exists(), "Closing retained entry deletes file");
+        File leakedFile = allocateUnclosedEntry(root);
+        for (int attempt = 0; attempt < 20 && OfficeCache.clear(root).skippedFiles != 0; attempt++) {
+            System.gc();
+            System.runFinalization();
+            Thread.sleep(20);
+        }
+        check(!leakedFile.exists(), "Garbage-collected unclosed entry is reclaimed and deleted");
         Path stale = new File(root, "office-preview/document-stale.tmp").toPath();
         Files.write(stale, new byte[29]);
         result = OfficeCache.clear(root);
         check(result.deletedFiles == 1 && result.deletedBytes == 29 && result.failedFiles == 0, "Report actual bytes and files deleted");
         result = OfficeCache.clear(root);
         check(result.deletedFiles == 0 && result.deletedBytes == 0 && result.failedFiles == 0, "Repeated clear is empty");
+    }
+
+    private static File allocateUnclosedEntry(File root) throws Exception {
+        OfficeCache.Entry leaked = OfficeCache.create(root);
+        File file = leaked.getFile();
+        Files.write(file.toPath(), new byte[17]);
+        return file;
     }
 
     private static void checkRecovery(File root) throws Exception {
