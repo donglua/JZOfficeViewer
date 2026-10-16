@@ -27,6 +27,13 @@ pub(super) fn display(value: &Decimal, code: &str, date1904: bool) -> Option<Str
     }
     let mut result = if date_code.is_empty() {
         String::new()
+    } else if day == 0 && !time_code.is_empty() && !date1904 {
+        Calendar {
+            year: 1900,
+            month: 1,
+            day: 0,
+        }
+        .render(date_code)?
     } else {
         calendar(u32::try_from(day).ok()?, date1904)?.render(date_code)?
     };

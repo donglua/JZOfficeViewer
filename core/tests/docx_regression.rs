@@ -159,3 +159,38 @@ fn optional_header_adds_warning_without_entering_document_flow() -> TestResult {
         .all(|block| !checks::text(&block.paragraphs).contains("Optional header")));
     Ok(())
 }
+
+#[test]
+fn hidden_runs_and_ruby_rt_are_omitted_from_document_flow() -> TestResult {
+    let mut parts = docx::parts();
+    let body_with_hidden = r#"<w:p>
+        <w:r><w:t>Visible start</w:t></w:r>
+        <w:r><w:rPr><w:vanish/></w:rPr><w:t> Hidden vanish text</w:t></w:r>
+        <w:r><w:rPr><w:webHidden w:val="true"/></w:rPr><w:t> Hidden web text</w:t></w:r>
+        <w:ruby>
+            <w:rubyPr/>
+            <w:rt><w:r><w:t>pinyin</w:t></w:r></w:rt>
+            <w:rp><w:r><w:t>(</w:t></w:r></w:rp>
+            <w:rubyBase><w:r><w:t> 汉字</w:t></w:r></w:rubyBase>
+            <w:rp><w:r><w:t>)</w:t></w:r></w:rp>
+        </w:ruby>
+    </w:p>"#;
+    replace(
+        &mut parts,
+        "word/document.xml",
+        &docx::DOCUMENT.replace(
+            r#"<w:p><w:pPr><w:pStyle w:val="FixtureTitle"/></w:pPr>"#,
+            &format!("{body_with_hidden}<w:p><w:pPr><w:pStyle w:val=\"FixtureTitle\"/></w:pPr>"),
+        ),
+    );
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let all_text = checks::text(&document.blocks[0].paragraphs);
+    assert!(all_text.contains("Visible start"));
+    assert!(all_text.contains("汉字"));
+    assert!(!all_text.contains("Hidden vanish text"));
+    assert!(!all_text.contains("Hidden web text"));
+    assert!(!all_text.contains("pinyin"));
+    assert!(!all_text.contains('('));
+    assert!(!all_text.contains(')'));
+    Ok(())
+}

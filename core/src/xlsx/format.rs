@@ -24,18 +24,204 @@ pub(super) const fn builtin(id: u32) -> Option<&'static str> {
 }
 
 pub(crate) fn display(raw: &str, code: &str, date1904: bool) -> Option<String> {
+    if code.is_empty() {
+        return None;
+    }
     if code.eq_ignore_ascii_case("General") || code == "@" {
         return Some(raw.to_owned());
     }
-    if raw.len() > 512 || code.len() > 64 {
+    if raw.len() > 512 || code.len() > 128 {
         return None;
     }
     let value = Decimal::parse(raw)?;
-    if code.starts_with(['0', '#']) {
-        number(&value, code)
-    } else {
-        super::dates::display(&value, &code.to_ascii_lowercase(), date1904)
+
+    // 1. 按未转义分号切分 sections
+    let raw_sections = split_format_sections(code);
+    let is_zero = value.digits.is_empty() || value.digits.iter().all(|d| *d == b'0');
+    let is_negative = value.negative && !is_zero;
+
+    let selected = match raw_sections.len() {
+        1 => raw_sections[0],
+        2 => {
+            if is_negative {
+                raw_sections[1]
+            } else {
+                raw_sections[0]
+            }
+        }
+        3 | 4 => {
+            if is_negative {
+                raw_sections[1]
+            } else if is_zero {
+                raw_sections[2]
+            } else {
+                raw_sections[0]
+            }
+        }
+        _ => return None,
+    };
+
+    if selected.is_empty() {
+        return if raw_sections.len() > 1 {
+            Some(String::new())
+        } else {
+            None
+        };
     }
+
+    // 2. 剥离中括号指令标签 ([$-409], [Red] 等)
+    let cleaned = strip_format_brackets(selected);
+    if cleaned.is_empty() {
+        return if raw_sections.len() > 1 {
+            Some(String::new())
+        } else {
+            None
+        };
+    }
+    if cleaned == "@" {
+        return Some(raw.to_owned());
+    }
+
+    let trimmed = cleaned.trim();
+    // 处理纯文本字面量段落（例如 "-" 或 "N/A" 或 "\"-\""）
+    if trimmed == "\"-\"" || trimmed == "-" {
+        return Some("-".to_owned());
+    }
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        let inside = &trimmed[1..trimmed.len() - 1];
+        if !inside.contains('"') {
+            return Some(inside.to_owned());
+        }
+    }
+
+    // 3. 处理带括号或显式负号的负数段，如 (#,##0.00) 或 -0
+    // 若原代码含有尾随空格，保持原样交给 number 判定 unsupported_trailing_space
+    let has_trailing_space = cleaned.ends_with(' ');
+    let (prefix, inner_code, suffix) = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        ("(", trimmed[1..trimmed.len() - 1].trim(), ")")
+    } else if trimmed.starts_with('-') && raw_sections.len() > 1 {
+        ("-", trimmed[1..].trim(), "")
+    } else if has_trailing_space {
+        ("", cleaned.as_str(), "")
+    } else {
+        ("", trimmed, "")
+    };
+
+    if inner_code.starts_with(['0', '#']) {
+        let eval_val = if is_negative && (raw_sections.len() > 1 || !prefix.is_empty()) {
+            Decimal {
+                negative: false,
+                digits: value.digits.clone(),
+                point: value.point,
+            }
+        } else {
+            Decimal {
+                negative: value.negative,
+                digits: value.digits.clone(),
+                point: value.point,
+            }
+        };
+        let formatted = number(&eval_val, inner_code)?;
+        if !prefix.is_empty() || !suffix.is_empty() {
+            Some(format!("{prefix}{formatted}{suffix}"))
+        } else {
+            Some(formatted)
+        }
+    } else {
+        super::dates::display(&value, &inner_code.to_ascii_lowercase(), date1904)
+    }
+}
+
+fn strip_format_brackets(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut chars = code.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            out.push(ch);
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+            continue;
+        }
+        if ch == '"' {
+            out.push(ch);
+            for inner in chars.by_ref() {
+                out.push(inner);
+                if inner == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '[' {
+            let mut tag = String::new();
+            let mut closed = false;
+            for inner in chars.by_ref() {
+                if inner == ']' {
+                    closed = true;
+                    break;
+                }
+                tag.push(inner);
+            }
+            if !closed {
+                out.push('[');
+                out.push_str(&tag);
+                break;
+            }
+            let lower = tag.trim().to_ascii_lowercase();
+            // 保留时间耗时括号 [h], [hh], [m], [mm], [s], [ss]
+            if matches!(lower.as_str(), "h" | "hh" | "m" | "mm" | "s" | "ss") {
+                out.push('[');
+                out.push_str(&tag);
+                out.push(']');
+            } else if lower.starts_with("$-") || is_color_tag(&lower) {
+                // 剥离 [$-409] 区域代码与颜色标签
+                continue;
+            } else {
+                out.push('[');
+                out.push_str(&tag);
+                out.push(']');
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn is_color_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "black" | "blue" | "cyan" | "green" | "magenta" | "red" | "white" | "yellow"
+    ) || (tag.starts_with("color") && tag[5..].chars().all(|c| c.is_ascii_digit()))
+}
+
+fn split_format_sections(code: &str) -> Vec<&str> {
+    let mut sections = Vec::new();
+    let mut in_quotes = false;
+    let mut in_brackets = false;
+    let mut start = 0;
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                i += 2;
+                continue;
+            }
+            b'"' => in_quotes = !in_quotes,
+            b'[' if !in_quotes => in_brackets = true,
+            b']' if !in_quotes => in_brackets = false,
+            b';' if !in_quotes && !in_brackets => {
+                sections.push(&code[start..i]);
+                start = i + 1;
+            }
+            _ => (),
+        }
+        i += 1;
+    }
+    sections.push(&code[start..]);
+    sections
 }
 
 pub(super) struct Decimal {

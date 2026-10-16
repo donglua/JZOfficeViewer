@@ -15,6 +15,7 @@ const MAX_CELLS: usize = 5000;
 const MAX_COLUMNS: usize = 32;
 const MAX_ROWS: usize = 500;
 const MAX_COORDINATE: f32 = 1200.0;
+pub(super) const MAX_TEXT: usize = 8 * 1024 * 1024;
 
 pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> {
     let root = package.xml(main_part)?;
@@ -41,6 +42,7 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
         relationships,
         styles,
         cells: 0,
+        text_bytes: 0,
     };
     parser.body(body)?;
     Ok(parser.document)
@@ -52,6 +54,7 @@ struct Parser<'a> {
     relationships: HashMap<String, String>,
     styles: Styles,
     cells: usize,
+    text_bytes: usize,
 }
 
 impl Parser<'_> {
@@ -119,6 +122,8 @@ fn skipped(name: &str) -> bool {
             | "object"
             | "txbxContent"
             | "altChunk"
+            | "rt"
+            | "rp"
     )
 }
 

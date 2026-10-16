@@ -1,4 +1,4 @@
-use super::{alternate, format, skipped, Parser, MAX_BLOCKS};
+use super::{alternate, format, skipped, Parser, MAX_BLOCKS, MAX_TEXT};
 use crate::model::{Element, Paragraph, Run};
 use crate::xml::Node;
 use crate::{Error, Result};
@@ -17,16 +17,18 @@ impl Parser<'_> {
             } else {
                 MAX_BLOCKS.saturating_sub(self.document.blocks.len())
             },
+            text_bytes: self.text_bytes,
         };
         self.inline(node, &font, &mut flow)?;
         if flow.elements.is_empty() && flow.current.runs.is_empty() {
             let mut mark = font;
             format::font(&mut mark, node.child("pPr").and_then(|n| n.child("rPr")))?;
-            flow.text(mark.run("", &mut self.document));
+            flow.text(mark.run("", &mut self.document))?;
         }
         if !flow.current.runs.is_empty() || flow.elements.is_empty() {
             flow.flush()?;
         }
+        self.text_bytes = flow.text_bytes;
         Ok(flow.elements)
     }
 
@@ -43,19 +45,22 @@ impl Parser<'_> {
                         format::font(&mut font, style.child("rPr"))?;
                     }
                     format::font(&mut font, properties)?;
+                    if font.hidden {
+                        continue;
+                    }
                     self.inline(node, &font, flow)?;
                 }
-                "t" => flow.text(font.run(&node.text, &mut self.document)),
-                "tab" | "ptab" => flow.text(font.run("\t", &mut self.document)),
+                "t" => flow.text(font.run(&node.text, &mut self.document))?,
+                "tab" | "ptab" => flow.text(font.run("\t", &mut self.document))?,
                 "br" | "cr" => {
                     if matches!(node.attr("type"), "page" | "column") {
                         self.document
                             .warn("Page and column breaks are rendered as line breaks.");
                     }
-                    flow.text(font.run("\n", &mut self.document));
+                    flow.text(font.run("\n", &mut self.document))?;
                 }
-                "noBreakHyphen" => flow.text(font.run("\u{2011}", &mut self.document)),
-                "softHyphen" => flow.text(font.run("\u{ad}", &mut self.document)),
+                "noBreakHyphen" => flow.text(font.run("\u{2011}", &mut self.document))?,
+                "softHyphen" => flow.text(font.run("\u{ad}", &mut self.document))?,
                 "drawing" => {
                     if flow.in_cell {
                         self.document.warn("Images inside table cells are omitted.");
@@ -93,11 +98,17 @@ struct Flow {
     width: f32,
     in_cell: bool,
     limit: usize,
+    text_bytes: usize,
 }
 
 impl Flow {
-    fn text(&mut self, run: Run) {
+    fn text(&mut self, run: Run) -> Result<()> {
+        self.text_bytes += run.text.len();
+        if self.text_bytes > MAX_TEXT {
+            return Err(Error::Limit("DOCX text exceeds 8 MiB"));
+        }
         self.current.runs.push(run);
+        Ok(())
     }
 
     fn image(&mut self, image: Element) -> Result<()> {
@@ -128,5 +139,38 @@ impl Flow {
         }
         self.elements.push(element);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docx_flow_rejects_exceeding_text_limit() {
+        let mut flow = Flow {
+            template: Paragraph::default(),
+            current: Paragraph::default(),
+            elements: Vec::new(),
+            width: 500.0,
+            in_cell: false,
+            limit: 5000,
+            text_bytes: 0,
+        };
+        let chunk = "a".repeat(1024 * 1024);
+        let mut result = Ok(());
+        for _ in 0..9 {
+            result = flow.text(Run {
+                text: chunk.clone(),
+                ..Run::default()
+            });
+            if result.is_err() {
+                break;
+            }
+        }
+        assert!(matches!(
+            result,
+            Err(Error::Limit("DOCX text exceeds 8 MiB"))
+        ));
     }
 }

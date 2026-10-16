@@ -6,6 +6,7 @@ use crate::{Error, Result};
 #[derive(Clone, Default)]
 pub(super) struct Font {
     pub run: Run,
+    pub hidden: bool,
     families: [FontFamily; 4],
 }
 
@@ -105,6 +106,8 @@ pub(super) fn font(font: &mut Font, properties: Option<&Node>) -> Result<()> {
                     xml::color(value, run.color)
                 }
             }
+            "vanish" => font.hidden = enabled(value),
+            "webHidden" => font.hidden = enabled(value),
             _ => (),
         }
     }
