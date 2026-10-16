@@ -142,20 +142,17 @@ struct DocxFlowView {
       return;
     }
     const maxOx = Math.max(0, (this.viewportWidth * (this.zoom - 1)) / 2);
-    const maxOy = Math.max(0, (this.viewportHeight * (this.zoom - 1)) / 2);
     this.offsetX = Math.min(maxOx, Math.max(-maxOx, this.offsetX));
-    this.offsetY = Math.min(maxOy, Math.max(-maxOy, this.offsetY));
+    this.offsetY = 0;
   }
 
-  private setZoom(value: number, focusX: number, focusY: number): void {
+  private setZoom(value: number, focusX: number): void {
     if (isNaN(value) || !isFinite(value)) return;
     const oldZoom = this.zoom;
     const newZoom = Math.max(1.0, Math.min(3.0, value));
 
     const cX = this.viewportWidth / 2;
-    const cY = this.viewportHeight / 2;
     const dx = focusX - cX;
-    const dy = focusY - cY;
 
     if (newZoom <= 1.05) {
       this.zoom = 1.0;
@@ -163,9 +160,8 @@ struct DocxFlowView {
       this.offsetY = 0;
     } else {
       const worldX = (dx - this.offsetX) / oldZoom;
-      const worldY = (dy - this.offsetY) / oldZoom;
       this.offsetX = dx - worldX * newZoom;
-      this.offsetY = dy - worldY * newZoom;
+      this.offsetY = 0;
       this.zoom = newZoom;
       this.clampOffsets();
     }
@@ -184,6 +180,8 @@ struct DocxFlowView {
                     DocxTableView({ element: element })
                   } else if (element.type === 'IMAGE') {
                     DocxImageView({ element: element, imageStore: this.imageStore })
+                  } else if (element.type === 'RECT' || element.type === 'ELLIPSE' || element.type === 'LINE' || element.type === 'PATH') {
+                    DocxShapeView({ element: element, imageStore: this.imageStore })
                   } else if (element.paragraphs && element.paragraphs.length > 0) {
                     Column({ space: 4 }) {
                       ForEach(
@@ -206,7 +204,6 @@ struct DocxFlowView {
           .height('100%')
           .padding({ left: 16, right: 16, top: 16, bottom: 24 })
           .backgroundColor('#ffffff')
-          .enabled(this.zoom <= 1.05)
         }
         .width('100%')
         .height('100%')
@@ -231,19 +228,15 @@ struct DocxFlowView {
               const focusX = event.fingerList && event.fingerList.length > 0
                 ? event.fingerList[0].localX
                 : (this.viewportWidth / 2);
-              const focusY = event.fingerList && event.fingerList.length > 0
-                ? event.fingerList[0].localY
-                : (this.viewportHeight / 2);
-              this.setZoom(this.zoom > 1.1 ? 1.0 : 1.8, focusX, focusY);
+              this.setZoom(this.zoom > 1.1 ? 1.0 : 1.8, focusX);
             }),
           PinchGesture({ fingers: 2 })
-            .onActionStart((event: GestureEvent) => {
+            .onActionStart(() => {
               this.pinchStartZoom = this.zoom;
             })
             .onActionUpdate((event: GestureEvent) => {
               const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
-              const focusY = event.pinchCenterY > 0 ? event.pinchCenterY : (this.viewportHeight / 2);
-              this.setZoom(this.pinchStartZoom * event.scale, focusX, focusY);
+              this.setZoom(this.pinchStartZoom * event.scale, focusX);
             })
             .onActionEnd(() => {
               if (this.zoom <= 1.05) {
@@ -252,15 +245,13 @@ struct DocxFlowView {
                 this.offsetY = 0;
               }
             }),
-          PanGesture()
+          PanGesture({ direction: PanDirection.Horizontal })
             .onActionStart(() => {
               this.panStartX = this.offsetX;
-              this.panStartY = this.offsetY;
             })
             .onActionUpdate((event: GestureEvent) => {
               if (this.zoom > 1.05) {
                 this.offsetX = this.panStartX + event.offsetX;
-                this.offsetY = this.panStartY + event.offsetY;
                 this.clampOffsets();
               }
             })
@@ -380,9 +371,77 @@ struct DocxImageView {
   }
 }
 
+/**
+ * DOCX 矢量图形块 (RECT / ELLIPSE / LINE / PATH) 绘制组件
+ */
+@Component
+struct DocxShapeView {
+  element: model.Element | null = null;
+  imageStore: ImageStore = new ImageStore('');
+
+  private settings: RenderingContextSettings = new RenderingContextSettings(true);
+  private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private isReady: boolean = false;
+
+  private drawShape(): void {
+    if (!this.isReady || !this.element) return;
+    const w = this.ctx.width;
+    const h = this.ctx.height;
+    if (w <= 0 || h <= 0) return;
+    const elW = this.element.width > 0 ? this.element.width : w;
+    const elH = this.element.height > 0 ? this.element.height : h;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, w, h);
+    ctx.save();
+    const scale = Math.min(w / elW, h / elH);
+    ctx.scale(scale, scale);
+    CanvasElementDrawer.drawElement(ctx, this.element, this.imageStore.cache);
+    ctx.restore();
+  }
+
+  build() {
+    if (this.element) {
+      Row() {
+        Canvas(this.ctx)
+          .width(this.element.width && this.element.width > 0 ? this.element.width : '100%')
+          .height(this.element.height && this.element.height > 0 ? this.element.height : 100)
+          .constraintSize({ maxWidth: '100%' })
+          .onReady(() => {
+            this.isReady = true;
+            this.drawShape();
+          })
+          .onAreaChange(() => {
+            this.drawShape();
+          })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Center)
+      .margin({ top: 4, bottom: 6 })
+    }
+  }
+}
+
 @Component
 struct DocxParagraphView {
   para: model.Paragraph | null = null;
+
+  private calcLineHeight(): number | undefined {
+    if (!this.para || !this.para.runs || this.para.runs.length === 0) return undefined;
+    let maxFontSize = 14;
+    for (const r of this.para.runs) {
+      if (r.size && r.size > maxFontSize) maxFontSize = r.size;
+    }
+    if (this.para.lineSpacingRule === 'EXACT') {
+      return Math.max(1, this.para.lineSpacing || (maxFontSize * 1.2));
+    }
+    if (this.para.lineSpacingRule === 'AT_LEAST') {
+      return Math.max(maxFontSize * 1.2, this.para.lineSpacing || (maxFontSize * 1.2));
+    }
+    if (this.para.lineSpacing && this.para.lineSpacing > 0 && Math.abs(this.para.lineSpacing - 1.0) > 0.05) {
+      return Math.max(1, maxFontSize * 1.2 * this.para.lineSpacing);
+    }
+    return undefined;
+  }
 
   build() {
     if (this.para) {
@@ -395,6 +454,7 @@ struct DocxParagraphView {
           (run: model.Run) => {
             Span(run.text)
               .fontSize(run.size || 14)
+              .fontFamily(run.fontFace && run.fontFace.length > 0 ? `${run.fontFace}, sans-serif` : 'sans-serif')
               .fontColor(RenderUtils.argbToCss(run.color) ?? '#202124')
               .fontWeight(run.bold ? FontWeight.Bold : FontWeight.Normal)
               .fontStyle(run.italic ? FontStyle.Italic : FontStyle.Normal)
@@ -408,11 +468,13 @@ struct DocxParagraphView {
       }
       .width('100%')
       .textAlign(this.mapAlignment(this.para.alignment))
+      .textIndent(this.para.firstLineIndent && this.para.firstLineIndent > 0 ? this.para.firstLineIndent : 0)
+      .lineHeight(this.calcLineHeight())
       .margin({
-        top: this.para.before || 2,
-        bottom: this.para.after || 4,
-        left: (this.para.indent || 0) + (this.para.firstLineIndent || 0),
-        right: this.para.rightIndent || 0
+        top: this.para.before ?? 2,
+        bottom: this.para.after ?? 4,
+        left: Math.max(0, this.para.indent ?? 0),
+        right: Math.max(0, this.para.rightIndent ?? 0)
       })
     }
   }
@@ -499,20 +561,17 @@ struct PptxSlidesView {
       return;
     }
     const maxOx = Math.max(0, (this.viewportWidth * (this.zoom - 1)) / 2);
-    const maxOy = Math.max(0, (this.viewportHeight * (this.zoom - 1)) / 2);
     this.offsetX = Math.min(maxOx, Math.max(-maxOx, this.offsetX));
-    this.offsetY = Math.min(maxOy, Math.max(-maxOy, this.offsetY));
+    this.offsetY = 0;
   }
 
-  private setZoom(value: number, focusX: number, focusY: number): void {
+  private setZoom(value: number, focusX: number): void {
     if (isNaN(value) || !isFinite(value)) return;
     const oldZoom = this.zoom;
     const newZoom = Math.max(1.0, Math.min(4.0, value));
 
     const cX = this.viewportWidth / 2;
-    const cY = this.viewportHeight / 2;
     const dx = focusX - cX;
-    const dy = focusY - cY;
 
     if (newZoom <= 1.05) {
       this.zoom = 1.0;
@@ -520,9 +579,8 @@ struct PptxSlidesView {
       this.offsetY = 0;
     } else {
       const worldX = (dx - this.offsetX) / oldZoom;
-      const worldY = (dy - this.offsetY) / oldZoom;
       this.offsetX = dx - worldX * newZoom;
-      this.offsetY = dy - worldY * newZoom;
+      this.offsetY = 0;
       this.zoom = newZoom;
       this.clampOffsets();
     }
@@ -554,7 +612,6 @@ struct PptxSlidesView {
           .width('100%')
           .height('100%')
           .padding({ left: 16, right: 16, top: 16, bottom: 24 })
-          .enabled(this.zoom <= 1.05)
         }
         .width('100%')
         .height('100%')
@@ -579,19 +636,15 @@ struct PptxSlidesView {
               const focusX = event.fingerList && event.fingerList.length > 0
                 ? event.fingerList[0].localX
                 : (this.viewportWidth / 2);
-              const focusY = event.fingerList && event.fingerList.length > 0
-                ? event.fingerList[0].localY
-                : (this.viewportHeight / 2);
-              this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
+              this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX);
             }),
           PinchGesture({ fingers: 2 })
-            .onActionStart((event: GestureEvent) => {
+            .onActionStart(() => {
               this.pinchStartZoom = this.zoom;
             })
             .onActionUpdate((event: GestureEvent) => {
               const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
-              const focusY = event.pinchCenterY > 0 ? event.pinchCenterY : (this.viewportHeight / 2);
-              this.setZoom(this.pinchStartZoom * event.scale, focusX, focusY);
+              this.setZoom(this.pinchStartZoom * event.scale, focusX);
             })
             .onActionEnd(() => {
               if (this.zoom <= 1.05) {
@@ -600,15 +653,13 @@ struct PptxSlidesView {
                 this.offsetY = 0;
               }
             }),
-          PanGesture()
+          PanGesture({ direction: PanDirection.Horizontal })
             .onActionStart(() => {
               this.panStartX = this.offsetX;
-              this.panStartY = this.offsetY;
             })
             .onActionUpdate((event: GestureEvent) => {
               if (this.zoom > 1.05) {
                 this.offsetX = this.panStartX + event.offsetX;
-                this.offsetY = this.panStartY + event.offsetY;
                 this.clampOffsets();
               }
             })

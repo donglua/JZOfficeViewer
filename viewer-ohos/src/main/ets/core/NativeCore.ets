@@ -12,7 +12,11 @@ export class NativeCore {
     signal?: AbortSignal
   ): Promise<OfficeDocument> {
     const rawJson: string = await parseAsync(path, signal);
-    return JSON.parse(rawJson) as OfficeDocument;
+    const doc = JSON.parse(rawJson) as OfficeDocument;
+    if (doc.schemaVersion !== 9) {
+      throw new Error(`Unsupported core model version: ${doc.schemaVersion}`);
+    }
+    return doc;
   }
 
   /**
@@ -21,7 +25,11 @@ export class NativeCore {
    */
   public static parseDocumentSync(path: string): OfficeDocument {
     const rawJson: string = parse(path);
-    return JSON.parse(rawJson) as OfficeDocument;
+    const doc = JSON.parse(rawJson) as OfficeDocument;
+    if (doc.schemaVersion !== 9) {
+      throw new Error(`Unsupported core model version: ${doc.schemaVersion}`);
+    }
+    return doc;
   }
 
   /**

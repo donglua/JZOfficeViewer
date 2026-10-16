@@ -554,6 +554,8 @@ export struct SpreadsheetView {
     }
   }
 
+  private static readonly MAX_CELL_PREVIEW_LENGTH = 4096;
+
   private drawSingleCell(
     ctx: CanvasRenderingContext2D,
     cell: model.Cell,
@@ -583,13 +585,67 @@ export struct SpreadsheetView {
     ctx.textAlign = 'left';
 
     const align = style?.alignment === 3 ? (cell.numeric ? 2 : 0) : (style?.alignment ?? 0);
-    const availW = colW - 4;
-    const availH = rowH - 2;
-
-    const hasNewline = cell.text.indexOf('\n') !== -1;
-    const lines = hasNewline ? cell.text.split('\n') : null;
-    const lineCount = lines ? lines.length : 1;
+    const availW = Math.max(1, colW - 4);
+    const availH = Math.max(1, rowH - 2);
     const lineHeight = fontSize * 1.25;
+    const maxLines = Math.max(1, Math.ceil(availH / lineHeight) + 1);
+
+    // 字符截断保护，防止单个单元格数万字符导致测量卡死
+    const rawText = cell.text.length > SpreadsheetView.MAX_CELL_PREVIEW_LENGTH
+      ? cell.text.substring(0, SpreadsheetView.MAX_CELL_PREVIEW_LENGTH)
+      : cell.text;
+
+    const finalLines: string[] = [];
+    if (style?.wrap) {
+      const paragraphs = rawText.split('\n');
+      for (const p of paragraphs) {
+        if (finalLines.length >= maxLines) break;
+        if (p.length === 0) {
+          finalLines.push('');
+          continue;
+        }
+        let remaining = p;
+        while (remaining.length > 0 && finalLines.length < maxLines) {
+          const w = ctx.measureText(remaining).width;
+          if (w <= availW) {
+            finalLines.push(remaining);
+            break;
+          }
+          // 二分查找单行最大字符数
+          let low = 1;
+          let high = remaining.length;
+          let best = 1;
+          while (low <= high) {
+            const mid = (low + high) >>> 1;
+            if (ctx.measureText(remaining.substring(0, mid)).width <= availW) {
+              best = mid;
+              low = mid + 1;
+            } else {
+              high = mid - 1;
+            }
+          }
+          // 代理对保护：切到高代理时避免劈半产生非法 Unicode 字符
+          if (best < remaining.length && remaining.charCodeAt(best - 1) >= 0xD800 && remaining.charCodeAt(best - 1) <= 0xDBFF) {
+            best = best > 1 ? best - 1 : best + 1;
+          }
+          finalLines.push(remaining.substring(0, best));
+          remaining = remaining.substring(best);
+        }
+      }
+    } else {
+      if (rawText.indexOf('\n') !== -1) {
+        const parts = rawText.split('\n');
+        for (let i = 0; i < Math.min(parts.length, maxLines); i++) {
+          finalLines.push(parts[i]);
+        }
+      } else {
+        finalLines.push(rawText);
+      }
+    }
+
+    if (finalLines.length === 0) return;
+
+    const lineCount = finalLines.length;
     const totalTextH = lineCount * lineHeight;
 
     let startY = top + 1 + (availH - totalTextH) / 2 + lineHeight / 2;
@@ -601,11 +657,11 @@ export struct SpreadsheetView {
 
     ctx.save();
     ctx.beginPath();
-    ctx.rect(left + 2, top + 1, Math.max(0, availW), Math.max(0, availH));
+    ctx.rect(left + 2, top + 1, availW, availH);
     ctx.clip();
 
     for (let i = 0; i < lineCount; i++) {
-      const line = lines ? lines[i] : cell.text;
+      const line = finalLines[i];
       let textX = left + 2;
       let textW = 0;
       if (align !== 0 || style?.underline) {

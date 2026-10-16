@@ -212,13 +212,14 @@ export class CanvasElementDrawer {
           let paraY = currentY + 5;
           for (const para of cellParas) {
             paraY += Math.max(0, para.before || 0);
+            const lines = CanvasElementDrawer.layoutParagraph(ctx, para, Math.max(1, colW - 10), true);
             const h = CanvasElementDrawer.drawParagraphLines(
               ctx,
               para,
+              lines,
               currentX + 5,
               paraY,
-              Math.max(1, colW - 10),
-              true
+              Math.max(1, colW - 10)
             );
             paraY += h + Math.max(0, para.after || 0);
           }
@@ -235,12 +236,18 @@ export class CanvasElementDrawer {
     const availableWidth = Math.max(1, element.width - padding * 2);
     const wrap = element.textWrap !== false;
 
-    const totalTextHeight = CanvasElementDrawer.measureParagraphsHeight(
-      ctx,
-      element.paragraphs,
-      availableWidth,
-      wrap
-    );
+    // 单次测量复用：一次性排版全部段落，避免测量高度和绘制各执行一遍
+    const laidOutParagraphs: WrappedLine[][] = [];
+    let totalTextHeight = 0;
+    for (const para of element.paragraphs) {
+      totalTextHeight += Math.max(0, para.before || 0);
+      const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
+      laidOutParagraphs.push(lines);
+      for (const line of lines) {
+        totalTextHeight += line.height;
+      }
+      totalTextHeight += Math.max(0, para.after || 0);
+    }
 
     let offsetY = padding;
     const remaining = Math.max(0, element.height - padding * 2 - totalTextHeight);
@@ -257,15 +264,17 @@ export class CanvasElementDrawer {
       ctx.clip();
     }
 
-    for (const para of element.paragraphs) {
+    for (let i = 0; i < element.paragraphs.length; i++) {
+      const para = element.paragraphs[i];
+      const lines = laidOutParagraphs[i];
       offsetY += Math.max(0, para.before || 0);
-      const h = CanvasElementDrawer.drawParagraphLines(ctx, para, padding, offsetY, availableWidth, wrap);
+      const h = CanvasElementDrawer.drawParagraphLines(ctx, para, lines, padding, offsetY, availableWidth);
       offsetY += h + Math.max(0, para.after || 0);
     }
     ctx.restore();
   }
 
-  private static measureParagraphsHeight(
+  public static measureParagraphsHeight(
     ctx: CanvasRenderingContext2D,
     paragraphs: model.Paragraph[],
     availableWidth: number,
@@ -286,12 +295,11 @@ export class CanvasElementDrawer {
   private static drawParagraphLines(
     ctx: CanvasRenderingContext2D,
     para: model.Paragraph,
+    lines: WrappedLine[],
     startX: number,
     startY: number,
-    availableWidth: number,
-    wrap: boolean
+    availableWidth: number
   ): number {
-    const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
     const rightIndent = Math.max(0, para.rightIndent || 0);
     const baseIndent = Math.max(0, para.indent || 0);
     const firstIndent = Math.max(0, baseIndent + (para.firstLineIndent || 0));
@@ -389,8 +397,9 @@ export class CanvasElementDrawer {
       const fontSize = Math.max(1, run.size || 12);
       const fontStyle = run.italic ? 'italic ' : '';
       const fontWeight = run.bold ? 'bold ' : '';
-      // 关键修复：使用 vp 作为字号单位，与 Canvas 逻辑坐标系保持 1:1
-      const fontStr = `${fontStyle}${fontWeight}${fontSize}vp sans-serif`;
+      // 关键修复：使用 vp 作为字号单位，并支持自定义 fontFace 字体回退
+      const fontFace = run.fontFace && run.fontFace.trim().length > 0 ? `"${run.fontFace}", sans-serif` : 'sans-serif';
+      const fontStr = `${fontStyle}${fontWeight}${fontSize}vp ${fontFace}`;
       const colorCss = RenderUtils.argbToCss(run.color) ?? '#202124';
       ctx.font = fontStr;
 
@@ -445,6 +454,22 @@ export class CanvasElementDrawer {
               low = mid + 1;
             } else {
               high = mid - 1;
+            }
+          }
+
+          // 代理对保护：避免将高/低代理项劈开导致乱码
+          if (bestCount < remainingText.length && remainingText.charCodeAt(bestCount - 1) >= 0xD800 && remainingText.charCodeAt(bestCount - 1) <= 0xDBFF) {
+            bestCount = bestCount > 1 ? bestCount - 1 : bestCount + 1;
+            bestWidth = ctx.measureText(remainingText.substring(0, bestCount)).width;
+          }
+
+          // 英文按词折行保护：若截断处在单词中间且前部有空格，优先在空格处断行
+          if (bestCount < remainingText.length && !/\s/.test(remainingText.charAt(bestCount))) {
+            const candidate = remainingText.substring(0, bestCount);
+            const lastSpace = candidate.lastIndexOf(' ');
+            if (lastSpace > 0 && lastSpace >= bestCount * 0.4) {
+              bestCount = lastSpace + 1;
+              bestWidth = ctx.measureText(remainingText.substring(0, bestCount)).width;
             }
           }
 
