@@ -21,7 +21,7 @@ ohpm i @jzdy/office
 ```json5
 {
   "dependencies": {
-    "@jzdy/office": "^0.4.0"
+    "@jzdy/office": "^0.5.0"
   }
 }
 ```

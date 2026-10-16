@@ -1,5 +1,36 @@
 # 更新日志
 
+## 0.5.0
+
+发布页面：[v0.5.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.5.0)。
+
+### 核心引擎（Rust core）
+
+- **原生接口架构精简**：暴露 `parse_path_to_json` API，直接在 Rust 核心层完成路径解析与序列化，彻底消除 Android JNI 和鸿蒙 NAPI 中冗余重复的中间层序列化胶水代码。
+- **并发解压与安全防御**：
+  - 新增线程安全的 `package_cache` 模块，通过 LRU 缓存与文件修改感知重载复用 ZIP 句柄与中央目录，消除高并发读图时的重复 I/O。
+  - 动态流式读取解压数据，杜绝未经验证的预分配；跨部件累计跟踪整包 256 MiB 解压预算（`MAX_EXPANDED`），防范恶意构造的 Zip 炸弹。
+- **排版与规范对齐**：
+  - **DOCX 规范与安全**：过滤 `vanish` 和 `webHidden` 隐藏文本；忽略 `rt`/`rp` ruby 注音标记；增加单文档 8 MiB 文本上限保护。
+  - **XLSX 复杂格式化**：支持分号 `;` 切分多段格式（正数/负数/零/文本）；支持 `[$-409]` 等区域代码与颜色标签剥离；支持负数括号与 1900 虚拟日期。
+  - **表格与排版下沉**：超长单元格截断逻辑下沉至核心统一处理；统一 PPTX 表格列宽归一化逻辑，以及双端字体与列表符号样式。
+
+### 双端通用（Android & HarmonyOS）
+
+- **内存与句柄生命周期治理**：
+  - 严格管理原生句柄、Bitmap 与 PixelMap 的生命周期，解决跨语言内存峰值泄漏。
+  - 优化图片缓存（`ImageStore` / `OfficeCache` / `OfficeImages`）的 LRU 淘汰机制。
+
+### 鸿蒙端（viewer-ohos / @jzdy/office）
+
+- **浏览与交互对齐**：
+  - 优化缩放手势交互，双指放大后支持上下原生平滑滚动浏览全文，横向平移浏览边缘内容。
+  - XLSX 电子表格单元格支持 `style.wrap` 自动换行、超长截断保护与 UTF-16 代理对截断保护。
+  - DOCX 修复首行缩进与左边距叠加计算，新增 `textIndent`、`fontFamily`、`lineHeight` 行距与 `DocxShapeView` 矢量形状。
+  - Canvas 文本排版实现单次测量复用，消除每帧重复测量开销。
+- **包体积深度优化**：
+  - 打包排除 native 源码及编译缓存重复归档，过滤 32 位冗余架构，大幅精简 HAR 包体积。
+
 ## 0.4.0
 
 发布页面：[v0.4.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.4.0)。

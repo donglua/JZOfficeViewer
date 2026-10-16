@@ -10,7 +10,7 @@ android {
         applicationId 'cn.jingzhuan.lib.office.demo'
         minSdk 23
         targetSdk 35
-        versionCode 5
+        versionCode 6
         versionName rootProject.publishedVersion
     }
     buildTypes {

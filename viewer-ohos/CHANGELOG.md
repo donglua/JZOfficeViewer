@@ -2,6 +2,22 @@
 
 All notable changes to `@jzdy/office` will be documented in this file.
 
+## [0.5.0] - 2026-10-16
+
+### Added
+- Native `package_cache` thread-safe LRU caching in Rust core to reuse ZIP handles and avoid repeated directory scans.
+- Cumulative 256 MiB decompression budget (`MAX_EXPANDED`) and dynamic streaming read for image extraction protection.
+- Native `parse_path_to_json` binding, replacing duplicated NAPI serialization glue code.
+- Viewport interaction enhancement: native vertical scrolling and horizontal panning while zoomed in for DOCX and PPTX.
+- DOCX typography features: `textIndent`, `fontFamily`, `lineHeight` spacing, and `DocxShapeView` vector shapes.
+- XLSX auto line-wrapping (`style.wrap`), complex multi-section number formatting, and UTF-16 surrogate pair truncation safety.
+- Filtering of hidden text (`vanish`, `webHidden`) and ruby text (`rt`, `rp`) in DOCX.
+
+### Optimized
+- Eliminated redundant native source/cache archiving and filtered 32-bit binaries, significantly reducing HAR package size.
+- Optimized `ImageStore` and native handle lifecycle management to prevent memory peaks and leaks.
+- Single-pass text layout measurements in `CanvasElementDrawer` to eliminate repeated Canvas measuring overhead.
+
 ## [0.4.0] - 2026-10-15
 
 ### Added

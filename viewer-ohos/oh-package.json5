@@ -1,6 +1,6 @@
 {
   "name": "@jzdy/office",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Lightweight DOCX, PPTX and XLSX offline preview library for HarmonyOS NEXT",
   "main": "Index.ets",
   "author": "donglua <dongluh@gmail.com>",

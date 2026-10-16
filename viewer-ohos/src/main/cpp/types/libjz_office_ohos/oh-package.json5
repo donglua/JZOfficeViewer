@@ -1,6 +1,6 @@
 {
   "name": "libjz_office_ohos.so",
   "types": "./index.d.ts",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "JZOffice Rust Native Core for HarmonyOS NEXT"
 }
