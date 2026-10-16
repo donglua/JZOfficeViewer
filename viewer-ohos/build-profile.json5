@@ -1,4 +1,12 @@
 {
   "apiType": "stageMode",
-  "buildOption": {}
+  "buildOption": {
+    "packingOptions": {
+      "asset": {
+        "exclude": [
+          "native/**"
+        ]
+      }
+    }
+  }
 }

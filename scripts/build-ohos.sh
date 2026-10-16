@@ -11,13 +11,19 @@ export PATH="${HOME}/.cargo/bin:${PATH}"
 
 echo "==> [1/4] Building jz-office-ohos via ohrs..."
 cd "${NATIVE_DIR}"
-ohrs build --release
+ARCH_ARGS=(-a arm64 -a x64)
+if [[ "${OHOS_BUILD_ARM32:-0}" == "1" ]]; then
+    ARCH_ARGS+=(-a arm)
+fi
+ohrs build --release "${ARCH_ARGS[@]}"
 
 echo "==> [2/4] Syncing .so libraries to viewer-ohos/libs..."
-mkdir -p "${HAR_DIR}/libs/arm64-v8a" "${HAR_DIR}/libs/x86_64" "${HAR_DIR}/libs/armeabi-v7a"
+rm -rf "${HAR_DIR}/libs"
+mkdir -p "${HAR_DIR}/libs/arm64-v8a" "${HAR_DIR}/libs/x86_64"
 cp -f "${NATIVE_DIR}/dist/arm64-v8a/libjz_office_ohos.so" "${HAR_DIR}/libs/arm64-v8a/"
 cp -f "${NATIVE_DIR}/dist/x86_64/libjz_office_ohos.so" "${HAR_DIR}/libs/x86_64/"
-if [[ -f "${NATIVE_DIR}/dist/armeabi-v7a/libjz_office_ohos.so" ]]; then
+if [[ "${OHOS_BUILD_ARM32:-0}" == "1" && -f "${NATIVE_DIR}/dist/armeabi-v7a/libjz_office_ohos.so" ]]; then
+    mkdir -p "${HAR_DIR}/libs/armeabi-v7a"
     cp -f "${NATIVE_DIR}/dist/armeabi-v7a/libjz_office_ohos.so" "${HAR_DIR}/libs/armeabi-v7a/"
 fi
 
