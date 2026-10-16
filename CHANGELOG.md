@@ -4,67 +4,58 @@
 
 发布页面：[v0.5.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.5.0)。
 
-### 核心引擎（Rust core）
+### 格式解析与排版
 
-- **原生接口架构精简**：暴露 `parse_path_to_json` API，直接在 Rust 核心层完成路径解析与序列化，彻底消除 Android JNI 和鸿蒙 NAPI 中冗余重复的中间层序列化胶水代码。
-- **并发解压与安全防御**：
-  - 新增线程安全的 `package_cache` 模块，通过 LRU 缓存与文件修改感知重载复用 ZIP 句柄与中央目录，消除高并发读图时的重复 I/O。
-  - 动态流式读取解压数据，杜绝未经验证的预分配；跨部件累计跟踪整包 256 MiB 解压预算（`MAX_EXPANDED`），防范恶意构造的 Zip 炸弹。
-- **排版与规范对齐**：
-  - **DOCX 规范与安全**：过滤 `vanish` 和 `webHidden` 隐藏文本；忽略 `rt`/`rp` ruby 注音标记；增加单文档 8 MiB 文本上限保护。
-  - **XLSX 复杂格式化**：支持分号 `;` 切分多段格式（正数/负数/零/文本）；支持 `[$-409]` 等区域代码与颜色标签剥离；支持负数括号与 1900 虚拟日期。
-  - **表格与排版下沉**：超长单元格截断逻辑下沉至核心统一处理；统一 PPTX 表格列宽归一化逻辑，以及双端字体与列表符号样式。
+- 暴露 `parse_path_to_json` 原生接口，由 Rust 核心直接完成路径解析与序列化，去除 Android JNI 与鸿蒙 NAPI 中重复的中间层胶水代码。
+- 过滤 DOCX 中的 `vanish` 和 `webHidden` 隐藏文本，忽略 `rt`/`rp` ruby 注音标记，并设置单文档 8 MiB 文本上限保护。
+- XLSX 支持分号 `;` 切分多段格式（正数/负数/零/文本），支持 `[$-409]` 等区域代码与颜色标签解析，支持负数括号表示与 1900 虚拟日期。
+- 超长单元格截断逻辑收敛至 Rust 核心统一处理；统一 PPTX 表格列宽归一化计算，以及双端字体与列表符号默认样式。
 
-### 双端通用（Android & HarmonyOS）
+### 资源解压与内存管理
 
-- **内存与句柄生命周期治理**：
-  - 严格管理原生句柄、Bitmap 与 PixelMap 的生命周期，解决跨语言内存峰值泄漏。
-  - 优化图片缓存（`ImageStore` / `OfficeCache` / `OfficeImages`）的 LRU 淘汰机制。
+- 新增线程安全的 `package_cache` 模块，通过 LRU 缓存与文件修改感知重载复用 ZIP 句柄与中央目录，减少并发读图时的重复 I/O。
+- ZIP 解压采用动态流式读取，避免未经校验的大内存预分配；整包累计跟踪 256 MiB 解压预算（`MAX_EXPANDED`），防范畸形压缩包导致的内存超限。
+- 规范原生句柄、Bitmap 与 PixelMap 的生命周期与释放时机，优化图片缓存（`ImageStore` / `OfficeCache` / `OfficeImages`）的 LRU 淘汰机制，降低跨语言调用时的内存泄漏风险与峰值占用。
 
-### 鸿蒙端（viewer-ohos / @jzdy/office）
+### 鸿蒙端渲染与交互
 
-- **浏览与交互对齐**：
-  - 优化缩放手势交互，双指放大后支持上下原生平滑滚动浏览全文，横向平移浏览边缘内容。
-  - XLSX 电子表格单元格支持 `style.wrap` 自动换行、超长截断保护与 UTF-16 代理对截断保护。
-  - DOCX 修复首行缩进与左边距叠加计算，新增 `textIndent`、`fontFamily`、`lineHeight` 行距与 `DocxShapeView` 矢量形状。
-  - Canvas 文本排版实现单次测量复用，消除每帧重复测量开销。
-- **包体积深度优化**：
-  - 打包排除 native 源码及编译缓存重复归档，过滤 32 位冗余架构，大幅精简 HAR 包体积。
+- 手势缩放后支持上下滚动浏览全文，横向平移查看边缘内容。
+- XLSX 电子表格支持单元格自动换行（`style.wrap`）、超长截断与 UTF-16 代理对截断保护。
+- DOCX 修复首行缩进与左边距叠加计算，支持 `textIndent`、`fontFamily`、`lineHeight` 行距与 `DocxShapeView` 矢量形状绘制。
+- Canvas 文本排版复用测量结果，避免每帧重复测量。
+- HAR 打包排除 native 源码及编译中间缓存，移除 32 位架构预编译库，缩减产物体积。
 
 ## 0.4.0
 
 发布页面：[v0.4.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.4.0)。
 
-> **说明**：本版本主要为 **鸿蒙端（HarmonyOS NEXT / `@jzdy/office`）** 的交互体验与渲染性能升级，手势操作与表格渲染机制全面对齐 Android 端；Android 端（`viewer` / `viewer-online`）与 Rust 核心层主要进行版本号同步。
+> **说明**：本版本主要更新 **鸿蒙端（HarmonyOS NEXT / `@jzdy/office`）**，补齐手势交互与表格渲染能力；Android 端（`viewer` / `viewer-online`）与 Rust 核心层主要同步版本号。
 
-### 鸿蒙端（viewer-ohos）
+### 交互与视口
 
-#### 交互与视口（对齐 Android 端）
+- PPTX 与 DOCX 全局视口支持双指捏合缩放（1.0x~4.0x，跟随触摸中心锚点）与双击快速切换（1.0x / 2.0x）。
+- 放大状态下支持二维平移拖拽与边界阻尼，各视口容器启用硬件裁剪（`.clip(true)`），避免内容溢出容器边界。
 
-- **全局视口手势控制**：支持 PPTX 与 DOCX 全局视口双指捏合缩放（1.0x~4.0x，跟随触摸中心锚点对齐）与双击快速切换缩放（1.0x <-> 2.0x）。
-- **视口平移与边界限制**：支持缩放状态下的二维平移拖拽，具备边界阻尼限制，并为各视口容器补充硬件裁剪（`.clip(true)`），解决内容放大溢出遮挡外部界面问题。
+### 渲染与性能
 
-#### 渲染与性能
+- DOCX 接入 `ImageStore` 统一管理图片生命周期，通过 `DocxImageView` 异步解压并解码 ZIP 内嵌图片为 PixelMap；支持拉伸图元按文档声明尺寸等比渲染，并增加视口宽度约束防止大图溢出。
+- XLSX 采用轴前缀和（`SheetAxis`）与稀疏行索引二分查找可见单元格，避免全表遍历。
+- XLSX 使用 `Uint8Array` 紧凑记录合并单元格从属，减少滑动过程中的对象分配与垃圾回收 (GC) 影响。
+- XLSX 增加惯性滑动（Fling）支持，改善电子表格触摸滚动的连贯度。
+- 限制网格线、合并单元格、边框及表头仅在视口可见区间绘制，减少无效重绘。
 
-- **DOCX 内嵌图片异步提取与填充**：`DocxFlowView` 接入 `ImageStore` 统一管理生命周期与内存释放，通过 `DocxImageView` 异步解压并解码 ZIP 内嵌图片为 PixelMap；支持 `ImageFit.Fill`，让 1x1 等纯色/矢量拉伸图元按文档声明尺寸等比渲染，并增加最大视口宽度约束防止大图溢出。
-- **XLSX 表格流畅度与性能优化**：
-  - 采用轴前缀和（`SheetAxis`）与稀疏行索引二分查找视口可见单元格，消除全表 O(N) 冗余遍历。
-  - 使用 `Uint8Array` 紧凑记录合并单元格从属，消除滑动过程中的高频临时字符串分配与垃圾回收 (GC) 抖动。
-  - 引入 Fling 物理惯性滑动仿真，大幅提升电子表格触控滑动的跟手性与丝滑度。
-  - 优化网格线、合并单元格、边框及表头的可见区间裁剪，减少无效重绘。
+### 发布与脚本
 
-### 工程与 CI
-
-- **OHPM 发布脚本加固**：`publish-ohpm.py` 禁用终端 PTY ECHO，防止密钥口令回显；增加 300 秒发布超时机制与 master 文件描述符释放保障。
+- `publish-ohpm.py` 禁用终端回显以保护口令安全，增加 300 秒发布超时机制，并在退出时清理伪终端文件描述符。
 
 ## 0.3.1
 
 发布页面：[v0.3.1 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.3.1)。
 
-### 修复与显示
+### 显示与修复
 
-- **PPTX 背景图支持**：解析幻灯片、版式和母版中的 `blipFill` 图片背景，输出全幅 IMAGE 元素供平台层绘制。
-- **鸿蒙端图片渲染**：`viewer-ohos` 新增 `ImageStore` 异步图片缓存与解码机制，修复 PPTX 内嵌图片与背景图缺失问题。
+- PPTX 解析幻灯片、版式和母版中的 `blipFill` 图片背景，输出全幅 IMAGE 元素供平台层绘制。
+- `viewer-ohos` 增加 `ImageStore` 图片缓存与解码逻辑，修复 PPTX 内嵌图片与背景图未显示的问题。
 
 ## 0.3.0
 

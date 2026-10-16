@@ -14,9 +14,9 @@ All notable changes to `@jzdy/office` will be documented in this file.
 - Filtering of hidden text (`vanish`, `webHidden`) and ruby text (`rt`, `rp`) in DOCX.
 
 ### Optimized
-- Eliminated redundant native source/cache archiving and filtered 32-bit binaries, significantly reducing HAR package size.
-- Optimized `ImageStore` and native handle lifecycle management to prevent memory peaks and leaks.
-- Single-pass text layout measurements in `CanvasElementDrawer` to eliminate repeated Canvas measuring overhead.
+- Eliminated redundant native source/cache archiving and filtered 32-bit binaries, reducing HAR package size.
+- Optimized `ImageStore` and native handle lifecycle management to reduce memory peak usage and leak risks.
+- Single-pass text layout measurements in `CanvasElementDrawer` to reduce repeated Canvas measuring overhead.
 
 ## [0.4.0] - 2026-10-15
 
@@ -28,10 +28,10 @@ All notable changes to `@jzdy/office` will be documented in this file.
 - Fling inertial scrolling physics simulation for XLSX spreadsheet navigation.
 
 ### Optimized
-- Highly optimized XLSX viewport cell rendering using binary search prefix-sum axis lookups instead of O(N) full-sheet scans.
-- Replaced string-based merge tracking with `Uint8Array` dense byte flags to eliminate per-frame GC pressure.
+- Optimized XLSX viewport cell rendering using binary search prefix-sum axis lookups instead of full-sheet scans.
+- Replaced string-based merge tracking with `Uint8Array` dense byte flags to reduce per-frame GC pressure.
 - Removed ArkUI state dirty-tracking on high-frequency gesture coordinates to prevent redundant re-renders.
-- Hardened OHPM automated release pipeline (`publish-ohpm.py`) to disable PTY echo and enforce timeout limits.
+- Updated OHPM automated release pipeline (`publish-ohpm.py`) to disable PTY echo and enforce timeout limits.
 
 ## [0.3.1] - 2026-10-15
 
