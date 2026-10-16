@@ -4,11 +4,8 @@
 use napi_derive_ohos::napi;
 use napi_ohos::bindgen_prelude::*;
 use napi_ohos::{Env, Error, Result, Task};
-use std::fs::File;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-
-const MEDIA_PART_LIMIT: u64 = 16 * 1024 * 1024; // 16 MiB
 
 fn parse_path_to_json(path: &str) -> Result<String> {
     let result = catch_unwind(AssertUnwindSafe(
@@ -27,11 +24,7 @@ fn parse_path_to_json(path: &str) -> Result<String> {
 fn read_zip_part(path: &str, part: &str) -> Result<Buffer> {
     let result = catch_unwind(AssertUnwindSafe(
         || -> std::result::Result<Vec<u8>, String> {
-            let file = File::open(path).map_err(|e| e.to_string())?;
-            let mut package = jz_office_core::Package::new(file).map_err(|e| e.to_string())?;
-            package
-                .read(part, MEDIA_PART_LIMIT)
-                .map_err(|e| e.to_string())
+            jz_office_core::read_part(Path::new(path), part).map_err(|e| e.to_string())
         },
     ));
 
@@ -111,3 +104,11 @@ pub fn read_part_async(
 pub fn read_part(path: String, part: String) -> Result<Buffer> {
     read_zip_part(&path, &part)
 }
+
+/// 清除当前缓存的所有文档包及 ZIP 索引句柄
+#[napi]
+pub fn clear_cache() -> Result<()> {
+    jz_office_core::clear_package_cache();
+    Ok(())
+}
+

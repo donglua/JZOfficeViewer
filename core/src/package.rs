@@ -7,8 +7,8 @@ use zip::ZipArchive;
 const MAX_INPUT: u64 = 128 * 1024 * 1024;
 const MAX_EXPANDED: u64 = 256 * 1024 * 1024;
 
-trait ReadSeek: Read + Seek {}
-impl<T: Read + Seek> ReadSeek for T {}
+trait ReadSeek: Read + Seek + Send {}
+impl<T: Read + Seek + Send> ReadSeek for T {}
 
 pub struct Package {
     archive: ZipArchive<Box<dyn ReadSeek>>,
@@ -16,7 +16,7 @@ pub struct Package {
 }
 
 impl Package {
-    pub fn new(mut reader: impl Read + Seek + 'static) -> Result<Self> {
+    pub fn new(mut reader: impl Read + Seek + Send + 'static) -> Result<Self> {
         let length = reader.seek(SeekFrom::End(0))?;
         if length > MAX_INPUT {
             return Err(Error::Limit("Input exceeds 128 MiB"));

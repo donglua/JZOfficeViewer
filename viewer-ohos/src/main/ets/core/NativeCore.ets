@@ -1,4 +1,4 @@
-import { parse, parseAsync, readPart, readPartAsync, AbortSignal } from 'libjz_office_ohos.so';
+import { parse, parseAsync, readPart, readPartAsync, clearCache, AbortSignal } from 'libjz_office_ohos.so';
 import { OfficeDocument } from './OfficeModel';
 
 export class NativeCore {
@@ -54,4 +54,12 @@ export class NativeCore {
   public static readPartSync(path: string, part: string): ArrayBuffer {
     return readPart(path, part);
   }
+
+  /**
+   * 清除 Native 底层缓存的文档包文件句柄与 ZIP 索引
+   */
+  public static clearCache(): void {
+    clearCache();
+  }
 }
+

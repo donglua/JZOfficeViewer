@@ -152,5 +152,6 @@ export class ImageStore {
     this.refCounts.clear();
     this.pending.clear();
     this.totalPixels = 0;
+    NativeCore.clearCache();
   }
 }

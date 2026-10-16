@@ -51,3 +51,7 @@ export declare function readPart(path: string, part: string): ArrayBuffer
 /** 异步读取文档 ZIP 包内指定部件字节流（用于按需加载内嵌图片） */
 export declare function readPartAsync(path: string, part: string, abortSignal?: AbortSignal | undefined | null): Promise<ArrayBuffer>
 
+/** 清除当前缓存的所有文档包及 ZIP 索引句柄 */
+export declare function clearCache(): void
+
+
