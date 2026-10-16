@@ -590,10 +590,17 @@ export struct SpreadsheetView {
     const lineHeight = fontSize * 1.25;
     const maxLines = Math.max(1, Math.ceil(availH / lineHeight) + 1);
 
-    // 字符截断保护，防止单个单元格数万字符导致测量卡死
-    const rawText = cell.text.length > SpreadsheetView.MAX_CELL_PREVIEW_LENGTH
-      ? cell.text.substring(0, SpreadsheetView.MAX_CELL_PREVIEW_LENGTH)
-      : cell.text;
+    // 字符截断已在 Rust core 完成；此处保留兜底保护（对齐 Android previewText：代理对安全 + 省略号）
+    let rawText = cell.text;
+    if (rawText.length > SpreadsheetView.MAX_CELL_PREVIEW_LENGTH) {
+      let end = SpreadsheetView.MAX_CELL_PREVIEW_LENGTH - 1;
+      const prevCode = rawText.charCodeAt(end - 1);
+      const nextCode = rawText.charCodeAt(end);
+      if (prevCode >= 0xD800 && prevCode <= 0xDBFF && nextCode >= 0xDC00 && nextCode <= 0xDFFF) {
+        end--;
+      }
+      rawText = rawText.substring(0, end) + '\u2026';
+    }
 
     const finalLines: string[] = [];
     if (style?.wrap) {

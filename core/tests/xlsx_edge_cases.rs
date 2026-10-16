@@ -146,3 +146,34 @@ fn row_and_column_styles_inherit_and_cell_override_wins() -> TestResult {
     assert_eq!(cells[2].text, "2.00");
     Ok(())
 }
+
+#[test]
+fn long_cells_retain_full_text_and_emit_truncation_warning_in_core() -> TestResult {
+    let mut parts = xlsx::parts();
+    let exact = "W".repeat(4096);
+    let over = "W".repeat(4097);
+    let emoji_split = format!("{}😀TAIL", "中".repeat(4094));
+    let emoji_fit = format!("{}😀TAIL", "中".repeat(4093));
+    replace(
+        &mut parts,
+        "xl/worksheets/sheet2.xml",
+        &xlsx::sheet(&format!(
+            r#"<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{exact}</t></is></c><c r="B1" t="inlineStr"><is><t>{over}</t></is></c><c r="C1" t="inlineStr"><is><t>{emoji_split}</t></is></c><c r="D1" t="inlineStr"><is><t>{emoji_fit}</t></is></c></row></sheetData>"#
+        )),
+    );
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let cells = &document.sheets[0].cells;
+    assert_eq!(cells[0].text, exact);
+    assert_eq!(cells[1].text, format!("{}…", "W".repeat(4095)));
+    assert_eq!(cells[2].text, format!("{}…", "中".repeat(4094)));
+    assert_eq!(cells[3].text, format!("{}😀…", "中".repeat(4093)));
+    assert_eq!(
+        document
+            .warnings
+            .iter()
+            .filter(|w| *w == "Long spreadsheet cell text is truncated in the preview")
+            .count(),
+        1
+    );
+    Ok(())
+}

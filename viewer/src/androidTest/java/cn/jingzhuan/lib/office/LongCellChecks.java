@@ -30,8 +30,9 @@ final class LongCellChecks {
                 check(java.util.Collections.frequency(document.document.warnings, WARNING) == 1,
                     "Long-cell warning is deduplicated");
                 for (int i = 0; i < 6; i++) {
-                    check(document.document.sheets.get(0).cells.get(i).text.length() == 262145,
-                        "Inline/shared/cached formula source text remains intact: " + i);
+                    String cellText = document.document.sheets.get(0).cells.get(i).text;
+                    check(cellText.length() == 4096 && cellText.endsWith("\u2026"),
+                        "Inline/shared/cached formula cell text is bounded in core: " + i);
                 }
                 instrumentation.runOnMainChecked(() -> {
                     SheetRenderer renderer = new SheetRenderer();

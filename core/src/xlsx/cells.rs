@@ -38,6 +38,7 @@ impl Workbook {
                 };
                 document.warn("Formula without a cached result is shown without evaluation");
                 self.budget.text(&cell.text)?;
+                truncate_preview(&mut cell.text, document);
                 return Ok(cell);
             }
         }
@@ -91,6 +92,34 @@ impl Workbook {
             _ => return Err(Error::Invalid("Unsupported XLSX cell type")),
         }
         self.budget.text(&cell.text)?;
+        truncate_preview(&mut cell.text, document);
         Ok(cell)
+    }
+}
+
+const MAX_CELL_PREVIEW_UTF16: usize = 4096;
+
+fn truncate_preview(text: &mut String, document: &mut Document) {
+    if text.len() <= MAX_CELL_PREVIEW_UTF16 {
+        return;
+    }
+    let mut units = 0_usize;
+    let mut split_at = None;
+    let mut last_boundary = 0_usize;
+    for (idx, ch) in text.char_indices() {
+        let len = ch.len_utf16();
+        if units + len <= MAX_CELL_PREVIEW_UTF16 - 1 {
+            last_boundary = idx + ch.len_utf8();
+        }
+        units += len;
+        if units > MAX_CELL_PREVIEW_UTF16 {
+            split_at = Some(last_boundary);
+            break;
+        }
+    }
+    if let Some(end) = split_at {
+        text.truncate(end);
+        text.push('\u{2026}');
+        document.warn("Long spreadsheet cell text is truncated in the preview");
     }
 }
