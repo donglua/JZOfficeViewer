@@ -200,6 +200,10 @@ public final class RemoteDownloaderChecks implements AutoCloseable {
         disposition("quoted filename unescapes quotes", "attachment; filename=\"report\\\"Q1.docx\"", "report\"Q1.docx");
         disposition("invalid extended escaping falls back", "attachment; filename*=UTF-8''bad%ZZ.docx; filename=good.docx", "good.docx");
         disposition("unknown extended charset falls back", "attachment; filename=good.docx; filename*=NO-SUCH-CHARSET''bad.docx", "good.docx");
+        disposition("traversal filename is sanitized to basename", "attachment; filename=../../safe.docx", "safe.docx");
+        disposition("backslash traversal filename is sanitized to basename", "attachment; filename=\"..\\\\..\\\\safe.docx\"", "safe.docx");
+        disposition("traversal with only dots falls back to ordinary filename", "attachment; filename*=UTF-8''..%2F..%2F; filename=fallback.docx", "fallback.docx");
+        disposition("control characters in filename are stripped", "attachment; filename=\"doc\0\u0007name.docx\"", "docname.docx");
         check("explicit display name wins", () -> {
             String url = endpoint(origin, exchange -> {
                 exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename*=UTF-8''server.docx");
@@ -210,6 +214,33 @@ public final class RemoteDownloaderChecks implements AutoCloseable {
         check("URL fallback preserves literal plus and decodes escapes", () -> {
             String url = endpoint(origin, exchange -> body(exchange, BODY, BODY.length)) + "/report+Q1%20draft.docx?ignored=other";
             equal("report+Q1 draft.docx", download(request(url)).getDisplayName(), "URL filename");
+        });
+        check("redirect to loopback blocked when private redirect blocked", () -> {
+            String target = endpoint(origin, exchange -> body(exchange, BODY, BODY.length));
+            String redirectUrl = endpoint(otherOrigin, exchange -> redirect(exchange, 302, target));
+            fails(request(redirectUrl).blockPrivateRedirect(true), "private or loopback address");
+        });
+        check("total timeout limits slow connection", () -> {
+            String url = endpoint(origin, exchange -> {
+                exchange.sendResponseHeaders(200, 1024);
+                try {
+                    exchange.getResponseBody().write(new byte[100]);
+                    exchange.getResponseBody().flush();
+                    Thread.sleep(600);
+                    exchange.getResponseBody().write(new byte[100]);
+                    exchange.getResponseBody().flush();
+                } catch (InterruptedException | IOException ignored) {
+                } finally {
+                    exchange.close();
+                }
+            });
+            fails(request(url).totalTimeoutMillis(250), "timed out");
+        });
+        check("negative total timeout rejected", () -> {
+            try {
+                request("http://127.0.0.1/doc.docx").totalTimeoutMillis(-1);
+                throw new AssertionError("Accepted negative total timeout");
+            } catch (IllegalArgumentException expected) {}
         });
 
         check("invalid URLs rejected before network", () -> {

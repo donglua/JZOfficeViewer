@@ -10,6 +10,7 @@ public final class RemoteOfficeRequest {
     public static final long DEFAULT_MAX_BYTES = 128L * 1024 * 1024;
     public static final int DEFAULT_CONNECT_TIMEOUT_MILLIS = 15000;
     public static final int DEFAULT_READ_TIMEOUT_MILLIS = 30000;
+    public static final int DEFAULT_TOTAL_TIMEOUT_MILLIS = 60000;
 
     private final URL url;
     private final Map<String, String> headers;
@@ -17,6 +18,8 @@ public final class RemoteOfficeRequest {
     private final long maxBytes;
     private final int connectTimeoutMillis;
     private final int readTimeoutMillis;
+    private final int totalTimeoutMillis;
+    private final boolean blockPrivateRedirect;
 
     public RemoteOfficeRequest(String url) {
         this(new Builder(url));
@@ -29,6 +32,8 @@ public final class RemoteOfficeRequest {
         maxBytes = builder.maxBytes;
         connectTimeoutMillis = builder.connectTimeoutMillis;
         readTimeoutMillis = builder.readTimeoutMillis;
+        totalTimeoutMillis = builder.totalTimeoutMillis;
+        blockPrivateRedirect = builder.blockPrivateRedirect;
     }
 
     public URL getUrl() { return url; }
@@ -38,6 +43,8 @@ public final class RemoteOfficeRequest {
     public long getMaxBytes() { return maxBytes; }
     public int getConnectTimeoutMillis() { return connectTimeoutMillis; }
     public int getReadTimeoutMillis() { return readTimeoutMillis; }
+    public int getTotalTimeoutMillis() { return totalTimeoutMillis; }
+    public boolean isBlockPrivateRedirect() { return blockPrivateRedirect; }
 
     public static Builder builder(String url) { return new Builder(url); }
 
@@ -48,6 +55,8 @@ public final class RemoteOfficeRequest {
         private long maxBytes = DEFAULT_MAX_BYTES;
         private int connectTimeoutMillis = DEFAULT_CONNECT_TIMEOUT_MILLIS;
         private int readTimeoutMillis = DEFAULT_READ_TIMEOUT_MILLIS;
+        private int totalTimeoutMillis = DEFAULT_TOTAL_TIMEOUT_MILLIS;
+        private boolean blockPrivateRedirect;
 
         public Builder(String url) {
             if (url == null || url.trim().isEmpty()) throw new IllegalArgumentException("URL is required");
@@ -82,6 +91,17 @@ public final class RemoteOfficeRequest {
         public Builder readTimeoutMillis(int timeoutMillis) {
             if (timeoutMillis <= 0) throw new IllegalArgumentException("read timeout must be positive");
             readTimeoutMillis = timeoutMillis;
+            return this;
+        }
+
+        public Builder totalTimeoutMillis(int timeoutMillis) {
+            if (timeoutMillis < 0) throw new IllegalArgumentException("total timeout must not be negative");
+            totalTimeoutMillis = timeoutMillis;
+            return this;
+        }
+
+        public Builder blockPrivateRedirect(boolean block) {
+            blockPrivateRedirect = block;
             return this;
         }
 
