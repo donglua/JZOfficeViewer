@@ -32,7 +32,6 @@ pub(crate) fn clear() {
     }
 }
 
-
 pub(crate) fn read_part(path: &Path, part: &str, limit: u64) -> Result<Vec<u8>> {
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let metadata = fs::metadata(&canonical)?;

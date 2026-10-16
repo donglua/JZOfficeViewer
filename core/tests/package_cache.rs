@@ -17,7 +17,8 @@ impl TempArchive {
     fn new(entries: &[(&str, &[u8])]) -> TestResult<Self> {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("jz_test_archive_{}_{}.zip", std::process::id(), id));
+        let path =
+            std::env::temp_dir().join(format!("jz_test_archive_{}_{}.zip", std::process::id(), id));
 
         let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -33,7 +34,11 @@ impl TempArchive {
     fn new_deflated_padded(name: &str, size: u64) -> TestResult<Self> {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("jz_test_archive_deflated_{}_{}.zip", std::process::id(), id));
+        let path = std::env::temp_dir().join(format!(
+            "jz_test_archive_deflated_{}_{}.zip",
+            std::process::id(),
+            id
+        ));
 
         let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -78,7 +83,10 @@ fn read_part_enforces_media_part_limit() -> TestResult {
     let archive = TempArchive::new_deflated_padded("large.bin", MEDIA_PART_LIMIT + 1)?;
 
     let result = read_part(&archive.path, "large.bin");
-    assert!(matches!(result, Err(Error::Limit("Package part is too large"))));
+    assert!(matches!(
+        result,
+        Err(Error::Limit("Package part is too large"))
+    ));
     Ok(())
 }
 
