@@ -447,16 +447,32 @@ struct DocxParagraphView {
     if (this.para) {
       Text() {
         if (this.para.bullet) {
-          Span(`${this.para.bullet}`).fontSize(13).fontColor('#5f6368')
+          Span(`${this.para.bullet}`)
+            .fontSize(this.para.runs && this.para.runs.length > 0 ? (this.para.runs[0].size || 14) : 14)
+            .fontColor(
+              this.para.runs && this.para.runs.length > 0
+                ? (RenderUtils.argbToCss(this.para.runs[0].color) ?? '#202124')
+                : '#202124'
+            )
+            .fontWeight(
+              this.para.runs && this.para.runs.length > 0 && RenderUtils.resolveFontBold(this.para.runs[0].fontFace, this.para.runs[0].bold)
+                ? FontWeight.Bold
+                : FontWeight.Normal
+            )
+            .fontStyle(
+              this.para.runs && this.para.runs.length > 0 && this.para.runs[0].italic
+                ? FontStyle.Italic
+                : FontStyle.Normal
+            )
         }
         ForEach(
           this.para.runs,
           (run: model.Run) => {
             Span(run.text)
               .fontSize(run.size || 14)
-              .fontFamily(run.fontFace && run.fontFace.length > 0 ? `${run.fontFace}, sans-serif` : 'sans-serif')
+              .fontFamily(RenderUtils.resolveFontFamily(run.fontFace, false))
               .fontColor(RenderUtils.argbToCss(run.color) ?? '#202124')
-              .fontWeight(run.bold ? FontWeight.Bold : FontWeight.Normal)
+              .fontWeight(RenderUtils.resolveFontBold(run.fontFace, run.bold) ? FontWeight.Bold : FontWeight.Normal)
               .fontStyle(run.italic ? FontStyle.Italic : FontStyle.Normal)
               .decoration({
                 type: run.underline ? TextDecorationType.Underline : TextDecorationType.None,
@@ -511,7 +527,7 @@ struct DocxTableView {
                       (_p: model.Paragraph, pIdx: number) => `cp-${pIdx}`
                     )
                   }
-                  .layoutWeight(this.element?.columnWidths?.[cIdx] ?? 1)
+                  .layoutWeight(Math.max(1, this.element?.columnWidths?.[cIdx] ?? 1))
                   .padding(6)
                   .border({ width: 0.5, color: '#b7bec7' })
                   .backgroundColor(RenderUtils.argbToCss(this.element?.cellFills?.[rIdx]?.[cIdx] ?? 0) ?? '#ffffff')
@@ -524,7 +540,8 @@ struct DocxTableView {
           (_row: model.Paragraph[][], rIdx: number) => `r-${rIdx}`
         )
       }
-      .width('100%')
+      .width(this.element.width && this.element.width > 0 ? this.element.width : '100%')
+      .constraintSize({ maxWidth: '100%' })
       .margin({ top: 8, bottom: 8 })
     }
   }

@@ -64,5 +64,9 @@ fn table_cell_theme_colors_and_explicit_or_missing_no_fill_are_preserved() -> Te
         json["cellFills"],
         serde_json::json!([[0xff202124u32, 0, 0]])
     );
+    assert_eq!(
+        json["columnWidths"],
+        serde_json::json!([240.0, 240.0, 240.0])
+    );
     Ok(())
 }

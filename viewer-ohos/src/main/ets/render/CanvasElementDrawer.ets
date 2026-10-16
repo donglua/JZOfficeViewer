@@ -173,13 +173,15 @@ export class CanvasElementDrawer {
 
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
-      // 先计算每列宽度并预排版测量当前行最大高度（对齐 OfficeRenderer.java）
+      // 先计算每列宽度并预排版测量当前行最大高度（列宽已由 Rust core 归一化为 point，同时保留兜底）
       const computedColWidths: number[] = [];
       let rowHeight = 20;
       for (let c = 0; c < cols; c++) {
         const colW =
           colWidths.length === cols && totalWeight > 0
-            ? (element.width * Math.max(1, colWidths[c])) / totalWeight
+            ? (Math.abs(totalWeight - element.width) < 0.5
+                ? Math.max(1, colWidths[c])
+                : (element.width * Math.max(1, colWidths[c])) / totalWeight)
             : element.width / cols;
         computedColWidths.push(colW);
         const cellParas = c < row.length ? row[c] : [];
@@ -396,9 +398,9 @@ export class CanvasElementDrawer {
     for (const run of runs) {
       const fontSize = Math.max(1, run.size || 12);
       const fontStyle = run.italic ? 'italic ' : '';
-      const fontWeight = run.bold ? 'bold ' : '';
-      // 关键修复：使用 vp 作为字号单位，并支持自定义 fontFace 字体回退
-      const fontFace = run.fontFace && run.fontFace.trim().length > 0 ? `"${run.fontFace}", sans-serif` : 'sans-serif';
+      const fontWeight = RenderUtils.resolveFontBold(run.fontFace, run.bold) ? 'bold ' : '';
+      // 使用 vp 作为字号单位，并对齐 Android 的 Impact / 思源黑体 Light 字体兼容映射
+      const fontFace = RenderUtils.resolveFontFamily(run.fontFace, true);
       const fontStr = `${fontStyle}${fontWeight}${fontSize}vp ${fontFace}`;
       const colorCss = RenderUtils.argbToCss(run.color) ?? '#202124';
       ctx.font = fontStr;

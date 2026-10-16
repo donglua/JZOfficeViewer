@@ -43,6 +43,13 @@ impl Render<'_> {
         if element.column_widths.is_empty() {
             return Err(Error::Invalid("PPTX table has no columns"));
         }
+        let total_weight: f32 = element.column_widths.iter().map(|w| w.max(1.0)).sum();
+        if total_weight > 0.0 && element.width > 0.0 {
+            let table_width = element.width;
+            for width in &mut element.column_widths {
+                *width = table_width * width.max(1.0) / total_weight;
+            }
+        }
         for row in table.named("tr") {
             if element.rows.len() >= 500 {
                 return Err(Error::Limit("PPTX table exceeds 500 rows"));

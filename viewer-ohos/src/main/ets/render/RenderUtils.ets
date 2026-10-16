@@ -23,6 +23,38 @@ export class RenderUtils {
   }
 
   /**
+   * 对齐 Android 端 OfficeTextLayout.FontFace 的字体族兼容映射：
+   * - Impact -> sans-serif-condensed（并自动补偿加粗）
+   * - 思源黑体 CN Light / Source Han Sans CN Light / Source Han Sans SC Light / Noto Sans CJK SC Light -> sans-serif-light
+   */
+  public static resolveFontFamily(fontFace?: string, quoteCustom: boolean = false): string {
+    const trimmed = fontFace ? fontFace.trim() : '';
+    if (trimmed.length === 0) {
+      return 'sans-serif';
+    }
+    if (trimmed.toLowerCase() === 'impact') {
+      return 'sans-serif-condensed, sans-serif';
+    }
+    if (
+      trimmed === '思源黑体 CN Light' ||
+      trimmed === 'Source Han Sans CN Light' ||
+      trimmed === 'Source Han Sans SC Light' ||
+      trimmed === 'Noto Sans CJK SC Light'
+    ) {
+      return 'sans-serif-light, sans-serif';
+    }
+    return quoteCustom ? `"${trimmed}", sans-serif` : `${trimmed}, sans-serif`;
+  }
+
+  /**
+   * 对齐 Android 端 OfficeTextLayout.FontFace：Impact 映射为 sans-serif-condensed 时强制加粗
+   */
+  public static resolveFontBold(fontFace?: string, bold?: boolean): boolean {
+    if (bold) return true;
+    return fontFace ? fontFace.trim().toLowerCase() === 'impact' : false;
+  }
+
+  /**
    * 将 model.PathCommand[] 转换为鸿蒙 Canvas 的 Path2D 对象
    */
   public static buildPath2D(commands: model.PathCommand[]): Path2D {
