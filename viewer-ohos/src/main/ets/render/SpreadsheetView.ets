@@ -148,6 +148,12 @@ class SheetLayoutData {
 export struct SpreadsheetView {
   // 使用普通属性避免 @Prop 对大型电子表格 AST 结构进行递归深拷贝造成卡顿或属性丢失
   document: model.OfficeDocument | null = null;
+  onSheetChange?: (sheetNumber: number, sheetCount: number) => void;
+  registerControls?: (
+    selectSheet: (sheetNumber: number) => void,
+    getZoom: () => number,
+    setZoom: (value: number) => void
+  ) => void;
   @State currentSheetIndex: number = 0;
 
   // 使用普通私有属性避免 @State 频繁触发 ArkUI 全组件响应式脏检查与重排
@@ -194,6 +200,46 @@ export struct SpreadsheetView {
     this.offsetX = 0;
     this.offsetY = 0;
     this.scaleVal = 1.0;
+    if (this.registerControls) {
+      this.registerControls(
+        (sheetNumber: number): void => {
+          this.switchSheet(sheetNumber - 1);
+        },
+        (): number => this.scaleVal,
+        (value: number): void => {
+          if (isNaN(value) || !isFinite(value)) return;
+          this.stopFling();
+          const newScale = Math.min(3.5, Math.max(0.5, value));
+          const focusX = this.canvasWidth / 2;
+          const focusY = this.canvasHeight / 2;
+          const worldX = (focusX - HEADER_WIDTH - this.offsetX) / this.scaleVal;
+          const worldY = (focusY - HEADER_HEIGHT - this.offsetY) / this.scaleVal;
+          this.offsetX = focusX - HEADER_WIDTH - worldX * newScale;
+          this.offsetY = focusY - HEADER_HEIGHT - worldY * newScale;
+          this.scaleVal = newScale;
+          this.clampOffsets();
+          this.redraw();
+        }
+      );
+    }
+  }
+
+  private switchSheet(idx: number): void {
+    const sheets = this.document?.sheets;
+    if (!sheets || idx < 0 || idx >= sheets.length) return;
+    this.stopFling();
+    if (this.currentSheetIndex !== idx) {
+      this.currentSheetIndex = idx;
+      this.cachedSheet = null;
+      this.cachedLayout = null;
+    }
+    this.offsetX = 0;
+    this.offsetY = 0;
+    this.scaleVal = 1.0;
+    this.redraw();
+    if (this.onSheetChange) {
+      this.onSheetChange(idx + 1, sheets.length);
+    }
   }
 
   aboutToDisappear(): void {
@@ -849,14 +895,7 @@ export struct SpreadsheetView {
                   .borderRadius(4)
                   .padding({ left: 12, right: 12, top: 6, bottom: 6 })
                   .onClick(() => {
-                    this.stopFling();
-                    this.currentSheetIndex = idx;
-                    this.offsetX = 0;
-                    this.offsetY = 0;
-                    this.scaleVal = 1.0;
-                    this.cachedSheet = null;
-                    this.cachedLayout = null;
-                    this.redraw();
+                    this.switchSheet(idx);
                   })
               }, (_sheet: model.Sheet, idx: number) => `sheet-${idx}-${this.currentSheetIndex === idx}`)
             }

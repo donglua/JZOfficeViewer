@@ -32,6 +32,70 @@ class ArrayDataSource<T> implements IDataSource {
 }
 
 /**
+ * 文档加载完成后的元信息快照（对齐 Android 端 OfficePreviewView.Info）
+ */
+export interface OfficePreviewInfo {
+  readonly format: model.Kind;
+  readonly pageCount: number;
+  readonly warnings: string[];
+  readonly sheetNames: string[];
+}
+
+export interface OfficePreviewActions {
+  getPageCount: () => number;
+  getCurrentPage: () => number;
+  getSheetNames: () => string[];
+  getZoom: () => number;
+  setZoom: (value: number) => void;
+  resetZoom: () => void;
+  jumpToPage: (pageNumber: number) => void;
+  selectSheet: (sheetNumber: number) => void;
+}
+
+/**
+ * JZOffice 鸿蒙端预览控制器（对齐 Android 端 OfficePreviewView 控制方法）
+ */
+export class OfficePreviewController {
+  private actions: OfficePreviewActions | null = null;
+
+  bind(actions: OfficePreviewActions | null): void {
+    this.actions = actions;
+  }
+
+  public getPageCount(): number {
+    return this.actions ? this.actions.getPageCount() : 0;
+  }
+
+  public getCurrentPage(): number {
+    return this.actions ? this.actions.getCurrentPage() : 0;
+  }
+
+  public getSheetNames(): string[] {
+    return this.actions ? this.actions.getSheetNames() : [];
+  }
+
+  public getZoom(): number {
+    return this.actions ? this.actions.getZoom() : 1.0;
+  }
+
+  public setZoom(value: number): void {
+    this.actions?.setZoom(value);
+  }
+
+  public resetZoom(): void {
+    this.actions?.resetZoom();
+  }
+
+  public jumpToPage(pageNumber: number): void {
+    this.actions?.jumpToPage(pageNumber);
+  }
+
+  public selectSheet(sheetNumber: number): void {
+    this.actions?.selectSheet(sheetNumber);
+  }
+}
+
+/**
  * JZOffice 鸿蒙端核心统一预览组件
  * 自动根据文档格式分发至 DOCX (流式排版)、PPTX (幻灯片画布) 与 XLSX (电子表格) 渲染引擎
  */
@@ -40,16 +104,100 @@ export struct OfficePreviewView {
   @Watch('onFilePathChanged') @Prop filePath: string = '';
   // 使用普通属性替代 @Prop，避免对大型预加载文档 AST 触发递归深拷贝
   preloadedDoc: model.OfficeDocument | null = null;
+  controller?: OfficePreviewController;
+  onLoaded?: (info: OfficePreviewInfo) => void;
+  onError?: (error: Error) => void;
+  onPageChange?: (pageNumber: number, pageCount: number) => void;
 
   @State document: model.OfficeDocument | null = null;
   @State isLoading: boolean = true;
   @State errorMessage: string = '';
   private loadGeneration: number = 0;
+  private currentPage: number = 0;
+  private notifiedPage: number = -1;
+  private notifiedCount: number = -1;
+  private childGetZoom: (() => number) | null = null;
+  private childSetZoom: ((value: number) => void) | null = null;
+  private childJumpToPage: ((pageNumber: number) => void) | null = null;
+  private childSelectSheet: ((sheetNumber: number) => void) | null = null;
+
+  private bindController(): void {
+    if (!this.controller) return;
+    this.controller.bind({
+      getPageCount: (): number => this.computePageCount(this.document),
+      getCurrentPage: (): number => this.currentPage,
+      getSheetNames: (): string[] => this.extractSheetNames(this.document),
+      getZoom: (): number => (this.childGetZoom ? this.childGetZoom() : 1.0),
+      setZoom: (value: number): void => {
+        if (this.childSetZoom) this.childSetZoom(value);
+      },
+      resetZoom: (): void => {
+        if (this.childSetZoom) this.childSetZoom(1.0);
+      },
+      jumpToPage: (pageNumber: number): void => {
+        const count = this.computePageCount(this.document);
+        if (pageNumber < 1 || pageNumber > count) return;
+        if (this.document?.kind === 'XLSX') {
+          if (this.childSelectSheet) this.childSelectSheet(pageNumber);
+        } else {
+          if (this.childJumpToPage) this.childJumpToPage(pageNumber);
+        }
+      },
+      selectSheet: (sheetNumber: number): void => {
+        if (this.document?.kind !== 'XLSX') return;
+        const count = this.computePageCount(this.document);
+        if (sheetNumber < 1 || sheetNumber > count) return;
+        if (this.childSelectSheet) this.childSelectSheet(sheetNumber);
+      }
+    });
+  }
+
+  private computePageCount(doc: model.OfficeDocument | null): number {
+    if (!doc) return 0;
+    if (doc.kind === 'XLSX') return doc.sheets ? doc.sheets.length : 0;
+    if (doc.kind === 'PPTX') return doc.pages ? doc.pages.length : 0;
+    return 1;
+  }
+
+  private extractSheetNames(doc: model.OfficeDocument | null): string[] {
+    if (!doc || !doc.sheets) return [];
+    const names: string[] = [];
+    for (const s of doc.sheets) {
+      names.push(s.name);
+    }
+    return names;
+  }
+
+  private notifyPageChanged(pageNumber: number, pageCount: number): void {
+    this.currentPage = pageNumber;
+    if (this.notifiedPage === pageNumber && this.notifiedCount === pageCount) return;
+    this.notifiedPage = pageNumber;
+    this.notifiedCount = pageCount;
+    if (this.onPageChange) {
+      this.onPageChange(pageNumber, pageCount);
+    }
+  }
+
+  private publishLoadedDocument(doc: model.OfficeDocument): void {
+    this.document = doc;
+    const count = this.computePageCount(doc);
+    this.currentPage = count > 0 ? 1 : 0;
+    if (this.onLoaded) {
+      this.onLoaded({
+        format: doc.kind,
+        pageCount: count,
+        warnings: doc.warnings ? doc.warnings.slice() : [],
+        sheetNames: this.extractSheetNames(doc)
+      });
+    }
+    this.notifyPageChanged(this.currentPage, count);
+  }
 
   aboutToAppear(): void {
+    this.bindController();
     if (this.preloadedDoc) {
-      this.document = this.preloadedDoc;
       this.isLoading = false;
+      this.publishLoadedDocument(this.preloadedDoc);
       return;
     }
     if (this.filePath) {
@@ -60,6 +208,11 @@ export struct OfficePreviewView {
   aboutToDisappear(): void {
     this.loadGeneration++;
     this.document = null;
+    this.childGetZoom = null;
+    this.childSetZoom = null;
+    this.childJumpToPage = null;
+    this.childSelectSheet = null;
+    this.controller?.bind(null);
   }
 
   onFilePathChanged(): void {
@@ -73,13 +226,22 @@ export struct OfficePreviewView {
     this.isLoading = true;
     this.errorMessage = '';
     this.document = null;
+    this.childGetZoom = null;
+    this.childSetZoom = null;
+    this.childJumpToPage = null;
+    this.childSelectSheet = null;
+    this.notifyPageChanged(0, 0);
     try {
       const parsed = await NativeCore.parseDocumentAsync(path);
       if (token !== this.loadGeneration) return;
-      this.document = parsed;
+      this.publishLoadedDocument(parsed);
     } catch (e) {
       if (token !== this.loadGeneration) return;
-      this.errorMessage = `文档加载失败: ${e}`;
+      const err: Error = e instanceof Error ? e : new Error(`${e}`);
+      this.errorMessage = `文档加载失败: ${err.message}`;
+      if (this.onError) {
+        this.onError(err);
+      }
     } finally {
       if (token === this.loadGeneration) {
         this.isLoading = false;
@@ -113,15 +275,56 @@ export struct OfficePreviewView {
         .justifyContent(FlexAlign.Center)
       } else if (this.document) {
         if (this.document.kind === 'DOCX') {
-          DocxFlowView({ document: this.document, filePath: this.filePath })
+          DocxFlowView({
+            document: this.document,
+            filePath: this.filePath,
+            registerControls: (
+              jumpToPage: (pageNumber: number) => void,
+              getZoom: () => number,
+              setZoom: (value: number) => void
+            ): void => {
+              this.childJumpToPage = jumpToPage;
+              this.childGetZoom = getZoom;
+              this.childSetZoom = setZoom;
+            }
+          })
             .width('100%')
             .height('100%')
         } else if (this.document.kind === 'PPTX') {
-          PptxSlidesView({ document: this.document, filePath: this.filePath })
+          PptxSlidesView({
+            document: this.document,
+            filePath: this.filePath,
+            onSlideChange: (pageNumber: number, pageCount: number): void => {
+              this.notifyPageChanged(pageNumber, pageCount);
+            },
+            registerControls: (
+              jumpToPage: (pageNumber: number) => void,
+              getZoom: () => number,
+              setZoom: (value: number) => void
+            ): void => {
+              this.childJumpToPage = jumpToPage;
+              this.childGetZoom = getZoom;
+              this.childSetZoom = setZoom;
+            }
+          })
             .width('100%')
             .height('100%')
         } else if (this.document.kind === 'XLSX') {
-          SpreadsheetView({ document: this.document })
+          SpreadsheetView({
+            document: this.document,
+            onSheetChange: (sheetNumber: number, sheetCount: number): void => {
+              this.notifyPageChanged(sheetNumber, sheetCount);
+            },
+            registerControls: (
+              selectSheet: (sheetNumber: number) => void,
+              getZoom: () => number,
+              setZoom: (value: number) => void
+            ): void => {
+              this.childSelectSheet = selectSheet;
+              this.childGetZoom = getZoom;
+              this.childSetZoom = setZoom;
+            }
+          })
             .width('100%')
             .height('100%')
         }
@@ -140,8 +343,14 @@ struct DocxFlowView {
   // 使用普通属性替代 @Prop，避免对整棵文档 AST 进行深拷贝
   document: model.OfficeDocument | null = null;
   filePath: string = '';
+  registerControls?: (
+    jumpToPage: (pageNumber: number) => void,
+    getZoom: () => number,
+    setZoom: (value: number) => void
+  ) => void;
   private imageStore: ImageStore = new ImageStore('');
   private blockSource: ArrayDataSource<model.Element> = new ArrayDataSource([]);
+  private scroller: ListScroller = new ListScroller();
 
   @State zoom: number = 1.0;
   @State offsetX: number = 0;
@@ -150,6 +359,17 @@ struct DocxFlowView {
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
     this.blockSource = new ArrayDataSource(this.document?.blocks ?? []);
+    if (this.registerControls) {
+      this.registerControls(
+        (_pageNumber: number): void => {
+          this.scroller.scrollToIndex(0);
+        },
+        (): number => this.zoom,
+        (value: number): void => {
+          this.setZoom(value, this.viewportWidth / 2);
+        }
+      );
+    }
   }
 
   aboutToDisappear(): void {
@@ -198,7 +418,7 @@ struct DocxFlowView {
     if (this.document) {
       Stack() {
         Stack() {
-          List({ space: 8 }) {
+          List({ space: 8, scroller: this.scroller }) {
             LazyForEach(
               this.blockSource,
               (element: model.Element) => {
@@ -579,8 +799,15 @@ struct DocxTableView {
 struct PptxSlidesView {
   document: model.OfficeDocument | null = null;
   filePath: string = '';
+  onSlideChange?: (pageNumber: number, pageCount: number) => void;
+  registerControls?: (
+    jumpToPage: (pageNumber: number) => void,
+    getZoom: () => number,
+    setZoom: (value: number) => void
+  ) => void;
   private imageStore: ImageStore = new ImageStore('');
   private pageSource: ArrayDataSource<model.Page> = new ArrayDataSource([]);
+  private scroller: ListScroller = new ListScroller();
 
   @State zoom: number = 1.0;
   @State offsetX: number = 0;
@@ -595,6 +822,22 @@ struct PptxSlidesView {
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
     this.pageSource = new ArrayDataSource(this.document?.pages ?? []);
+    if (this.registerControls) {
+      this.registerControls(
+        (pageNumber: number): void => {
+          const total = this.document?.pages?.length ?? 0;
+          if (pageNumber < 1 || pageNumber > total) return;
+          this.scroller.scrollToIndex(pageNumber - 1);
+          if (this.onSlideChange) {
+            this.onSlideChange(pageNumber, total);
+          }
+        },
+        (): number => this.zoom,
+        (value: number): void => {
+          this.setZoom(value, this.viewportWidth / 2);
+        }
+      );
+    }
   }
 
   aboutToDisappear(): void {
@@ -637,7 +880,7 @@ struct PptxSlidesView {
     if (this.document) {
       Stack() {
         Stack() {
-          List({ space: 16 }) {
+          List({ space: 16, scroller: this.scroller }) {
             LazyForEach(
               this.pageSource,
               (page: model.Page, index: number) => {
@@ -656,6 +899,15 @@ struct PptxSlidesView {
             )
           }
           .cachedCount(2)
+          .onScrollIndex((start: number, _end: number, center: number) => {
+            const total = this.document?.pages?.length ?? 0;
+            if (total <= 0) return;
+            const activeIdx = center >= 0 ? center : start;
+            const pageNum = Math.min(total, Math.max(1, activeIdx + 1));
+            if (this.onSlideChange) {
+              this.onSlideChange(pageNum, total);
+            }
+          })
           .width('100%')
           .height('100%')
           .padding({ left: 16, right: 16, top: 16, bottom: 24 })
