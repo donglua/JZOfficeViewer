@@ -55,7 +55,7 @@ jobs:
           java -cp "$classes" cn.jingzhuan.lib.office.OfficeCacheChecks
           java -cp "$classes" RemoteDownloaderChecks
 
-      - name: Run sheet layout checks
+      - name: Run sheet layout and decoder checks
         shell: bash
         run: |
           classes="$RUNNER_TEMP/sheet-layout-checks"
@@ -63,11 +63,14 @@ jobs:
           javac --release 11 -Xlint:all -Werror -d "$classes" \
             viewer/src/main/java/cn/jingzhuan/lib/office/OfficeDocument.java \
             viewer/src/main/java/cn/jingzhuan/lib/office/SpreadsheetDocument.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/DocumentDecoder.java \
             viewer/src/main/java/cn/jingzhuan/lib/office/SheetLayout.java \
             viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutChecks.java \
-            viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutBenchmark.java
+            viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutBenchmark.java \
+            scripts/tests/DocumentDecoderChecks.java
           java -cp "$classes" cn.jingzhuan.lib.office.SheetLayoutChecks
           java -cp "$classes" cn.jingzhuan.lib.office.SheetLayoutBenchmark
+          java -cp "$classes" cn.jingzhuan.lib.office.DocumentDecoderChecks
 
   android:
     name: Android Build & Lint
