@@ -20,6 +20,12 @@ final class SheetRenderer {
     private static final float PADDING = 2, VERTICAL_PADDING = 1;
     private static final int GRID_COLOR = 0xffdce1e5, HEADER_COLOR = 0xfff3f5f7;
     private static final int MAX_CACHED_LAYOUTS = 256, MAX_LAYOUT_COST = 256 * 1024;
+    private static final Typeface[] TYPEFACES = {
+        Typeface.create(Typeface.DEFAULT, Typeface.NORMAL),
+        Typeface.create(Typeface.DEFAULT, Typeface.BOLD),
+        Typeface.create(Typeface.DEFAULT, Typeface.ITALIC),
+        Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC)
+    };
 
     float width, height;
     private SpreadsheetDocument.Sheet sheet;
@@ -161,7 +167,7 @@ final class SheetRenderer {
         font.setTextSize(style.fontSize); font.setColor(style.color); font.setUnderlineText(style.underline);
         int typeface = style.bold ? (style.italic ? Typeface.BOLD_ITALIC : Typeface.BOLD)
             : (style.italic ? Typeface.ITALIC : Typeface.NORMAL);
-        font.setTypeface(Typeface.create(Typeface.DEFAULT, typeface));
+        font.setTypeface(TYPEFACES[typeface]);
         String text = cell.previewText();
         int layoutWidth = Math.max(1, (int) availableWidth);
         if (!style.wrap) layoutWidth = Math.max(layoutWidth, (int) Math.ceil(Layout.getDesiredWidth(text, font)));

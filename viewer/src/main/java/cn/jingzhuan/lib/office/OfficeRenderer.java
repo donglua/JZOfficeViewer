@@ -39,6 +39,8 @@ final class OfficeRenderer {
     private OfficeDocument document;
     private int preparedFirst, preparedLast = -1;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final RectF drawRect = new RectF();
+    private final RectF textBounds = new RectF();
 
     void clear() {
         pages.clear(); document = null; width = height = 0;
@@ -238,7 +240,8 @@ final class OfficeRenderer {
     private void drawElement(Canvas canvas, Element d, Map<String, Bitmap> images) {
         OfficeDocument.Element e = d.source;
         canvas.save(); canvas.concat(d.transform);
-        RectF rect = new RectF(0, 0, d.width, d.height);
+        drawRect.set(0, 0, d.width, d.height);
+        RectF rect = drawRect;
         if (e.type == OfficeDocument.Type.PATH) {
             for (int i = 0; i < d.paths.size(); i++) {
                 OfficeDocument.Path sourcePath = e.paths.get(i);
@@ -262,7 +265,7 @@ final class OfficeRenderer {
             else if (e.stroke != 0) canvas.drawRect(rect, paint);
         }
         if (e.type == OfficeDocument.Type.TEXT) {
-            RectF textBounds = new RectF(rect);
+            textBounds.set(rect);
             for (OfficeTextLayout.Block block : d.texts) {
                 textBounds.top = Math.min(textBounds.top, block.y);
                 textBounds.bottom = Math.max(textBounds.bottom, block.y + block.layout.getHeight());

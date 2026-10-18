@@ -5,12 +5,12 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -44,7 +44,7 @@ final class OfficeImages {
 
     void request(Set<String> parts) {
         if (closed || suspended) return;
-        if (!new ArrayList<>(wanted).equals(new ArrayList<>(parts))) {
+        if (!sameOrder(wanted, parts)) {
             revision++;
             wanted.clear(); wanted.addAll(parts);
             long limit = pixelLimit();
@@ -71,6 +71,15 @@ final class OfficeImages {
             trimCache();
         }
         loadNext();
+    }
+
+    private static boolean sameOrder(Set<String> a, Set<String> b) {
+        if (a.size() != b.size()) return false;
+        Iterator<String> left = a.iterator(), right = b.iterator();
+        while (left.hasNext()) {
+            if (!Objects.equals(left.next(), right.next())) return false;
+        }
+        return true;
     }
 
     private long pixelLimit() { return MAX_PIXELS / Math.max(1, wanted.size()); }

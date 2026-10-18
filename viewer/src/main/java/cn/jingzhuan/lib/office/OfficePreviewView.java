@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.AttributeSet;
+import android.util.TypedValue;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -80,7 +81,14 @@ public final class OfficePreviewView extends View {
         gestures = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent event) { scroller.forceFinished(true); return true; }
             @Override public boolean onScroll(MotionEvent first, MotionEvent last, float dx, float dy) {
-                if (!pinch.isInProgress()) { offsetX += dx; offsetY += dy; clampOffsets(); updateCurrentPage(); invalidate(); }
+                if (!pinch.isInProgress()) {
+                    float prevX = offsetX, prevY = offsetY;
+                    offsetX += dx; offsetY += dy; clampOffsets();
+                    if (offsetX == prevX && offsetY == prevY && getParent() != null) {
+                        getParent().requestDisallowInterceptTouchEvent(false);
+                    }
+                    updateCurrentPage(); invalidate();
+                }
                 return true;
             }
             @Override public boolean onSingleTapUp(MotionEvent event) { performClick(); return true; }
@@ -327,7 +335,8 @@ public final class OfficePreviewView extends View {
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (document == null) {
-            paint.setColor(0xff656b73); paint.setTextSize(16 * getResources().getDisplayMetrics().scaledDensity);
+            paint.setColor(0xff656b73);
+            paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 16, getResources().getDisplayMetrics()));
             paint.setStyle(Paint.Style.FILL);
             canvas.drawText(status, Math.max(16, (getWidth() - paint.measureText(status)) / 2), getHeight() / 2f, paint);
             return;
