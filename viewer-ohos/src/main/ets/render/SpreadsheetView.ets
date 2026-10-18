@@ -209,15 +209,21 @@ export struct SpreadsheetView {
         (value: number): void => {
           if (isNaN(value) || !isFinite(value)) return;
           this.stopFling();
-          const newScale = Math.min(3.5, Math.max(0.5, value));
-          const focusX = this.canvasWidth / 2;
-          const focusY = this.canvasHeight / 2;
-          const worldX = (focusX - HEADER_WIDTH - this.offsetX) / this.scaleVal;
-          const worldY = (focusY - HEADER_HEIGHT - this.offsetY) / this.scaleVal;
-          this.offsetX = focusX - HEADER_WIDTH - worldX * newScale;
-          this.offsetY = focusY - HEADER_HEIGHT - worldY * newScale;
-          this.scaleVal = newScale;
-          this.clampOffsets();
+          const newScale = Math.min(4.0, Math.max(0.5, value));
+          if (Math.abs(newScale - 1.0) <= 0.05) {
+            this.scaleVal = 1.0;
+            this.offsetX = 0;
+            this.offsetY = 0;
+          } else {
+            const focusX = this.canvasWidth / 2;
+            const focusY = this.canvasHeight / 2;
+            const worldX = (focusX - HEADER_WIDTH - this.offsetX) / this.scaleVal;
+            const worldY = (focusY - HEADER_HEIGHT - this.offsetY) / this.scaleVal;
+            this.offsetX = focusX - HEADER_WIDTH - worldX * newScale;
+            this.offsetY = focusY - HEADER_HEIGHT - worldY * newScale;
+            this.scaleVal = newScale;
+            this.clampOffsets();
+          }
           this.redraw();
         }
       );
@@ -817,7 +823,7 @@ export struct SpreadsheetView {
             TapGesture({ count: 2 })
               .onAction((event: GestureEvent) => {
                 this.stopFling();
-                if (this.scaleVal > 1.2) {
+                if (this.scaleVal > 1.1) {
                   this.scaleVal = 1.0;
                   this.offsetX = 0;
                   this.offsetY = 0;
@@ -848,7 +854,7 @@ export struct SpreadsheetView {
                 this.pinchStartOffsetY = this.offsetY;
               })
               .onActionUpdate((event: GestureEvent) => {
-                const newScale = Math.min(3.5, Math.max(0.5, this.pinchStartScale * event.scale));
+                const newScale = Math.min(4.0, Math.max(0.5, this.pinchStartScale * event.scale));
                 const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.canvasWidth / 2);
                 const focusY = event.pinchCenterY > 0 ? event.pinchCenterY : (this.canvasHeight / 2);
                 const worldX = (focusX - HEADER_WIDTH - this.pinchStartOffsetX) / this.pinchStartScale;

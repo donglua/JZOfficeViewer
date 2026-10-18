@@ -355,6 +355,7 @@ struct DocxFlowView {
   @State zoom: number = 1.0;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
+  @State isGesturing: boolean = false;
 
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
@@ -366,7 +367,8 @@ struct DocxFlowView {
         },
         (): number => this.zoom,
         (value: number): void => {
-          this.setZoom(value, this.viewportWidth / 2);
+          this.isGesturing = false;
+          this.setZoom(value, this.viewportWidth / 2, this.viewportHeight / 2);
         }
       );
     }
@@ -377,10 +379,15 @@ struct DocxFlowView {
   }
 
   private pinchStartZoom: number = 1.0;
+  private pinchStartOffsetX: number = 0;
   private panStartX: number = 0;
-  private panStartY: number = 0;
   private viewportWidth: number = 0;
   private viewportHeight: number = 0;
+
+  private verticalZoomPad(): number {
+    if (this.zoom <= 1.0 || this.viewportHeight <= 0) return 0;
+    return (this.viewportHeight * (this.zoom - 1)) / (2 * this.zoom);
+  }
 
   private clampOffsets(): void {
     if (this.zoom <= 1.05) {
@@ -393,10 +400,10 @@ struct DocxFlowView {
     this.offsetY = 0;
   }
 
-  private setZoom(value: number, focusX: number): void {
+  private setZoom(value: number, focusX: number, focusY?: number): void {
     if (isNaN(value) || !isFinite(value)) return;
     const oldZoom = this.zoom;
-    const newZoom = Math.max(1.0, Math.min(3.0, value));
+    const newZoom = Math.max(1.0, Math.min(4.0, value));
 
     const cX = this.viewportWidth / 2;
     const dx = focusX - cX;
@@ -411,6 +418,13 @@ struct DocxFlowView {
       this.offsetY = 0;
       this.zoom = newZoom;
       this.clampOffsets();
+    }
+    if (focusY !== undefined && this.viewportHeight > 0 && Math.abs(newZoom - oldZoom) > 0.01) {
+      const cY = this.viewportHeight / 2;
+      const dy = (focusY - cY) * (1 / oldZoom - 1 / newZoom);
+      if (Math.abs(dy) > 0.5) {
+        this.scroller.scrollBy(0, dy);
+      }
     }
   }
 
@@ -450,14 +464,19 @@ struct DocxFlowView {
           .cachedCount(6)
           .width('100%')
           .height('100%')
-          .padding({ left: 16, right: 16, top: 16, bottom: 24 })
+          .padding({
+            left: 16,
+            right: 16,
+            top: 16 + this.verticalZoomPad(),
+            bottom: 24 + this.verticalZoomPad()
+          })
           .backgroundColor('#ffffff')
         }
         .width('100%')
         .height('100%')
         .scale({ x: this.zoom, y: this.zoom })
         .translate({ x: this.offsetX, y: this.offsetY })
-        .animation({ duration: 150, curve: Curve.EaseOut })
+        .animation({ duration: this.isGesturing ? 0 : 150, curve: Curve.EaseOut })
       }
       .width('100%')
       .height('100%')
@@ -467,34 +486,58 @@ struct DocxFlowView {
         const h = Number(newArea.height);
         if (w > 0) this.viewportWidth = w;
         if (h > 0) this.viewportHeight = h;
+        this.clampOffsets();
       })
       .gesture(
         GestureGroup(
           GestureMode.Parallel,
           TapGesture({ count: 2 })
             .onAction((event: GestureEvent) => {
+              this.isGesturing = false;
               const focusX = event.fingerList && event.fingerList.length > 0
                 ? event.fingerList[0].localX
                 : (this.viewportWidth / 2);
-              this.setZoom(this.zoom > 1.1 ? 1.0 : 1.8, focusX);
+              const focusY = event.fingerList && event.fingerList.length > 0
+                ? event.fingerList[0].localY
+                : (this.viewportHeight / 2);
+              this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
             }),
           PinchGesture({ fingers: 2 })
             .onActionStart(() => {
+              this.isGesturing = true;
               this.pinchStartZoom = this.zoom;
+              this.pinchStartOffsetX = this.offsetX;
             })
             .onActionUpdate((event: GestureEvent) => {
               const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
-              this.setZoom(this.pinchStartZoom * event.scale, focusX);
+              const newZoom = Math.max(1.0, Math.min(4.0, this.pinchStartZoom * event.scale));
+              if (newZoom <= 1.05) {
+                this.zoom = 1.0;
+                this.offsetX = 0;
+                this.offsetY = 0;
+              } else {
+                const dx = focusX - this.viewportWidth / 2;
+                const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
+                this.offsetX = dx - worldX * newZoom;
+                this.offsetY = 0;
+                this.zoom = newZoom;
+                this.clampOffsets();
+              }
             })
             .onActionEnd(() => {
+              this.isGesturing = false;
               if (this.zoom <= 1.05) {
                 this.zoom = 1.0;
                 this.offsetX = 0;
                 this.offsetY = 0;
               }
+            })
+            .onActionCancel(() => {
+              this.isGesturing = false;
             }),
           PanGesture({ direction: PanDirection.Horizontal })
             .onActionStart(() => {
+              this.isGesturing = true;
               this.panStartX = this.offsetX;
             })
             .onActionUpdate((event: GestureEvent) => {
@@ -502,6 +545,12 @@ struct DocxFlowView {
                 this.offsetX = this.panStartX + event.offsetX;
                 this.clampOffsets();
               }
+            })
+            .onActionEnd(() => {
+              this.isGesturing = false;
+            })
+            .onActionCancel(() => {
+              this.isGesturing = false;
             })
         )
       )
@@ -863,10 +912,11 @@ struct PptxSlidesView {
   @State zoom: number = 1.0;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
+  @State isGesturing: boolean = false;
 
   private pinchStartZoom: number = 1.0;
+  private pinchStartOffsetX: number = 0;
   private panStartX: number = 0;
-  private panStartY: number = 0;
   private viewportWidth: number = 0;
   private viewportHeight: number = 0;
 
@@ -885,7 +935,8 @@ struct PptxSlidesView {
         },
         (): number => this.zoom,
         (value: number): void => {
-          this.setZoom(value, this.viewportWidth / 2);
+          this.isGesturing = false;
+          this.setZoom(value, this.viewportWidth / 2, this.viewportHeight / 2);
         }
       );
     }
@@ -893,6 +944,11 @@ struct PptxSlidesView {
 
   aboutToDisappear(): void {
     this.imageStore.release();
+  }
+
+  private verticalZoomPad(): number {
+    if (this.zoom <= 1.0 || this.viewportHeight <= 0) return 0;
+    return (this.viewportHeight * (this.zoom - 1)) / (2 * this.zoom);
   }
 
   private clampOffsets(): void {
@@ -906,7 +962,7 @@ struct PptxSlidesView {
     this.offsetY = 0;
   }
 
-  private setZoom(value: number, focusX: number): void {
+  private setZoom(value: number, focusX: number, focusY?: number): void {
     if (isNaN(value) || !isFinite(value)) return;
     const oldZoom = this.zoom;
     const newZoom = Math.max(1.0, Math.min(4.0, value));
@@ -924,6 +980,13 @@ struct PptxSlidesView {
       this.offsetY = 0;
       this.zoom = newZoom;
       this.clampOffsets();
+    }
+    if (focusY !== undefined && this.viewportHeight > 0 && Math.abs(newZoom - oldZoom) > 0.01) {
+      const cY = this.viewportHeight / 2;
+      const dy = (focusY - cY) * (1 / oldZoom - 1 / newZoom);
+      if (Math.abs(dy) > 0.5) {
+        this.scroller.scrollBy(0, dy);
+      }
     }
   }
 
@@ -961,13 +1024,18 @@ struct PptxSlidesView {
           })
           .width('100%')
           .height('100%')
-          .padding({ left: 16, right: 16, top: 16, bottom: 24 })
+          .padding({
+            left: 16,
+            right: 16,
+            top: 16 + this.verticalZoomPad(),
+            bottom: 24 + this.verticalZoomPad()
+          })
         }
         .width('100%')
         .height('100%')
         .scale({ x: this.zoom, y: this.zoom })
         .translate({ x: this.offsetX, y: this.offsetY })
-        .animation({ duration: 150, curve: Curve.EaseOut })
+        .animation({ duration: this.isGesturing ? 0 : 150, curve: Curve.EaseOut })
       }
       .width('100%')
       .height('100%')
@@ -977,34 +1045,58 @@ struct PptxSlidesView {
         const h = Number(newArea.height);
         if (w > 0) this.viewportWidth = w;
         if (h > 0) this.viewportHeight = h;
+        this.clampOffsets();
       })
       .gesture(
         GestureGroup(
           GestureMode.Parallel,
           TapGesture({ count: 2 })
             .onAction((event: GestureEvent) => {
+              this.isGesturing = false;
               const focusX = event.fingerList && event.fingerList.length > 0
                 ? event.fingerList[0].localX
                 : (this.viewportWidth / 2);
-              this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX);
+              const focusY = event.fingerList && event.fingerList.length > 0
+                ? event.fingerList[0].localY
+                : (this.viewportHeight / 2);
+              this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
             }),
           PinchGesture({ fingers: 2 })
             .onActionStart(() => {
+              this.isGesturing = true;
               this.pinchStartZoom = this.zoom;
+              this.pinchStartOffsetX = this.offsetX;
             })
             .onActionUpdate((event: GestureEvent) => {
               const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
-              this.setZoom(this.pinchStartZoom * event.scale, focusX);
+              const newZoom = Math.max(1.0, Math.min(4.0, this.pinchStartZoom * event.scale));
+              if (newZoom <= 1.05) {
+                this.zoom = 1.0;
+                this.offsetX = 0;
+                this.offsetY = 0;
+              } else {
+                const dx = focusX - this.viewportWidth / 2;
+                const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
+                this.offsetX = dx - worldX * newZoom;
+                this.offsetY = 0;
+                this.zoom = newZoom;
+                this.clampOffsets();
+              }
             })
             .onActionEnd(() => {
+              this.isGesturing = false;
               if (this.zoom <= 1.05) {
                 this.zoom = 1.0;
                 this.offsetX = 0;
                 this.offsetY = 0;
               }
+            })
+            .onActionCancel(() => {
+              this.isGesturing = false;
             }),
           PanGesture({ direction: PanDirection.Horizontal })
             .onActionStart(() => {
+              this.isGesturing = true;
               this.panStartX = this.offsetX;
             })
             .onActionUpdate((event: GestureEvent) => {
@@ -1012,6 +1104,12 @@ struct PptxSlidesView {
                 this.offsetX = this.panStartX + event.offsetX;
                 this.clampOffsets();
               }
+            })
+            .onActionEnd(() => {
+              this.isGesturing = false;
+            })
+            .onActionCancel(() => {
+              this.isGesturing = false;
             })
         )
       )

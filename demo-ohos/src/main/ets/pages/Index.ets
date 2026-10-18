@@ -21,9 +21,21 @@ struct Index {
   @State sandboxFilePath: string = '';
   @State prepareError: string = '';
   @State statusText: string = 'DOCX / PPTX / XLSX';
+  @State currentPage: number = 0;
+  @State pageCount: number = 0;
+  private currentFormat: string = 'DOCX';
+  private noticeCount: number = 0;
 
   aboutToAppear(): void {
     this.selectSample(0);
+  }
+
+  private updateStatusText(): void {
+    const pageInfo = this.currentFormat === 'DOCX'
+      ? 'Continuous'
+      : `${this.currentPage} / ${this.pageCount}`;
+    const noticeInfo = this.noticeCount > 0 ? `  |  ${this.noticeCount} notices` : '';
+    this.statusText = `${this.currentFormat}  |  ${pageInfo}${noticeInfo}`;
   }
 
   private async selectSample(index: number): Promise<void> {
@@ -62,15 +74,53 @@ struct Index {
   build() {
     Column() {
       Column({ space: 10 }) {
-        Row() {
-          Text('JZOffice HarmonyOS 预览')
-            .fontSize(18)
-            .fontWeight(FontWeight.Bold)
-            .fontColor('#182431')
-            .layoutWeight(1)
-          Text(this.statusText)
+        Row({ space: 6 }) {
+          Column({ space: 2 }) {
+            Text('JZOffice HarmonyOS 预览')
+              .fontSize(17)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#182431')
+            Text(this.statusText)
+              .fontSize(12)
+              .fontColor('#58616b')
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+
+          if (this.pageCount > 1) {
+            Button('‹')
+              .width(34)
+              .height(32)
+              .fontSize(16)
+              .padding(0)
+              .enabled(this.currentPage > 1)
+              .backgroundColor('#f1f3f4')
+              .fontColor('#202124')
+              .onClick(() => {
+                this.controller.jumpToPage(this.currentPage - 1);
+              })
+
+            Button('›')
+              .width(34)
+              .height(32)
+              .fontSize(16)
+              .padding(0)
+              .enabled(this.currentPage > 0 && this.currentPage < this.pageCount)
+              .backgroundColor('#f1f3f4')
+              .fontColor('#202124')
+              .onClick(() => {
+                this.controller.jumpToPage(this.currentPage + 1);
+              })
+          }
+
+          Button('重置缩放')
+            .height(32)
             .fontSize(12)
-            .fontColor('#58616b')
+            .backgroundColor('#f1f3f4')
+            .fontColor('#202124')
+            .onClick(() => {
+              this.controller.resetZoom();
+            })
         }
         .width('100%')
         .alignItems(VerticalAlign.Center)
@@ -109,13 +159,17 @@ struct Index {
             filePath: this.sandboxFilePath,
             controller: this.controller,
             onLoaded: (info: OfficePreviewInfo) => {
-              const pageInfo = info.format === 'DOCX' ? 'Continuous' : `1 / ${info.pageCount}`;
-              const noticeInfo = info.warnings.length > 0 ? `  |  ${info.warnings.length} notices` : '';
-              this.statusText = `${info.format}  |  ${pageInfo}${noticeInfo}`;
+              this.currentFormat = info.format;
+              this.noticeCount = info.warnings.length;
+              this.pageCount = info.pageCount;
+              this.currentPage = info.pageCount > 0 ? 1 : 0;
+              this.updateStatusText();
             },
             onPageChange: (pageNumber: number, pageCount: number) => {
-              if (pageCount > 1) {
-                this.statusText = `${this.samples[this.selectedIndex].title.split(' ')[0]}  |  ${pageNumber} / ${pageCount}`;
+              this.currentPage = pageNumber;
+              this.pageCount = pageCount;
+              if (pageCount > 0) {
+                this.updateStatusText();
               }
             }
           })
