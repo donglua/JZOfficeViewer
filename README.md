@@ -182,21 +182,41 @@ ohpm install @jzdy/office
 }
 ```
 
-### 2. 使用预览组件
+### 2. 使用预览组件与控制器
 
-向 `OfficePreviewView` 传入应用沙箱内的文档绝对路径（如 `cacheDir` 或 `filesDir` 下的路径）：
+向 `OfficePreviewView` 传入应用沙箱内的文档绝对路径（如 `cacheDir` 或 `filesDir` 下的路径），并可通过 `OfficePreviewController` 控制跳页、切换工作表与缩放：
 
 ```typescript
-import { OfficePreviewView } from '@jzdy/office';
+import { OfficePreviewController, OfficePreviewInfo, OfficePreviewView } from '@jzdy/office';
 
 @Entry
 @Component
 struct PreviewPage {
-  @State filePath: string = `${getContext(this).cacheDir}/sample.docx`;
+  @State filePath: string = '';
+  private previewController: OfficePreviewController = new OfficePreviewController();
+
+  aboutToAppear() {
+    const hostContext = this.getUIContext().getHostContext();
+    if (hostContext) {
+      this.filePath = `${hostContext.cacheDir}/sample.docx`;
+    }
+  }
 
   build() {
     Column() {
-      OfficePreviewView({ filePath: this.filePath })
+      OfficePreviewView({
+        filePath: this.filePath,
+        controller: this.previewController,
+        onLoaded: (info: OfficePreviewInfo) => {
+          console.info(`Loaded ${info.format}, pages: ${info.pageCount}`);
+        },
+        onError: (error: Error) => {
+          console.error(`Preview error: ${error.message}`);
+        },
+        onPageChange: (page: number, pageCount: number) => {
+          console.info(`Page: ${page}/${pageCount}`);
+        }
+      })
         .width('100%')
         .height('100%')
     }
@@ -206,7 +226,7 @@ struct PreviewPage {
 }
 ```
 
-如需直接获取解析后的结构化文档模型，可调用异步接口 `NativeCore.parseDocumentAsync(filePath)`。完整用法可参考 `demo-ohos` 模块。
+如需直接获取解析后的结构化文档模型（`OfficeDocument`），可调用异步接口 `NativeCore.parseDocumentAsync(filePath)`。完整用法可参考 `demo-ohos` 模块。
 
 ## 资源与安全限制
 
