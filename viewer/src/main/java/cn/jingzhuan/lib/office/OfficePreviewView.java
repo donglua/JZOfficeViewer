@@ -7,6 +7,8 @@ import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Parcel;
+import android.os.Parcelable;
 import android.util.AttributeSet;
 import android.util.TypedValue;
 import android.view.GestureDetector;
@@ -64,6 +66,9 @@ public final class OfficePreviewView extends View {
     private final RectF sheetViewport = new RectF();
     private OnPageChangeListener pageListener;
     private int currentPage, notifiedPage, notifiedCount, pendingJumpPage;
+    private boolean hasRestoredState;
+    private int restoredPage;
+    private float restoredZoom = 1, restoredDocX, restoredDocY;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final OverScroller scroller;
     private final GestureDetector gestures;
@@ -141,14 +146,23 @@ public final class OfficePreviewView extends View {
                     if (token != generation) { if (source != null) closePackage(source); return; }
                     document = loaded; status = ""; currentPage = 1;
                     if (isSpreadsheet()) {
-                        sheetRenderer.setSheet(loaded.sheets.get(0), loaded.cellStyles, preparedSheet);
+                        if (hasRestoredState && restoredPage > 1 && restoredPage <= loaded.sheets.size()) {
+                            sheetRenderer.setSheet(loaded.sheets.get(restoredPage - 1), loaded.cellStyles);
+                            currentPage = restoredPage;
+                        } else {
+                            sheetRenderer.setSheet(loaded.sheets.get(0), loaded.cellStyles, preparedSheet);
+                        }
                         contentWidth = sheetRenderer.width; contentHeight = sheetRenderer.height;
                     } else {
                         images = new OfficeImages(source, this::invalidate, listener);
                         renderer.adopt(preparedRenderer);
                         contentWidth = renderer.width; contentHeight = renderer.height;
+                        if (hasRestoredState && restoredPage >= 1 && restoredPage <= renderer.pages.size()) {
+                            currentPage = restoredPage;
+                        }
                     }
-                    clampOffsets(); invalidate();
+                    if (!applyRestoredState()) clampOffsets();
+                    invalidate();
                     listener.onLoaded(new Info(loaded));
                     if (token == generation) updateCurrentPage();
                 });
@@ -170,6 +184,7 @@ public final class OfficePreviewView extends View {
 
     public void clear() {
         requireMainThread(); cancel(); releaseImages(); document = null; renderer.clear(); sheetRenderer.clear(); currentPage = pendingJumpPage = 0;
+        hasRestoredState = false;
         contentWidth = contentHeight = offsetX = offsetY = 0;
         status = ""; invalidate(); notifyPageChanged();
     }
@@ -329,7 +344,29 @@ public final class OfficePreviewView extends View {
     @Override public boolean canScrollVertically(int direction) { return direction < 0 ? offsetY > 0 : offsetY < maxY(); }
     @Override public boolean canScrollHorizontally(int direction) { return direction < 0 ? offsetX > 0 : offsetX < maxX(); }
     @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-        if (!applyPendingJump()) { clampOffsets(); updateCurrentPage(); }
+        if (!applyRestoredState() && !applyPendingJump()) { clampOffsets(); updateCurrentPage(); }
+    }
+
+    private boolean applyRestoredState() {
+        if (!hasRestoredState || document == null || getWidth() == 0 || getHeight() == 0) return false;
+        hasRestoredState = false;
+        if (isSpreadsheet()) {
+            if (restoredPage >= 1 && restoredPage <= document.sheets.size() && currentPage != restoredPage) {
+                sheetRenderer.setSheet(document.sheets.get(restoredPage - 1), document.cellStyles);
+                contentWidth = sheetRenderer.width; contentHeight = sheetRenderer.height;
+                currentPage = restoredPage;
+            }
+        } else if (restoredPage >= 1 && restoredPage <= renderer.pages.size()) {
+            currentPage = restoredPage;
+        }
+        zoom = Math.max(isSpreadsheet() ? 0.5f : 1, Math.min(4, restoredZoom));
+        float s = scale();
+        offsetX = restoredDocX * s;
+        offsetY = restoredDocY * s;
+        clampOffsets();
+        updateCurrentPage();
+        invalidate();
+        return true;
     }
 
     @Override protected void onDraw(Canvas canvas) {
@@ -352,5 +389,68 @@ public final class OfficePreviewView extends View {
             renderer.draw(canvas, visibleTop, visibleBottom, images.bitmaps);
         }
         canvas.restore();
+    }
+
+    @Override protected Parcelable onSaveInstanceState() {
+        Parcelable superState = super.onSaveInstanceState();
+        if (document == null) return superState;
+        float s = scale();
+        SavedState saved = new SavedState(superState);
+        saved.hasState = true;
+        saved.page = currentPage;
+        saved.zoom = zoom;
+        saved.docX = s > 0 ? offsetX / s : 0;
+        saved.docY = s > 0 ? offsetY / s : 0;
+        return saved;
+    }
+
+    @Override protected void onRestoreInstanceState(Parcelable state) {
+        if (!(state instanceof SavedState)) {
+            super.onRestoreInstanceState(state);
+            return;
+        }
+        SavedState saved = (SavedState) state;
+        super.onRestoreInstanceState(saved.getSuperState());
+        if (saved.hasState) {
+            hasRestoredState = true;
+            restoredPage = saved.page;
+            restoredZoom = saved.zoom;
+            restoredDocX = saved.docX;
+            restoredDocY = saved.docY;
+            applyRestoredState();
+        }
+    }
+
+    private static final class SavedState extends BaseSavedState {
+        boolean hasState;
+        int page;
+        float zoom = 1;
+        float docX;
+        float docY;
+
+        SavedState(Parcelable superState) { super(superState); }
+
+        private SavedState(Parcel in) {
+            super(in);
+            hasState = in.readByte() != 0;
+            page = in.readInt();
+            zoom = in.readFloat();
+            docX = in.readFloat();
+            docY = in.readFloat();
+        }
+
+        @Override public void writeToParcel(Parcel out, int flags) {
+            super.writeToParcel(out, flags);
+            out.writeByte((byte) (hasState ? 1 : 0));
+            out.writeInt(page);
+            out.writeFloat(zoom);
+            out.writeFloat(docX);
+            out.writeFloat(docY);
+        }
+
+        public static final Creator<SavedState> CREATOR = new Creator<SavedState>() {
+            @Override public SavedState createFromParcel(Parcel in) { return new SavedState(in); }
+            @Override public SavedState[] newArray(int size) { return new SavedState[size]; }
+        };
     }
 }

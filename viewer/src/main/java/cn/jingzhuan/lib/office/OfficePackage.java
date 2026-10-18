@@ -32,8 +32,8 @@ final class OfficePackage implements Closeable {
     private long readBytes;
     private final Map<String, Long> readSizes = new HashMap<>();
 
-    private OfficePackage(OfficeCache.Entry cache, ZipFile zip, OfficeDocument document) {
-        this.cache = cache; this.file = cache.getFile(); this.zip = zip; this.document = document;
+    private OfficePackage(OfficeCache.Entry cache, OfficeDocument document) {
+        this.cache = cache; this.file = cache.getFile(); this.document = document;
     }
 
     static OfficePackage open(Context context, Uri uri) throws IOException {
@@ -43,7 +43,6 @@ final class OfficePackage implements Closeable {
             ? OfficeCache.retain(new File(uri.getPath())) : null;
         OfficeCache.Entry cache = retained != null ? retained : OfficeCache.create(context.getCacheDir());
         File file = cache.getFile();
-        ZipFile zip = null;
         boolean complete = false;
         try {
             checkCancelled();
@@ -66,15 +65,12 @@ final class OfficePackage implements Closeable {
             checkCancelled();
             OfficeDocument document = DocumentDecoder.decode(NativeCore.parse(file.getAbsolutePath()));
             checkCancelled();
-            zip = new ZipFile(file);
-            checkCancelled();
-            OfficePackage opened = new OfficePackage(cache, zip, document);
+            OfficePackage opened = new OfficePackage(cache, document);
             complete = true;
             return opened;
         } finally {
             if (!complete) {
-                try { if (zip != null) zip.close(); }
-                finally { cache.close(); }
+                cache.close();
             }
         }
     }

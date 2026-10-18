@@ -54,7 +54,7 @@ public final class MainActivity extends Activity {
         root.addView(toolbar);
         status = new TextView(this); status.setTextSize(12); status.setTextColor(0xff58616b); status.setPadding(dp(16), dp(4), dp(16), dp(8));
         status.setText("DOCX / PPTX / XLSX"); root.addView(status);
-        preview = new OfficePreviewView(this); root.addView(preview, new LinearLayout.LayoutParams(-1, 0, 1));
+        preview = new OfficePreviewView(this); preview.setId(android.R.id.primary); root.addView(preview, new LinearLayout.LayoutParams(-1, 0, 1));
         sheets = new SheetTabs(this); root.addView(sheets, new LinearLayout.LayoutParams(-1, -2));
         remoteLoader = new RemoteOfficeLoader(this);
         preview.setOnPageChangeListener((page, count) -> updatePageState());
