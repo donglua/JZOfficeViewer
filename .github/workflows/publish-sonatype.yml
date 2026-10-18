@@ -52,6 +52,11 @@ jobs:
         with:
           ref: ${{ github.event_name == 'release' && github.ref || format('refs/tags/v{0}', steps.version.outputs.version) }}
 
+      - name: Validate package versions
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: python3 scripts/check-versions.py --version "$EXPECTED_VERSION"
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -92,7 +97,7 @@ jobs:
           java -cp "$classes" cn.jingzhuan.lib.office.OfficeCacheChecks
           java -cp "$classes" RemoteDownloaderChecks
 
-      - name: Run sheet layout checks
+      - name: Run sheet layout and decoder checks
         shell: bash
         run: |
           classes="$RUNNER_TEMP/sheet-layout-checks"
@@ -100,9 +105,12 @@ jobs:
           javac --release 11 -Xlint:all -Werror -d "$classes" \
             viewer/src/main/java/cn/jingzhuan/lib/office/OfficeDocument.java \
             viewer/src/main/java/cn/jingzhuan/lib/office/SpreadsheetDocument.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/DocumentDecoder.java \
             viewer/src/main/java/cn/jingzhuan/lib/office/SheetLayout.java \
-            viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutChecks.java
+            viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutChecks.java \
+            scripts/tests/DocumentDecoderChecks.java
           java -cp "$classes" cn.jingzhuan.lib.office.SheetLayoutChecks
+          java -cp "$classes" cn.jingzhuan.lib.office.DocumentDecoderChecks
 
       - name: Build and publish both signed libraries to Maven Central
         env:

@@ -55,13 +55,7 @@ jobs:
       - name: Validate package version
         env:
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
-        shell: bash
-        run: |
-          pkg_version=$(grep -o '"version": *"[^"]*"' viewer-ohos/oh-package.json5 | head -n 1 | cut -d'"' -f4)
-          if [[ "$pkg_version" != "$EXPECTED_VERSION" ]]; then
-            echo "::error::viewer-ohos/oh-package.json5 version ($pkg_version) does not match release version ($EXPECTED_VERSION)"
-            exit 1
-          fi
+        run: python3 scripts/check-versions.py --version "$EXPECTED_VERSION"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

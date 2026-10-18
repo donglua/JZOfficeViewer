@@ -1,5 +1,6 @@
+import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { OfficePreviewView } from '@jzdy/office';
+import { OfficePreviewController, OfficePreviewInfo, OfficePreviewView } from '@jzdy/office';
 
 interface SampleItem {
   title: string;
@@ -14,10 +15,12 @@ struct Index {
     { title: 'PPTX 幻灯片', rawFileName: 'sample.pptx' },
     { title: 'XLSX 表格', rawFileName: 'sample.xlsx' },
   ];
+  private readonly controller: OfficePreviewController = new OfficePreviewController();
 
   @State selectedIndex: number = 0;
   @State sandboxFilePath: string = '';
   @State prepareError: string = '';
+  @State statusText: string = 'DOCX / PPTX / XLSX';
 
   aboutToAppear(): void {
     this.selectSample(0);
@@ -28,7 +31,11 @@ struct Index {
     this.prepareError = '';
     const sample = this.samples[index];
     try {
-      const ctx = getContext(this);
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+      if (!ctx) {
+        this.prepareError = '无法获取 AbilityContext';
+        return;
+      }
       const rawBytes: Uint8Array = await ctx.resourceManager.getRawFileContent(sample.rawFileName);
       const targetPath = `${ctx.cacheDir}/${sample.rawFileName}`;
 
@@ -60,8 +67,13 @@ struct Index {
             .fontSize(18)
             .fontWeight(FontWeight.Bold)
             .fontColor('#182431')
+            .layoutWeight(1)
+          Text(this.statusText)
+            .fontSize(12)
+            .fontColor('#58616b')
         }
         .width('100%')
+        .alignItems(VerticalAlign.Center)
 
         Row({ space: 8 }) {
           ForEach(this.samples, (item: SampleItem, index: number) => {
@@ -74,6 +86,8 @@ struct Index {
               .onClick(() => {
                 if (this.selectedIndex !== index) {
                   this.selectSample(index);
+                } else {
+                  this.controller.resetZoom();
                 }
               })
           })
@@ -91,12 +105,24 @@ struct Index {
             .fontColor('#d93025')
             .padding(24)
         } else if (this.sandboxFilePath) {
-          OfficePreviewView({ filePath: this.sandboxFilePath })
+          OfficePreviewView({
+            filePath: this.sandboxFilePath,
+            controller: this.controller,
+            onLoaded: (info: OfficePreviewInfo) => {
+              const pageInfo = info.format === 'DOCX' ? 'Continuous' : `1 / ${info.pageCount}`;
+              const noticeInfo = info.warnings.length > 0 ? `  |  ${info.warnings.length} notices` : '';
+              this.statusText = `${info.format}  |  ${pageInfo}${noticeInfo}`;
+            },
+            onPageChange: (pageNumber: number, pageCount: number) => {
+              if (pageCount > 1) {
+                this.statusText = `${this.samples[this.selectedIndex].title.split(' ')[0]}  |  ${pageNumber} / ${pageCount}`;
+              }
+            }
+          })
             .width('100%')
             .height('100%')
         }
       }
-
       .width('100%')
       .layoutWeight(1)
     }

@@ -35,6 +35,9 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy --no-self-update
           rustup default 1.88.0
 
+      - name: Verify multi-platform version consistency
+        run: python3 scripts/check-versions.py
+
       - name: Run Rust checks
         run: |
           cargo fmt --all -- --check
