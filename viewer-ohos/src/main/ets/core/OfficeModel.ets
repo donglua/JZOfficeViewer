@@ -51,7 +51,7 @@ export interface Paragraph {
   firstLineIndent: number;
   lineSpacingRule: LineSpacingRule;
   lineSpacing: number;
-  bullet: string;
+  bullet?: string;
 }
 
 export interface Element {
@@ -69,11 +69,11 @@ export interface Element {
   imageBounds?: [number, number, number, number];
   verticalAlignment: VerticalAlignment;
   textWrap: boolean;
-  paragraphs: Paragraph[];
-  rows: Paragraph[][][];
-  columnWidths: number[];
-  cellFills: number[][];
-  paths: Path[];
+  paragraphs?: Paragraph[];
+  rows?: Paragraph[][][];
+  columnWidths?: number[];
+  cellFills?: number[][];
+  paths?: Path[];
   fillGradient?: GradientFill;
 }
 

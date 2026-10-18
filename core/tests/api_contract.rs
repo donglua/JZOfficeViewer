@@ -75,13 +75,17 @@ fn output_schema_version_and_serialized_field_names_are_stable() -> TestResult {
         assert_eq!(element["transform"], expected);
         assert!(element.get("flipH").is_none());
         assert!(element.get("flipV").is_none());
-        assert!(element["columnWidths"].is_array());
+        assert!(element.get("columnWidths").is_none());
+        assert!(element.get("rows").is_none());
+        assert!(element.get("cellFills").is_none());
+        assert!(element.get("paths").is_none());
         assert_eq!(element["verticalAlignment"], "TOP");
         assert!(element.get("imageCrop").is_none());
-        assert!(element["imageBounds"].is_null());
+        assert!(element.get("imageBounds").is_none());
         assert_eq!(element["paragraphs"][0]["lineSpacingRule"], "AUTO");
         assert_eq!(element["paragraphs"][0]["lineSpacing"], 1.0);
         assert_eq!(element["paragraphs"][0]["firstLineIndent"], 0.0);
+        assert!(element["paragraphs"][0].get("bullet").is_none());
         assert!(element.get("kind").is_none());
         assert!(element["paragraphs"][0]["runs"][0]["text"].is_string());
     }

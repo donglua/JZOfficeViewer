@@ -155,7 +155,7 @@ export class CanvasElementDrawer {
   }
 
   private static drawTable(ctx: CanvasRenderingContext2D, element: model.Element): void {
-    const rows = element.rows;
+    const rows = element.rows ?? [];
     let cols = 0;
     for (const r of rows) {
       cols = Math.max(cols, r.length);
@@ -234,6 +234,8 @@ export class CanvasElementDrawer {
   }
 
   private static drawParagraphs(ctx: CanvasRenderingContext2D, element: model.Element): void {
+    const paragraphs = element.paragraphs ?? [];
+    if (paragraphs.length === 0) return;
     const padding = Math.max(0, element.padding ?? 4);
     const availableWidth = Math.max(1, element.width - padding * 2);
     const wrap = element.textWrap !== false;
@@ -241,7 +243,7 @@ export class CanvasElementDrawer {
     // 单次测量复用：一次性排版全部段落，避免测量高度和绘制各执行一遍
     const laidOutParagraphs: WrappedLine[][] = [];
     let totalTextHeight = 0;
-    for (const para of element.paragraphs) {
+    for (const para of paragraphs) {
       totalTextHeight += Math.max(0, para.before || 0);
       const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
       laidOutParagraphs.push(lines);
@@ -266,8 +268,8 @@ export class CanvasElementDrawer {
       ctx.clip();
     }
 
-    for (let i = 0; i < element.paragraphs.length; i++) {
-      const para = element.paragraphs[i];
+    for (let i = 0; i < paragraphs.length; i++) {
+      const para = paragraphs[i];
       const lines = laidOutParagraphs[i];
       offsetY += Math.max(0, para.before || 0);
       const h = CanvasElementDrawer.drawParagraphLines(ctx, para, lines, padding, offsetY, availableWidth);

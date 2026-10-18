@@ -185,7 +185,7 @@ struct DocxFlowView {
                   } else if (element.paragraphs && element.paragraphs.length > 0) {
                     Column({ space: 4 }) {
                       ForEach(
-                        element.paragraphs,
+                        element.paragraphs ?? [],
                         (para: model.Paragraph) => {
                           DocxParagraphView({ para: para })
                         },
@@ -512,7 +512,7 @@ struct DocxTableView {
     if (this.element) {
       Column() {
         ForEach(
-          this.element.rows,
+          this.element.rows ?? [],
           (row: model.Paragraph[][], rIdx: number) => {
             Row() {
               ForEach(

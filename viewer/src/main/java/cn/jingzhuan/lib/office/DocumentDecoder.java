@@ -157,27 +157,37 @@ final class DocumentDecoder {
         if (!json.isNull("image")) {
             e.image = json.getString("image");
         }
-        e.paragraphs.addAll(paragraphs(json.getJSONArray("paragraphs")));
-        JSONArray widths = json.getJSONArray("columnWidths");
-        for (int i = 0; i < widths.length(); i++) e.columnWidths.add((float) widths.getDouble(i));
-        JSONArray paths = json.getJSONArray("paths");
-        if (paths.length() > 32) throw new JSONException("Too many custom paths");
-        for (int i = 0; i < paths.length(); i++) e.paths.add(path(paths.getJSONObject(i)));
-        JSONArray rows = json.getJSONArray("rows");
-        for (int i = 0; i < rows.length(); i++) {
-            List<List<OfficeDocument.Paragraph>> row = new ArrayList<>();
-            JSONArray cells = rows.getJSONArray(i);
-            for (int j = 0; j < cells.length(); j++) row.add(paragraphs(cells.getJSONArray(j)));
-            e.rows.add(row);
+        if (!json.isNull("paragraphs")) {
+            e.paragraphs.addAll(paragraphs(json.getJSONArray("paragraphs")));
         }
-        JSONArray fills = json.getJSONArray("cellFills");
-        if (fills.length() != 0 && fills.length() != e.rows.size()) throw new JSONException("Invalid table fill rows");
-        for (int i = 0; i < fills.length(); i++) {
-            JSONArray cells = fills.getJSONArray(i);
-            if (cells.length() != e.rows.get(i).size()) throw new JSONException("Invalid table fill columns");
-            List<Integer> row = new ArrayList<>();
-            for (int j = 0; j < cells.length(); j++) row.add((int) cells.getLong(j));
-            e.cellFills.add(row);
+        if (!json.isNull("columnWidths")) {
+            JSONArray widths = json.getJSONArray("columnWidths");
+            for (int i = 0; i < widths.length(); i++) e.columnWidths.add((float) widths.getDouble(i));
+        }
+        if (!json.isNull("paths")) {
+            JSONArray paths = json.getJSONArray("paths");
+            if (paths.length() > 32) throw new JSONException("Too many custom paths");
+            for (int i = 0; i < paths.length(); i++) e.paths.add(path(paths.getJSONObject(i)));
+        }
+        if (!json.isNull("rows")) {
+            JSONArray rows = json.getJSONArray("rows");
+            for (int i = 0; i < rows.length(); i++) {
+                List<List<OfficeDocument.Paragraph>> row = new ArrayList<>();
+                JSONArray cells = rows.getJSONArray(i);
+                for (int j = 0; j < cells.length(); j++) row.add(paragraphs(cells.getJSONArray(j)));
+                e.rows.add(row);
+            }
+        }
+        if (!json.isNull("cellFills")) {
+            JSONArray fills = json.getJSONArray("cellFills");
+            if (fills.length() != 0 && fills.length() != e.rows.size()) throw new JSONException("Invalid table fill rows");
+            for (int i = 0; i < fills.length(); i++) {
+                JSONArray cells = fills.getJSONArray(i);
+                if (cells.length() != e.rows.get(i).size()) throw new JSONException("Invalid table fill columns");
+                List<Integer> row = new ArrayList<>();
+                for (int j = 0; j < cells.length(); j++) row.add((int) cells.getLong(j));
+                e.cellFills.add(row);
+            }
         }
         return e;
     }
@@ -257,7 +267,7 @@ final class DocumentDecoder {
             paragraph.firstLineIndent = (float) p.getDouble("firstLineIndent");
             paragraph.lineSpacingRule = OfficeDocument.LineSpacingRule.valueOf(p.getString("lineSpacingRule"));
             paragraph.lineSpacing = (float) p.getDouble("lineSpacing");
-            paragraph.bullet = p.getString("bullet");
+            paragraph.bullet = p.isNull("bullet") ? "" : p.getString("bullet");
             JSONArray runs = p.getJSONArray("runs");
             for (int j = 0; j < runs.length(); j++) {
                 JSONObject r = runs.getJSONObject(j);

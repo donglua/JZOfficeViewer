@@ -159,7 +159,7 @@ fn inherited_preset_uses_slide_dimensions_and_local_geometry_can_replace_it() ->
                 serde_json::json!([expected_apex, 0.0])
             );
         } else {
-            assert_eq!(element["paths"], serde_json::json!([]));
+            assert!(element.get("paths").is_none());
         }
         assert!(!doc.warnings.iter().any(|w| w.contains("complex geometry")));
     }

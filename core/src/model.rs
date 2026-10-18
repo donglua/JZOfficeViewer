@@ -44,6 +44,7 @@ pub struct GradientFill {
     pub colors: Vec<u32>,
     pub positions: Vec<f32>,
     pub points: [f32; 4],
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transform: Option<[f32; 6]>,
     #[serde(skip_serializing)]
     pub angle: f32,
@@ -142,17 +143,25 @@ pub struct Element {
     pub fill: u32,
     pub stroke: u32,
     pub stroke_width: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     #[serde(skip_serializing)]
     pub image_crop: Option<ImageCrop>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_bounds: Option<[f32; 4]>,
     pub vertical_alignment: VerticalAlignment,
     pub text_wrap: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub paragraphs: Vec<Paragraph>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<Vec<Vec<Paragraph>>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub column_widths: Vec<f32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cell_fills: Vec<Vec<u32>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fill_gradient: Option<GradientFill>,
 }
 
@@ -199,6 +208,7 @@ pub struct Paragraph {
     pub first_line_indent: f32,
     pub line_spacing_rule: LineSpacingRule,
     pub line_spacing: f32,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub bullet: String,
 }
 
