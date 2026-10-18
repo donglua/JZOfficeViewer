@@ -6,6 +6,31 @@ import { CanvasElementDrawer } from './CanvasElementDrawer';
 import { ImageStore } from './ImageStore';
 import { SpreadsheetView } from './SpreadsheetView';
 
+class ArrayDataSource<T> implements IDataSource {
+  private readonly items: T[];
+  private readonly listeners: Set<DataChangeListener> = new Set();
+
+  constructor(items: T[]) {
+    this.items = items;
+  }
+
+  totalCount(): number {
+    return this.items.length;
+  }
+
+  getData(index: number): T {
+    return this.items[index];
+  }
+
+  registerDataChangeListener(listener: DataChangeListener): void {
+    this.listeners.add(listener);
+  }
+
+  unregisterDataChangeListener(listener: DataChangeListener): void {
+    this.listeners.delete(listener);
+  }
+}
+
 /**
  * JZOffice 鸿蒙端核心统一预览组件
  * 自动根据文档格式分发至 DOCX (流式排版)、PPTX (幻灯片画布) 与 XLSX (电子表格) 渲染引擎
@@ -116,6 +141,7 @@ struct DocxFlowView {
   document: model.OfficeDocument | null = null;
   filePath: string = '';
   private imageStore: ImageStore = new ImageStore('');
+  private blockSource: ArrayDataSource<model.Element> = new ArrayDataSource([]);
 
   @State zoom: number = 1.0;
   @State offsetX: number = 0;
@@ -123,6 +149,7 @@ struct DocxFlowView {
 
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
+    this.blockSource = new ArrayDataSource(this.document?.blocks ?? []);
   }
 
   aboutToDisappear(): void {
@@ -172,8 +199,8 @@ struct DocxFlowView {
       Stack() {
         Stack() {
           List({ space: 8 }) {
-            ForEach(
-              this.document.blocks,
+            LazyForEach(
+              this.blockSource,
               (element: model.Element) => {
                 ListItem() {
                   if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
@@ -200,6 +227,7 @@ struct DocxFlowView {
               (_element: model.Element, index: number) => `block-${index}`
             )
           }
+          .cachedCount(6)
           .width('100%')
           .height('100%')
           .padding({ left: 16, right: 16, top: 16, bottom: 24 })
@@ -552,6 +580,7 @@ struct PptxSlidesView {
   document: model.OfficeDocument | null = null;
   filePath: string = '';
   private imageStore: ImageStore = new ImageStore('');
+  private pageSource: ArrayDataSource<model.Page> = new ArrayDataSource([]);
 
   @State zoom: number = 1.0;
   @State offsetX: number = 0;
@@ -565,6 +594,7 @@ struct PptxSlidesView {
 
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
+    this.pageSource = new ArrayDataSource(this.document?.pages ?? []);
   }
 
   aboutToDisappear(): void {
@@ -608,8 +638,8 @@ struct PptxSlidesView {
       Stack() {
         Stack() {
           List({ space: 16 }) {
-            ForEach(
-              this.document.pages,
+            LazyForEach(
+              this.pageSource,
               (page: model.Page, index: number) => {
                 ListItem() {
                   Column({ space: 6 }) {
