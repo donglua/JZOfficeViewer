@@ -522,6 +522,9 @@ struct DocxImageView {
   @State loadFailed: boolean = false;
   private isDisappeared: boolean = false;
   private acquiredPart: string = '';
+  private settings: RenderingContextSettings = new RenderingContextSettings(true);
+  private cropCtx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private cropCanvasReady: boolean = false;
 
   aboutToAppear(): void {
     this.isDisappeared = false;
@@ -530,11 +533,40 @@ struct DocxImageView {
 
   aboutToDisappear(): void {
     this.isDisappeared = true;
+    this.cropCanvasReady = false;
     this.pixelMap = null;
     if (this.acquiredPart) {
       this.imageStore.releasePart(this.acquiredPart);
       this.acquiredPart = '';
     }
+  }
+
+  private hasCustomBoundsOrFrame(): boolean {
+    if (!this.element) return false;
+    if (this.element.stroke !== 0 || this.element.fill !== 0 || this.element.fillGradient) {
+      return true;
+    }
+    const ib = this.element.imageBounds;
+    if (!ib || ib.length < 4) return false;
+    const w = this.element.width ?? 0;
+    const h = this.element.height ?? 0;
+    return Math.abs(ib[0]) > 0.1 || Math.abs(ib[1]) > 0.1 || Math.abs(ib[2] - w) > 0.5 || Math.abs(ib[3] - h) > 0.5;
+  }
+
+  private drawCroppedImage(): void {
+    if (!this.cropCanvasReady || !this.element || !this.pixelMap) return;
+    const w = this.cropCtx.width;
+    const h = this.cropCtx.height;
+    if (w <= 0 || h <= 0) return;
+    const elW = this.element.width > 0 ? this.element.width : w;
+    const elH = this.element.height > 0 ? this.element.height : h;
+    const ctx = this.cropCtx;
+    ctx.clearRect(0, 0, w, h);
+    ctx.save();
+    const scale = Math.min(w / elW, h / elH);
+    ctx.scale(scale, scale);
+    CanvasElementDrawer.drawElement(ctx, this.element, this.imageStore.cache);
+    ctx.restore();
   }
 
   private async loadImage(): Promise<void> {
@@ -550,6 +582,7 @@ struct DocxImageView {
     if (cached) {
       this.pixelMap = cached;
       this.isLoading = false;
+      this.drawCroppedImage();
       return;
     }
     this.isLoading = true;
@@ -560,6 +593,7 @@ struct DocxImageView {
       const loaded = this.imageStore.cache.get(part);
       if (loaded) {
         this.pixelMap = loaded;
+        this.drawCroppedImage();
       } else {
         this.loadFailed = true;
       }
@@ -577,7 +611,24 @@ struct DocxImageView {
   build() {
     Row() {
       if (this.pixelMap) {
-        if (this.element?.width && this.element?.height && this.element.width > 0 && this.element.height > 0) {
+        if (this.hasCustomBoundsOrFrame()) {
+          Canvas(this.cropCtx)
+            .width(this.element?.width && this.element.width > 0 ? this.element.width : '100%')
+            .height(this.element?.height && this.element.height > 0 ? this.element.height : 180)
+            .aspectRatio(
+              this.element?.width && this.element?.height && this.element.width > 0 && this.element.height > 0
+                ? (this.element.width / this.element.height)
+                : undefined
+            )
+            .constraintSize({ maxWidth: '100%' })
+            .onReady(() => {
+              this.cropCanvasReady = true;
+              this.drawCroppedImage();
+            })
+            .onAreaChange(() => {
+              this.drawCroppedImage();
+            })
+        } else if (this.element?.width && this.element?.height && this.element.width > 0 && this.element.height > 0) {
           Image(this.pixelMap)
             .objectFit(ImageFit.Fill)
             .width(this.element.width)

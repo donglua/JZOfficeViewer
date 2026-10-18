@@ -94,8 +94,14 @@ export class CanvasElementDrawer {
       }
     }
 
-    // 4. 绘制图片 (IMAGE)
+    // 4. 绘制图片 (IMAGE)，裁剪至元素边界以正确呈現 imageBounds 局部裁剪效果
     if (element.type === 'IMAGE') {
+      ctx.save();
+      if (w > 0 && h > 0) {
+        ctx.beginPath();
+        ctx.rect(0, 0, w, h);
+        ctx.clip();
+      }
       const pixelMap = element.image && imageCache ? imageCache.get(element.image) : undefined;
       if (pixelMap) {
         if (element.imageBounds && element.imageBounds.length >= 4) {
@@ -108,6 +114,7 @@ export class CanvasElementDrawer {
         ctx.fillStyle = '#e8eaed';
         ctx.fillRect(0, 0, w, h);
       }
+      ctx.restore();
     }
 
     // 5. 绘制表格 (TABLE)
@@ -173,8 +180,9 @@ export class CanvasElementDrawer {
 
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
-      // 先计算每列宽度并预排版测量当前行最大高度（列宽已由 Rust core 归一化为 point，同时保留兜底）
+      // 单遍预排版并测量当前行最大高度，缓存每个单元格的折行结果供下方绘制直接复用
       const computedColWidths: number[] = [];
+      const rowCellLines: WrappedLine[][][] = [];
       let rowHeight = 20;
       for (let c = 0; c < cols; c++) {
         const colW =
@@ -185,10 +193,22 @@ export class CanvasElementDrawer {
             : element.width / cols;
         computedColWidths.push(colW);
         const cellParas = c < row.length ? row[c] : [];
+        const paraLinesList: WrappedLine[][] = [];
         if (cellParas && cellParas.length > 0) {
-          const h = CanvasElementDrawer.measureParagraphsHeight(ctx, cellParas, Math.max(1, colW - 10), true);
-          rowHeight = Math.max(rowHeight, h + 10);
+          const availW = Math.max(1, colW - 10);
+          let cellTextH = 0;
+          for (const para of cellParas) {
+            cellTextH += Math.max(0, para.before || 0);
+            const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
+            paraLinesList.push(lines);
+            for (const line of lines) {
+              cellTextH += line.height;
+            }
+            cellTextH += Math.max(0, para.after || 0);
+          }
+          rowHeight = Math.max(rowHeight, cellTextH + 10);
         }
+        rowCellLines.push(paraLinesList);
       }
 
       let currentX = 0;
@@ -206,22 +226,25 @@ export class CanvasElementDrawer {
         ctx.strokeRect(currentX, currentY, colW, rowHeight);
 
         const cellParas = c < row.length ? row[c] : [];
-        if (cellParas && cellParas.length > 0) {
+        const paraLinesList = rowCellLines[c];
+        if (cellParas && cellParas.length > 0 && paraLinesList.length === cellParas.length) {
           ctx.save();
           ctx.beginPath();
           ctx.rect(currentX, currentY, colW, rowHeight);
           ctx.clip();
           let paraY = currentY + 5;
-          for (const para of cellParas) {
+          const availW = Math.max(1, colW - 10);
+          for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
+            const para = cellParas[pIdx];
+            const lines = paraLinesList[pIdx];
             paraY += Math.max(0, para.before || 0);
-            const lines = CanvasElementDrawer.layoutParagraph(ctx, para, Math.max(1, colW - 10), true);
             const h = CanvasElementDrawer.drawParagraphLines(
               ctx,
               para,
               lines,
               currentX + 5,
               paraY,
-              Math.max(1, colW - 10)
+              availW
             );
             paraY += h + Math.max(0, para.after || 0);
           }
