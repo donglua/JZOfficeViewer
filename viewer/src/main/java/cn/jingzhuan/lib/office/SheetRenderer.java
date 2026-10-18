@@ -47,9 +47,13 @@ final class SheetRenderer {
     }
 
     void setSheet(SpreadsheetDocument.Sheet selected, List<SpreadsheetDocument.CellStyle> cellStyles) {
+        setSheet(selected, cellStyles, new SheetLayout(selected, HEADER_WIDTH, HEADER_HEIGHT));
+    }
+
+    void setSheet(SpreadsheetDocument.Sheet selected, List<SpreadsheetDocument.CellStyle> cellStyles, SheetLayout precomputedLayout) {
         clear();
         sheet = selected; styles = cellStyles;
-        layout = new SheetLayout(sheet, HEADER_WIDTH, HEADER_HEIGHT);
+        layout = precomputedLayout;
         rows = layout.rows; columns = layout.columns;
         width = layout.width; height = layout.height;
         for (SheetLayout.Merge source : layout.merges) {

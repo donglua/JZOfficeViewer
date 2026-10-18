@@ -45,6 +45,16 @@ final class OfficeRenderer {
         preparedFirst = 0; preparedLast = -1;
     }
 
+    void adopt(OfficeRenderer prepared) {
+        clear();
+        document = prepared.document;
+        width = prepared.width;
+        height = prepared.height;
+        preparedFirst = prepared.preparedFirst;
+        preparedLast = prepared.preparedLast;
+        pages.addAll(prepared.pages);
+    }
+
     void layout(OfficeDocument document) {
         clear(); this.document = document; width = Math.max(1, document.width);
         if (document.kind == OfficeDocument.Kind.DOCX) {

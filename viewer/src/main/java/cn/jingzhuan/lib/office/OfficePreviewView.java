@@ -115,17 +115,29 @@ public final class OfficePreviewView extends View {
                 opened = OfficePackage.open(app, uri);
                 OfficeDocument loaded = opened.document;
                 OfficePackage.checkCancelled();
+                final SheetLayout preparedSheet;
+                final OfficeRenderer preparedRenderer;
+                if (loaded.kind == OfficeDocument.Kind.XLSX) {
+                    closePackage(opened);
+                    opened = null;
+                    preparedSheet = new SheetLayout(loaded.sheets.get(0), SheetRenderer.HEADER_WIDTH, SheetRenderer.HEADER_HEIGHT);
+                    preparedRenderer = null;
+                } else {
+                    preparedSheet = null;
+                    preparedRenderer = new OfficeRenderer();
+                    preparedRenderer.layout(loaded);
+                }
+                OfficePackage.checkCancelled();
                 final OfficePackage source = opened;
                 main.post(() -> {
-                    if (token != generation) { closePackage(source); return; }
+                    if (token != generation) { if (source != null) closePackage(source); return; }
                     document = loaded; status = ""; currentPage = 1;
                     if (isSpreadsheet()) {
-                        closePackage(source);
-                        sheetRenderer.setSheet(loaded.sheets.get(0), loaded.cellStyles);
+                        sheetRenderer.setSheet(loaded.sheets.get(0), loaded.cellStyles, preparedSheet);
                         contentWidth = sheetRenderer.width; contentHeight = sheetRenderer.height;
                     } else {
                         images = new OfficeImages(source, this::invalidate, listener);
-                        renderer.layout(loaded);
+                        renderer.adopt(preparedRenderer);
                         contentWidth = renderer.width; contentHeight = renderer.height;
                     }
                     clampOffsets(); invalidate();
