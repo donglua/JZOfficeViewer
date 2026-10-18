@@ -1,17 +1,22 @@
 use crate::{Error, Result};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Node {
     pub name: String,
-    pub attrs: HashMap<String, String>,
+    pub attrs: Vec<(String, String)>,
     pub children: Vec<Node>,
     pub text: String,
 }
 
 impl Node {
+    pub fn get_attr(&self, name: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .rev()
+            .find_map(|(k, v)| (k == name).then_some(v.as_str()))
+    }
     pub fn attr(&self, name: &str) -> &str {
-        self.attrs.get(name).map_or("", String::as_str)
+        self.get_attr(name).unwrap_or("")
     }
     pub fn child(&self, name: &str) -> Option<&Self> {
         self.children.iter().find(|n| n.name == name)
@@ -59,14 +64,14 @@ fn owned(node: roxmltree::Node<'_, '_>, depth: usize) -> Result<Node> {
     if depth >= 64 {
         return Err(Error::Limit("XML nesting exceeds 64 levels"));
     }
-    let mut attrs = HashMap::new();
+    let mut attrs = Vec::new();
     for attr in node.attributes() {
-        attrs.insert(attr.name().to_owned(), attr.value().to_owned());
+        attrs.push((attr.name().to_owned(), attr.value().to_owned()));
         if attr
             .namespace()
             .is_some_and(|ns| ns.ends_with("/relationships"))
         {
-            attrs.insert(format!("r:{}", attr.name()), attr.value().to_owned());
+            attrs.push((format!("r:{}", attr.name()), attr.value().to_owned()));
         }
     }
     let mut children = Vec::new();

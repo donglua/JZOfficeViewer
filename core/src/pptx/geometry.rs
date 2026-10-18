@@ -129,8 +129,8 @@ impl Bounds {
             right = points(body.attr("rIns")).map_or(right, |v| v.max(0.0));
             top = points(body.attr("tIns")).map_or(top, |v| v.max(0.0));
             bottom = points(body.attr("bIns")).map_or(bottom, |v| v.max(0.0));
-            if body.attrs.contains_key("anchor") {
-                vertical_alignment = match body.attr("anchor") {
+            if let Some(anchor) = body.get_attr("anchor") {
+                vertical_alignment = match anchor {
                     "ctr" => VerticalAlignment::Center,
                     "b" => VerticalAlignment::Bottom,
                     "t" => VerticalAlignment::Top,

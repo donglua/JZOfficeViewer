@@ -159,7 +159,7 @@ impl Render<'_> {
                     if chain
                         .iter()
                         .rev()
-                        .find_map(|node| node.attrs.get("useBgFill"))
+                        .find_map(|node| node.get_attr("useBgFill"))
                         .is_some_and(|value| flag(value, false))
                     {
                         element.fill = page.background;
@@ -288,7 +288,7 @@ fn crop_values(crop: &Node) -> Option<ImageCrop> {
 }
 
 fn crop_percent(node: &Node, attr: &str) -> Option<f32> {
-    let Some(raw) = node.attrs.get(attr) else {
+    let Some(raw) = node.get_attr(attr) else {
         return Some(0.0);
     };
     let value = parse_crop_percent(raw)?;

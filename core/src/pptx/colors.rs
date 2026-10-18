@@ -58,7 +58,7 @@ impl Theme {
 
     fn map(&mut self, node: Option<&Node>) {
         if let Some(node) = node {
-            self.mapping.extend(node.attrs.clone());
+            self.mapping.extend(node.attrs.iter().cloned());
         }
     }
 

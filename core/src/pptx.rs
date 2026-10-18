@@ -152,9 +152,8 @@ fn slide_dimension(value: &str) -> Result<f32> {
 }
 
 fn relation_id<'a>(node: &'a Node, name: &str) -> &'a str {
-    node.attrs
-        .get(&format!("r:{name}"))
-        .map_or_else(|| node.attr(name), String::as_str)
+    node.get_attr(&format!("r:{name}"))
+        .unwrap_or_else(|| node.attr(name))
 }
 
 fn flag(value: &str, default: bool) -> bool {
