@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "cn.jingzhuan.office.demo",
     "vendor": "donglua",
-    "versionCode": 500,
-    "versionName": "0.5.0",
+    "versionCode": 600,
+    "versionName": "0.6.0",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }

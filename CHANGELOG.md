@@ -1,5 +1,28 @@
 # 更新日志
 
+## 0.6.0
+
+发布页面：[v0.6.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.6.0)。
+
+### 渲染与性能
+
+- Android 端重构 `DocumentDecoder` 为基于流式的零 DOM 解析，避免将完整 JSON 树反序列化至内存，降低大文档解析时的内存峰值。
+- Android 端将排版测量与表格空间索引预构建移至后台线程执行，避免阻塞主线程；优化绘制热路径，复用对象以减少垃圾回收停顿。
+- Android 端延迟按需打开 `ZipFile` 句柄，并为 `OfficePreviewView` 支持屏幕旋转与配置变更时的状态保存与恢复（`onSaveInstanceState` / `onRestoreInstanceState`）。
+- 鸿蒙端 DOCX 与 PPTX 列表切换为 `LazyForEach` 按需虚拟化渲染，降低长文档内存占用并提升浏览连贯性。
+- 鸿蒙端完善全格式捏合缩放、双击缩放、平移浏览及边界阻尼体验；支持 DOCX 内嵌图片裁剪与表格单元格单遍排版复用。
+
+### 接口与控制器
+
+- 鸿蒙端新增 `OfficePreviewController` 控制器，补齐页面跳转（`jumpToPage`）、缩放控制（`setZoom`/`resetZoom`）以及翻页回调与宿主生命周期管理，对齐 Android 端接口设计。
+- 在线模块 `viewer-online` 增加总耗时超时控制（`totalTimeoutMillis`，默认 60 秒）及重定向私有网段/环回拦截配置（`blockPrivateRedirect`，防范 SSRF 风险）。
+- 在线模块净化 `Content-Disposition` 与 URL 解析出的下载文件名，移除路径分隔符与相对路径导航，防范路径穿越。
+
+### 核心与工程规范
+
+- Rust 核心序列化 JSON 模型时省略空集合与空值字段，减少跨语言传输体积与反序列化开销；XML 属性存储由 `HashMap` 调整为紧凑 `Vec`。
+- 新增 `scripts/check-versions.py` 自动化多端版本一致性校验脚本；日常 CI 补齐 Rust、JVM 专项检查套件及 Android/HarmonyOS 双端构建门禁。
+
 ## 0.5.0
 
 发布页面：[v0.5.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.5.0)。

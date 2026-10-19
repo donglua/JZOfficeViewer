@@ -2,6 +2,18 @@
 
 All notable changes to `@jzdy/office` will be documented in this file.
 
+## [0.6.0] - 2026-10-19
+
+### Added
+- Added `OfficePreviewController` controller supporting programmatic page jumping, zoom control, page change callbacks, and host lifecycle management.
+- Added DOCX inline image cropping support and single-pass cell layout measurement reuse.
+- Added comprehensive zoom, double-tap, and pan gesture controls across DOCX, PPTX, and XLSX views.
+
+### Optimized
+- Migrated DOCX and PPTX document lists to `LazyForEach` virtualized rendering to reduce memory footprint and improve rendering performance for long documents.
+- Omitted empty collections and null values in Rust JSON serialization to reduce bridge transfer overhead.
+- Compacted XML node attribute storage in Rust core using `Vec` instead of `HashMap`.
+
 ## [0.5.0] - 2026-10-16
 
 ### Added

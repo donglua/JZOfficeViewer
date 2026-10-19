@@ -10,7 +10,7 @@ def configuredValue = { String propertyName, String environmentName, String fall
 ext {
     publishedGroupId = configuredValue('publishedGroupId', 'PUBLISHED_GROUP_ID', 'io.github.donglua.office')
     publishedArtifactId = configuredValue('publishedArtifactId', 'PUBLISHED_ARTIFACT_ID', 'viewer')
-    publishedVersion = configuredValue('publishedVersion', 'PUBLISHED_VERSION', '0.5.0')
+    publishedVersion = configuredValue('publishedVersion', 'PUBLISHED_VERSION', '0.6.0')
     publishedName = configuredValue('publishedName', 'PUBLISHED_NAME', 'JZ Office Android')
     publishedDescription = configuredValue('publishedDescription', 'PUBLISHED_DESCRIPTION', 'Limited offline DOCX, PPTX and XLSX preview for Android.')
     publishedUrl = configuredValue('publishedUrl', 'PUBLISHED_URL', 'https://github.com/donglua/JZOfficeViewer')
