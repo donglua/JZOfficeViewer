@@ -85,16 +85,34 @@ export class RenderUtils {
   private static readonly MAX_IMAGE_DIMENSION: number = 4096;
   private static readonly DEFAULT_MAX_PIXELS: number = 4_000_000;
 
+  /**
+   * 确保入参统一转换为标准的 ArrayBuffer（兼容 Uint8Array / Buffer 视图切片）
+   */
+  public static toArrayBuffer(buffer: ArrayBuffer | Uint8Array): ArrayBuffer {
+    if (buffer instanceof Uint8Array) {
+      return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    }
+    return buffer as ArrayBuffer;
+  }
+
   private static async createSampledPixelMap(
     imageSource: image.ImageSource,
     maxPixels: number = RenderUtils.DEFAULT_MAX_PIXELS
   ): Promise<image.PixelMap> {
-    const info: image.ImageInfo = await imageSource.getImageInfo();
-    const srcW = info?.size?.width ?? 0;
-    const srcH = info?.size?.height ?? 0;
-    if (srcW <= 0 || srcH <= 0) {
-      return await imageSource.createPixelMap({ editable: false });
+    let srcW = 0;
+    let srcH = 0;
+    try {
+      const info: image.ImageInfo = await imageSource.getImageInfo();
+      srcW = info?.size?.width ?? 0;
+      srcH = info?.size?.height ?? 0;
+    } catch (_infoErr) {
+      return await RenderUtils.decodePixelMapFallback(imageSource);
     }
+
+    if (srcW <= 0 || srcH <= 0) {
+      return await RenderUtils.decodePixelMapFallback(imageSource);
+    }
+
     let sampleSize = 1;
     while (
       Math.ceil(srcW / sampleSize) * Math.ceil(srcH / sampleSize) > maxPixels ||
@@ -103,16 +121,73 @@ export class RenderUtils {
     ) {
       sampleSize *= 2;
     }
+
+    // 若无需降采样，直接兜底解码（显式指定 RGBA_8888 确保调色板索引图正确映射为 32 位真彩色）
     if (sampleSize <= 1) {
+      return await RenderUtils.decodePixelMapFallback(imageSource);
+    }
+
+    const targetW = Math.max(1, Math.floor(srcW / sampleSize));
+    const targetH = Math.max(1, Math.floor(srcH / sampleSize));
+
+    // 尝试一：通过 desiredSize + RGBA_8888 一步完成下采样解码
+    try {
+      return await imageSource.createPixelMap({
+        editable: false,
+        desiredSize: {
+          width: targetW,
+          height: targetH
+        },
+        desiredPixelFormat: image.PixelMapFormat.RGBA_8888
+      });
+    } catch (_err1) {
+      // 某些底层解码器（如处理调色板 Indexed PNG 时）可能不支持 desiredSize + 格式转换联合调用
+    }
+
+    // 尝试二：尝试仅 desiredSize 下采样
+    try {
+      return await imageSource.createPixelMap({
+        editable: false,
+        desiredSize: {
+          width: targetW,
+          height: targetH
+        }
+      });
+    } catch (_err2) {
+      // desiredSize 失败
+    }
+
+    // 尝试三：全尺寸解码为 RGBA_8888 后，调用 pixelMap.scale 进行缩放
+    try {
+      const pixelMap = await imageSource.createPixelMap({
+        editable: true,
+        desiredPixelFormat: image.PixelMapFormat.RGBA_8888
+      });
+      if (pixelMap) {
+        try {
+          await pixelMap.scale(targetW / srcW, targetH / srcH);
+        } catch (_scaleErr) {
+          // 若 scale 失败，仍返回已解码的原尺寸 PixelMap，保证图片正常呈现
+        }
+        return pixelMap;
+      }
+    } catch (_err3) {
+      // 原图 RGBA 解码失败
+    }
+
+    // 终极兜底：无参数默认解码
+    return await RenderUtils.decodePixelMapFallback(imageSource);
+  }
+
+  private static async decodePixelMapFallback(imageSource: image.ImageSource): Promise<image.PixelMap> {
+    try {
+      return await imageSource.createPixelMap({
+        editable: false,
+        desiredPixelFormat: image.PixelMapFormat.RGBA_8888
+      });
+    } catch (_e1) {
       return await imageSource.createPixelMap({ editable: false });
     }
-    return await imageSource.createPixelMap({
-      editable: false,
-      desiredSize: {
-        width: Math.max(1, Math.floor(srcW / sampleSize)),
-        height: Math.max(1, Math.floor(srcH / sampleSize))
-      }
-    });
   }
 
   /**
@@ -127,14 +202,12 @@ export class RenderUtils {
 
       const helper = new util.Base64Helper();
       const uint8: Uint8Array = helper.decodeSync(pureBase64);
-      const buffer: ArrayBuffer = uint8.buffer.slice(
-        uint8.byteOffset,
-        uint8.byteOffset + uint8.byteLength
-      );
+      const buffer: ArrayBuffer = RenderUtils.toArrayBuffer(uint8);
 
       imageSource = image.createImageSource(buffer);
       return await RenderUtils.createSampledPixelMap(imageSource);
-    } catch (_e) {
+    } catch (e) {
+      console.warn(`[RenderUtils] decodeBase64Image failed: ${e}`);
       return null;
     } finally {
       if (imageSource) {
@@ -152,9 +225,11 @@ export class RenderUtils {
   ): Promise<image.PixelMap | null> {
     let imageSource: image.ImageSource | null = null;
     try {
-      imageSource = image.createImageSource(buffer);
+      const cleanBuffer = RenderUtils.toArrayBuffer(buffer);
+      imageSource = image.createImageSource(cleanBuffer);
       return await RenderUtils.createSampledPixelMap(imageSource, maxPixels);
-    } catch (_e) {
+    } catch (e) {
+      console.warn(`[RenderUtils] decodeImageBuffer failed: ${e}`);
       return null;
     } finally {
       if (imageSource) {

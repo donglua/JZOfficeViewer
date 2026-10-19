@@ -136,8 +136,13 @@ export class ImageStore {
     try {
       const buffer: ArrayBuffer = await NativeCore.readPartAsync(this.filePath, part);
       if (this.closed) return null;
-      return await RenderUtils.decodeImageBuffer(buffer);
-    } catch (_e) {
+      const pixelMap = await RenderUtils.decodeImageBuffer(buffer);
+      if (!pixelMap) {
+        console.warn(`[ImageStore] Failed to decode image part: ${part}`);
+      }
+      return pixelMap;
+    } catch (e) {
+      console.warn(`[ImageStore] Failed to read image part ${part}: ${e}`);
       return null;
     }
   }
