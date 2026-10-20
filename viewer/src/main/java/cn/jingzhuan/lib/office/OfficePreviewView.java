@@ -5,6 +5,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Parcel;
@@ -15,6 +16,8 @@ import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.OverScroller;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -26,6 +29,13 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 public final class OfficePreviewView extends View {
+    /** 读屏自定义动作 ID：取 0x7f11 段，与框架标准动作（均小于 0x01000000）互不冲突 */
+    private static final int ACTION_PREVIOUS = 0x7f110001;
+    private static final int ACTION_NEXT = 0x7f110002;
+    private static final int ACTION_ZOOM_IN = 0x7f110003;
+    private static final int ACTION_ZOOM_OUT = 0x7f110004;
+    private static final int ACTION_RESET_ZOOM = 0x7f110005;
+
     public interface Listener {
         void onLoaded(Info info);
         void onError(Exception error);
@@ -287,12 +297,63 @@ public final class OfficePreviewView extends View {
     private void announcePageIfSettled() {
         if (document == null || announcedPage == currentPage || !scroller.isFinished()) return;
         announcedPage = currentPage;
+        refreshAccessibilityActions();
         if (isSpreadsheet()) {
             List<String> sheetNames = names(document);
             announceForAccessibility("工作表 " + sheetNames.get(currentPage - 1) + "，第 " + currentPage + " 个，共 " + sheetNames.size() + " 个工作表");
         } else {
             announceForAccessibility("第 " + currentPage + " 页，共 " + renderer.pages.size() + " 页");
         }
+    }
+
+    /** 按当前状态重建读屏动作菜单（翻页/切表/缩放/滚动入口）；读屏不可用时为空操作 */
+    @Override public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
+        super.onInitializeAccessibilityNodeInfo(info);
+        if (document == null) return;
+        int total = getPageCount();
+        if (isSpreadsheet()) {
+            if (currentPage > 1) info.addAction(action(ACTION_PREVIOUS, "上一个工作表"));
+            if (currentPage < total) info.addAction(action(ACTION_NEXT, "下一个工作表"));
+        } else if (total > 1) {
+            if (currentPage > 1) info.addAction(action(ACTION_PREVIOUS, "上一页"));
+            if (currentPage < total) info.addAction(action(ACTION_NEXT, "下一页"));
+        }
+        if (zoom < 4) info.addAction(action(ACTION_ZOOM_IN, "放大"));
+        if (zoom > (isSpreadsheet() ? 0.5f : 1)) info.addAction(action(ACTION_ZOOM_OUT, "缩小"));
+        if (zoom > 1.001f) info.addAction(action(ACTION_RESET_ZOOM, "重置缩放"));
+        if (canScrollVertically(1)) info.addAction(action(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD, "向下滚动"));
+        if (canScrollVertically(-1)) info.addAction(action(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD, "向上滚动"));
+    }
+
+    private static AccessibilityNodeInfo.AccessibilityAction action(int id, CharSequence label) {
+        return new AccessibilityNodeInfo.AccessibilityAction(id, label);
+    }
+
+    @Override public boolean performAccessibilityAction(int action, Bundle arguments) {
+        if (document != null) {
+            switch (action) {
+                case ACTION_PREVIOUS: jumpToPage(Math.max(1, currentPage - 1)); return true;
+                case ACTION_NEXT: jumpToPage(Math.min(getPageCount(), currentPage + 1)); return true;
+                case ACTION_ZOOM_IN: setZoom(zoom + 1); return true;
+                case ACTION_ZOOM_OUT: setZoom(zoom - 1); return true;
+                case ACTION_RESET_ZOOM: resetZoom(); return true;
+                case AccessibilityNodeInfo.ACTION_SCROLL_FORWARD: scrollViewport(1); return true;
+                case AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD: scrollViewport(-1); return true;
+            }
+        }
+        return super.performAccessibilityAction(action, arguments);
+    }
+
+    /** 经 OverScroller 平滑滚动一个视口，滚动结束后复用翻页播报 */
+    private void scrollViewport(int direction) {
+        if (!canScrollVertically(direction)) return;
+        scroller.forceFinished(true);
+        scroller.startScroll((int) offsetX, (int) offsetY, 0, (int) (getHeight() * 0.8f * direction), 250);
+        postInvalidateOnAnimation();
+    }
+
+    private void refreshAccessibilityActions() {
+        sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
 
     /** 生成供读屏软件读取的文档摘要，替代仅指向自身的占位描述 */
@@ -364,6 +425,7 @@ public final class OfficePreviewView extends View {
         offsetX = x * scale() - focusX + left();
         offsetY = y * scale() - focusY + top();
         clampOffsets(); updateCurrentPage(); invalidate();
+        refreshAccessibilityActions();
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
