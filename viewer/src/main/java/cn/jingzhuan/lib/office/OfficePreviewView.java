@@ -187,6 +187,7 @@ public final class OfficePreviewView extends View {
                 main.post(() -> {
                     if (token != generation) return;
                     status = "Unable to open document"; invalidate();
+                    setContentDescription(null);
                     String reason = error.getMessage();
                     announceForAccessibility(reason == null || reason.isEmpty() ? "无法打开文档" : "无法打开文档：" + reason);
                     listener.onError(error);
