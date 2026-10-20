@@ -195,6 +195,17 @@ export struct SpreadsheetView {
     return this.cachedLayout;
   }
 
+  /** 为读屏软件生成工作表摘要：Canvas 自绘内容本身不可被朗读，需显式提供等效文本 */
+  private sheetAccessibilityLabel(): string {
+    const sheets = this.document?.sheets ?? [];
+    const sheet = sheets[this.currentSheetIndex];
+    if (!sheet) return '电子表格';
+    const name = sheet.name || `Sheet ${this.currentSheetIndex + 1}`;
+    const rows = sheet.rowHeights?.length ?? 0;
+    const columns = sheet.columnWidths?.length ?? 0;
+    return `工作表 ${name}，第 ${this.currentSheetIndex + 1} 个，共 ${sheets.length} 个工作表，数据区域 ${rows} 行 × ${columns} 列`;
+  }
+
   aboutToAppear(): void {
     this.currentSheetIndex = 0;
     this.offsetX = 0;
@@ -888,6 +899,8 @@ export struct SpreadsheetView {
               })
           )
         )
+        .accessibilityGroup(true)
+        .accessibilityText(this.sheetAccessibilityLabel())
 
         if (this.document.sheets && this.document.sheets.length > 1) {
           Scroll() {

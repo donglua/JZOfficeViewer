@@ -1000,7 +1000,12 @@ struct PptxSlidesView {
               (page: model.Page, index: number) => {
                 ListItem() {
                   Column({ space: 6 }) {
-                    PptxSlideCanvas({ page: page, imageStore: this.imageStore })
+                    PptxSlideCanvas({
+                      page: page,
+                      imageStore: this.imageStore,
+                      slideNumber: index + 1,
+                      slideCount: this.document?.pages.length ?? 0
+                    })
                     Text(`${index + 1} / ${this.document?.pages.length ?? 0}`)
                       .fontSize(12)
                       .fontColor('#80868b')
@@ -1117,10 +1122,38 @@ struct PptxSlidesView {
   }
 }
 
+/**
+ * 为读屏软件生成幻灯片文本摘要：Canvas 自绘内容本身不可被朗读，需显式提供等效文本
+ */
+function buildSlideAccessibilityLabel(page: model.Page | null, slideNumber: number, slideCount: number): string {
+  const lead = `幻灯片第 ${slideNumber} 页，共 ${slideCount} 页`;
+  if (!page) return lead;
+  const texts: string[] = [];
+  let length = 0;
+  const appendRuns = (runs: model.Run[] | undefined): void => {
+    for (const run of runs ?? []) {
+      if (!run.text || length >= 200) return;
+      texts.push(run.text);
+      length += run.text.length;
+    }
+  };
+  for (const element of page.elements ?? []) {
+    for (const para of element.paragraphs ?? []) appendRuns(para.runs);
+    for (const row of element.rows ?? []) {
+      for (const cell of row) {
+        for (const para of cell) appendRuns(para.runs);
+      }
+    }
+  }
+  return texts.length === 0 ? `${lead}，无文本内容` : `${lead}：${texts.join('')}`;
+}
+
 @Component
 struct PptxSlideCanvas {
   page: model.Page | null = null;
   imageStore: ImageStore = new ImageStore('');
+  slideNumber: number = 1;
+  slideCount: number = 1;
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
@@ -1205,18 +1238,23 @@ struct PptxSlideCanvas {
   }
 
   build() {
-    Canvas(this.ctx)
-      .width('100%')
-      .aspectRatio(((this.page?.width ?? 720) / (this.page?.height ?? 405)))
-      .shadow({ radius: 8, color: '#20000000', offsetY: 2 })
-      .borderRadius(4)
-      .backgroundColor('#ffffff')
-      .onReady(() => {
-        this.isReady = true;
-        this.drawSlide(true);
-      })
-      .onAreaChange(() => {
-        this.drawSlide(false);
-      })
+    Stack() {
+      Canvas(this.ctx)
+        .width('100%')
+        .aspectRatio(((this.page?.width ?? 720) / (this.page?.height ?? 405)))
+        .shadow({ radius: 8, color: '#20000000', offsetY: 2 })
+        .borderRadius(4)
+        .backgroundColor('#ffffff')
+        .onReady(() => {
+          this.isReady = true;
+          this.drawSlide(true);
+        })
+        .onAreaChange(() => {
+          this.drawSlide(false);
+        })
+    }
+    .width('100%')
+    .accessibilityText(buildSlideAccessibilityLabel(this.page, this.slideNumber, this.slideCount))
+    .accessibilityGroup(true)
   }
 }
