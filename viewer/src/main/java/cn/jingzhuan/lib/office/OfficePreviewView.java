@@ -65,7 +65,7 @@ public final class OfficePreviewView extends View {
     private final SheetRenderer sheetRenderer = new SheetRenderer();
     private final RectF sheetViewport = new RectF();
     private OnPageChangeListener pageListener;
-    private int currentPage, notifiedPage, notifiedCount, pendingJumpPage;
+    private int currentPage, notifiedPage, notifiedCount, pendingJumpPage, announcedPage;
     private boolean hasRestoredState;
     private int restoredPage;
     private float restoredZoom = 1, restoredDocX, restoredDocY;
@@ -80,7 +80,7 @@ public final class OfficePreviewView extends View {
     public OfficePreviewView(Context context, AttributeSet attrs) {
         super(context, attrs);
         setBackgroundColor(0xffe9ecef);
-        setContentDescription("Document preview");
+        setContentDescription("文档预览区域");
         setFocusable(true);
         scroller = new OverScroller(context);
         gestures = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
@@ -120,6 +120,8 @@ public final class OfficePreviewView extends View {
         document = null; renderer.clear(); sheetRenderer.clear(); currentPage = pendingJumpPage = 0; zoom = 1; offsetX = offsetY = 0;
         contentWidth = contentHeight = 0;
         status = "Loading..."; invalidate();
+        announceForAccessibility("正在打开文档");
+        announcedPage = 0;
         final int token = generation;
         final Context app = getContext().getApplicationContext();
         pending = executor.submit(() -> {
@@ -163,6 +165,7 @@ public final class OfficePreviewView extends View {
                     }
                     if (!applyRestoredState()) clampOffsets();
                     invalidate();
+                    setContentDescription(describeDocument(loaded));
                     listener.onLoaded(new Info(loaded));
                     if (token == generation) updateCurrentPage();
                 });
@@ -173,7 +176,10 @@ public final class OfficePreviewView extends View {
                     : new IOException("Native core is unavailable for this device ABI", failure);
                 main.post(() -> {
                     if (token != generation) return;
-                    status = "Unable to open document"; invalidate(); listener.onError(error);
+                    status = "Unable to open document"; invalidate();
+                    String reason = error.getMessage();
+                    announceForAccessibility(reason == null || reason.isEmpty() ? "无法打开文档" : "无法打开文档：" + reason);
+                    listener.onError(error);
                 });
             } finally {
                 if (opened != null) closePackage(opened);
@@ -184,7 +190,8 @@ public final class OfficePreviewView extends View {
 
     public void clear() {
         requireMainThread(); cancel(); releaseImages(); document = null; renderer.clear(); sheetRenderer.clear(); currentPage = pendingJumpPage = 0;
-        hasRestoredState = false;
+        hasRestoredState = false; announcedPage = 0;
+        setContentDescription(null);
         contentWidth = contentHeight = offsetX = offsetY = 0;
         status = ""; invalidate(); notifyPageChanged();
     }
@@ -273,6 +280,36 @@ public final class OfficePreviewView extends View {
         if (notifiedPage == currentPage && notifiedCount == count) return;
         notifiedPage = currentPage; notifiedCount = count;
         if (pageListener != null) pageListener.onPageChanged(currentPage, count);
+        announcePageIfSettled();
+    }
+
+    /** 向读屏软件播报当前页码；惯性滚动期间保持静默，避免连续翻页时反复打断 */
+    private void announcePageIfSettled() {
+        if (document == null || announcedPage == currentPage || !scroller.isFinished()) return;
+        announcedPage = currentPage;
+        if (isSpreadsheet()) {
+            List<String> sheetNames = names(document);
+            announceForAccessibility("工作表 " + sheetNames.get(currentPage - 1) + "，第 " + currentPage + " 个，共 " + sheetNames.size() + " 个工作表");
+        } else {
+            announceForAccessibility("第 " + currentPage + " 页，共 " + renderer.pages.size() + " 页");
+        }
+    }
+
+    /** 生成供读屏软件读取的文档摘要，替代仅指向自身的占位描述 */
+    private static String describeDocument(OfficeDocument document) {
+        if (document.kind == OfficeDocument.Kind.XLSX) {
+            List<String> sheetNames = names(document);
+            StringBuilder sheets = new StringBuilder();
+            for (int i = 0; i < Math.min(sheetNames.size(), 3); i++) {
+                if (sheets.length() > 0) sheets.append('、');
+                sheets.append(sheetNames.get(i));
+            }
+            if (sheetNames.size() > 3) sheets.append("等");
+            return "Excel 工作簿，含 " + sheetNames.size() + " 个工作表：" + sheets;
+        }
+        return document.kind == OfficeDocument.Kind.PPTX
+            ? "PowerPoint 演示文稿，共 " + document.pages.size() + " 页"
+            : "Word 文档，单页连续滚动";
     }
 
     private void cancel() {
@@ -339,6 +376,8 @@ public final class OfficePreviewView extends View {
     @Override public void computeScroll() {
         if (scroller.computeScrollOffset()) {
             offsetX = scroller.getCurrX(); offsetY = scroller.getCurrY(); updateCurrentPage(); postInvalidateOnAnimation();
+        } else if (document != null) {
+            announcePageIfSettled();
         }
     }
     @Override public boolean canScrollVertically(int direction) { return direction < 0 ? offsetY > 0 : offsetY < maxY(); }
