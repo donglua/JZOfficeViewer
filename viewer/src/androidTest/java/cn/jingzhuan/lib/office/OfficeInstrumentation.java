@@ -23,11 +23,13 @@ public final class OfficeInstrumentation extends Instrumentation {
     private final StringBuilder results = new StringBuilder();
     private boolean layoutOnly, limitsOnly, imagesOnly, xlsxOnly, demoOnly, pptxOnly, pathsOnly, tablesOnly, backgroundsOnly;
     private boolean demoSamplesOnly, sheetLayoutOnly, pptxGeometryOnly, pptxLayoutOnly, imageCacheOnly;
-    private boolean compatibilityOnly, xlsxTextOnly;
+    private boolean compatibilityOnly, xlsxTextOnly, accessibilityOnly;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         compatibilityOnly = arguments != null && "compatibility".equals(arguments.getString("suite"));
+        xlsxTextOnly = arguments != null && "xlsx-text".equals(arguments.getString("suite"));
+        accessibilityOnly = arguments != null && "accessibility".equals(arguments.getString("suite"));
         layoutOnly = arguments != null && "layout".equals(arguments.getString("suite"));
         limitsOnly = arguments != null && "limits".equals(arguments.getString("suite"));
         imagesOnly = arguments != null && "images".equals(arguments.getString("suite"));
@@ -108,7 +110,7 @@ public final class OfficeInstrumentation extends Instrumentation {
                 finish(Activity.RESULT_OK, output);
                 return;
             }
-            if (!layoutOnly && !imagesOnly && !imageCacheOnly && !xlsxOnly && !xlsxTextOnly && !pptxOnly && !pptxLayoutOnly && !compatibilityOnly) {
+            if (!layoutOnly && !imagesOnly && !imageCacheOnly && !xlsxOnly && !xlsxTextOnly && !pptxOnly && !pptxLayoutOnly && !compatibilityOnly && !accessibilityOnly) {
                 results.append(PackageOpeningChecks.run(getTargetContext()));
                 results.append(PackageLimitChecks.run(getTargetContext()));
             }
@@ -132,6 +134,13 @@ public final class OfficeInstrumentation extends Instrumentation {
                 results.append(LongCellChecks.run(this, activity));
                 runOnMainSync(() -> activity.finish());
                 output.putString("stream", "\n" + results + "ALL XLSX TEXT CHECKS PASSED\n");
+                finish(Activity.RESULT_OK, output);
+                return;
+            }
+            if (accessibilityOnly) {
+                results.append(AccessibilityChecks.run(this, activity));
+                runOnMainSync(() -> activity.finish());
+                output.putString("stream", "\n" + results + "ALL ACCESSIBILITY CHECKS PASSED\n");
                 finish(Activity.RESULT_OK, output);
                 return;
             }
@@ -496,7 +505,7 @@ public final class OfficeInstrumentation extends Instrumentation {
         });
     }
 
-    private void check(boolean passed, String description) {
+    void check(boolean passed, String description) {
         if (!passed) throw new AssertionError(description);
         results.append("PASS ").append(description).append('\n');
     }

@@ -119,6 +119,7 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 - `pptx` / `pptx-geometry` / `backgrounds`：组合变换、折线图、渐变文字、换行对照、背景图与 Display P3 色差容差（±1）
 - `images` / `image-cache`：图片按需解码、清晰度升级、LRU 复用与 256 MiB 累计读取限制
 - `layout` / `limits`：DOCX 流式排版、页码回调、异常容器与超限拦截
+- `accessibility`：读屏摘要、自定义动作菜单、动作执行、Fling 停稳播报与失败态摘要清理；`accessibility` 末段会尝试启用测试探针服务验证播报事件流，部分厂商 ROM（如 MIUI）会禁用 shell 启用无障碍服务，该场景自动 SKIP 并保持其余断言生效
 - `demo-samples` / `demo-xlsx`：需先安装 `demo-debug.apk`，验证内置综合样例加载、翻页与无障碍切表
 
 ### 4.4 HarmonyOS NEXT 构建

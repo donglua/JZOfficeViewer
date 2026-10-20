@@ -2,5 +2,13 @@
     <application android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity android:name="cn.jingzhuan.lib.office.PreviewTestActivity" android:exported="true" />
         <provider android:name="cn.jingzhuan.lib.office.StreamProvider" android:authorities="${applicationId}.fixtures" android:exported="false" />
+        <service android:name="cn.jingzhuan.lib.office.AccessibilityEventProbe"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibility.accessibilityservice" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/office_probe_service" />
+        </service>
     </application>
 </manifest>
