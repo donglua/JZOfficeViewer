@@ -106,6 +106,61 @@ jobs:
         run: |
           ./gradlew --no-daemon --stacktrace :viewer:assembleRelease :viewer-online:assembleRelease :demo:assembleDebug :viewer-online:lintRelease
 
+  android-accessibility:
+    name: Android Accessibility Device Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      # AOSP (default) image on purpose: it lets the shell enable the
+      # AccessibilityEventProbe service, so announcement delivery is verified
+      # instead of skipped.
+      - name: Install Android SDK, NDK and emulator image
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" \
+            "emulator" "system-images;android-34;default;x86_64"
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+
+      - name: Build instrumentation APK
+        run: ./gradlew --no-daemon --stacktrace :viewer:assembleDebugAndroidTest -PofficeAbis=x86_64
+
+      - name: Run accessibility suite on emulator
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          profile: pixel_5
+          disable-animations: true
+          emulator-boot-timeout: 900
+          emulator-options: -no-snapshot-save -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+          script: ./scripts/run-accessibility-device-checks.sh
+
+      - name: Upload instrumentation log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: accessibility-device-log
+          path: build/device-checks/accessibility.log
+
   harmonyos:
     name: HarmonyOS Build
     runs-on: ubuntu-latest
