@@ -2,6 +2,20 @@
 
 All notable changes to `@jzdy/office` will be documented in this file.
 
+## [0.7.0] - 2026-10-23
+
+### Added
+
+- Accessibility text summaries for Canvas-rendered PPTX slides and XLSX worksheets, exposed through `accessibilityText` and `accessibilityGroup(true)` so screen readers read a single node per slide or sheet. DOCX lists render with native `Text` components and need no change.
+
+### Fixed
+
+- Fixed blank content when downsampling the palette index of large images.
+
+### Changed
+
+- Added `homepage` and `keywords` metadata to `oh-package.json5`.
+
 ## [0.6.0] - 2026-10-19
 
 ### Added

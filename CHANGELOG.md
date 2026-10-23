@@ -1,5 +1,29 @@
 # 更新日志
 
+## 0.7.0
+
+发布页面：[v0.7.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.7.0)。
+
+本版本主要更新读屏无障碍能力（Android 与 HarmonyOS NEXT 双端）。
+
+### 无障碍
+
+- Android 端 `OfficePreviewView` 在文档加载完成后按格式设置内容摘要（页数与工作表名），翻页、切表与打开失败时向读屏软件播报状态；惯性滚动期间保持静默，停稳后补播最终页码，避免连续翻页时反复播报。
+- Android 端补齐读屏自定义导航动作：翻页、切表、步进缩放与视口平滑滚动按当前页码与缩放档位动态显隐，页码或缩放变化时刷新无障碍节点，避免读屏读到过期动作。
+- 鸿蒙端为 Canvas 自绘的 PPTX 幻灯片与 XLSX 工作表补充无障碍文本摘要，经 `accessibilityText` 与 `accessibilityGroup(true)` 合并为单一可朗读节点；DOCX 流式列表由原生 `Text` 组件构成，读屏可直接朗读，不作改动。
+- 新增 `accessibility` 设备测试套件，覆盖内容摘要、动作菜单显隐、动作执行、Fling 停稳播报与失败态摘要清理；末段通过测试探针服务（与 TalkBack 消费同一事件流）验证播报端到端送达。
+
+### 修复
+
+- 鸿蒙端修复大图调色板索引降采样后内容出现空白的问题。
+- Android 端打开文档失败时清空上一份文档的内容摘要，避免读屏播报过期的页数与工作表信息。
+
+### 工程与发布
+
+- 新增 `scripts/run-accessibility-device-checks.sh`；CI 增加 `accessibility` 设备测试任务，在 x86_64 模拟器上运行该套件，播报探针未启用（SKIP）判定为失败。
+- 鸿蒙 `oh-package.json5` 补充 `homepage` 与 `keywords` 元数据。
+- 升级 GitHub Actions 版本以适配 Node.js 24 运行时。
+
 ## 0.6.0
 
 发布页面：[v0.6.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.6.0)。
