@@ -8,15 +8,14 @@
   "repository": "https://github.com/donglua/JZOfficeViewer",
   "license": "Apache-2.0",
   "keywords": [
-    "office",
     "docx",
     "pptx",
     "xlsx",
-    "viewer",
-    "preview",
+    "powerpoint",
     "word",
     "excel",
-    "powerpoint",
+    "viewer",
+    "preview",
     "OpenHarmony",
     "HarmonyOS"
   ],
