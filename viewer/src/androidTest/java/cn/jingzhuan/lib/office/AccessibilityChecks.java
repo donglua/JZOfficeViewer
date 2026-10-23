@@ -287,7 +287,8 @@ final class AccessibilityChecks {
     }
 
     private static void awaitSettled(OfficeInstrumentation instrumentation, OfficePreviewView view) throws Exception {
-        long deadline = System.currentTimeMillis() + 2000;
+        // 平滑滚动在慢速设备（模拟器、低端机）上可能超过 2 秒，留足停稳时间
+        long deadline = System.currentTimeMillis() + 8000;
         while (System.currentTimeMillis() < deadline) {
             if (read(instrumentation, () -> scrollerIdle(view))) return;
             android.os.SystemClock.sleep(30);
