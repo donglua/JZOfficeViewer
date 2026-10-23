@@ -58,7 +58,7 @@ if grep -q '^SKIP' "$log"; then
     if [[ "${OFFICE_ALLOW_SKIP:-0}" == 1 ]]; then
         echo "Announcement probe skipped; accepted because OFFICE_ALLOW_SKIP=1." >&2
     else
-        echo "Announcement probe skipped: the device refused to enable the probe" >&2
+        echo "Announcement probe skipped: the device did not run the probe" >&2
         echo "accessibility service, so announcement delivery was not verified." >&2
         failed=1
     fi

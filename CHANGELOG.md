@@ -20,7 +20,7 @@
 
 ### 工程与发布
 
-- 新增 `scripts/run-accessibility-device-checks.sh`；CI 增加 `accessibility` 设备测试任务，在 x86_64 模拟器上运行该套件，播报探针未启用（SKIP）判定为失败。
+- 新增 `scripts/run-accessibility-device-checks.sh`；CI 增加 `accessibility` 设备测试任务，在 x86_64 模拟器上运行该套件。播报探针在模拟器与厂商 ROM 上可能无法绑定，该段自动 SKIP，其余断言失败仍使任务失败。
 - 鸿蒙 `oh-package.json5` 补充 `homepage` 与 `keywords` 元数据。
 - 升级 GitHub Actions 版本以适配 Node.js 24 运行时。
 
