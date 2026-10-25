@@ -21,7 +21,30 @@ fn parse_path_to_json(path: &str) -> Result<String> {
     }
 }
 
-fn read_zip_part(path: &str, part: &str) -> Result<Buffer> {
+fn create_arraybuffer_from_vec(env: &Env, data: Vec<u8>) -> Result<ArrayBuffer<'static>> {
+    let mut raw_value = std::ptr::null_mut();
+    let mut data_ptr = std::ptr::null_mut();
+    let len = data.len();
+    let status = unsafe {
+        napi_ohos::sys::napi_create_arraybuffer(
+            env.raw(),
+            len,
+            &mut data_ptr,
+            &mut raw_value,
+        )
+    };
+    if status != napi_ohos::sys::Status::napi_ok {
+        return Err(Error::from_status(Status::from(status)));
+    }
+    if !data_ptr.is_null() && len > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.cast(), len);
+        }
+    }
+    unsafe { ArrayBuffer::from_napi_value(env.raw(), raw_value) }
+}
+
+fn read_zip_part_bytes(path: &str, part: &str) -> Result<Vec<u8>> {
     let result = catch_unwind(AssertUnwindSafe(
         || -> std::result::Result<Vec<u8>, String> {
             jz_office_core::read_part(Path::new(path), part).map_err(|e| e.to_string())
@@ -29,7 +52,7 @@ fn read_zip_part(path: &str, part: &str) -> Result<Buffer> {
     ));
 
     match result {
-        Ok(Ok(data)) => Ok(Buffer::from(data)),
+        Ok(Ok(data)) => Ok(data),
         Ok(Err(error)) => Err(Error::from_reason(error)),
         Err(_) => Err(Error::from_reason(
             "Failed to read document part".to_owned(),
@@ -77,15 +100,15 @@ pub struct ReadPartTask {
 
 #[napi]
 impl Task for ReadPartTask {
-    type Output = Buffer;
-    type JsValue = Buffer;
+    type Output = Vec<u8>;
+    type JsValue = ArrayBuffer<'static>;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        read_zip_part(&self.path, &self.part)
+        read_zip_part_bytes(&self.path, &self.part)
     }
 
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
+    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        create_arraybuffer_from_vec(&env, output)
     }
 }
 
@@ -101,8 +124,9 @@ pub fn read_part_async(
 
 /// 同步读取文档 ZIP 包内指定部件字节流
 #[napi]
-pub fn read_part(path: String, part: String) -> Result<Buffer> {
-    read_zip_part(&path, &part)
+pub fn read_part(env: Env, path: String, part: String) -> Result<ArrayBuffer<'static>> {
+    let bytes = read_zip_part_bytes(&path, &part)?;
+    create_arraybuffer_from_vec(&env, bytes)
 }
 
 /// 清除当前缓存的所有文档包及 ZIP 索引句柄

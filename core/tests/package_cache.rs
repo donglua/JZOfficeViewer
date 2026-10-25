@@ -91,6 +91,16 @@ fn read_part_enforces_media_part_limit() -> TestResult {
 }
 
 #[test]
+fn read_part_succeeds_for_large_media_over_two_mib() -> TestResult {
+    // 3 MiB entry (simulating high-res image like image8.png which exceeds OpenHarmony Node-API 2 MiB Buffer threshold)
+    let archive = TempArchive::new_deflated_padded("image_3mb.png", 3 * 1024 * 1024)?;
+
+    let result = read_part(&archive.path, "image_3mb.png")?;
+    assert_eq!(result.len(), 3 * 1024 * 1024);
+    Ok(())
+}
+
+#[test]
 fn read_part_limited_allows_custom_limit() -> TestResult {
     let archive = TempArchive::new(&[("small.bin", b"0123456789")])?;
 
