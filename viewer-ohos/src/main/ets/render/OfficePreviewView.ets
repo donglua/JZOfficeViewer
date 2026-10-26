@@ -292,7 +292,7 @@ export struct OfficePreviewView {
               this.childSetZoom = setZoom;
             }
           })
-            .key(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
+            .id(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
             .width('100%')
             .height('100%')
         } else if (this.rawDocument.kind === 'PPTX') {
@@ -312,7 +312,7 @@ export struct OfficePreviewView {
               this.childSetZoom = setZoom;
             }
           })
-            .key(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
+            .id(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
             .width('100%')
             .height('100%')
         } else if (this.rawDocument.kind === 'XLSX') {
@@ -331,7 +331,7 @@ export struct OfficePreviewView {
               this.childSetZoom = setZoom;
             }
           })
-            .key(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
+            .id(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
             .width('100%')
             .height('100%')
         }
@@ -821,7 +821,7 @@ struct DocxShapeView {
             this.drawShape();
           })
       }
-      .key(`shape-${this.reuseVersion}`)
+      .id(`shape-${this.reuseVersion}`)
       .width('100%')
       .justifyContent(FlexAlign.Center)
       .margin({ top: 4, bottom: 6 })
@@ -1456,7 +1456,7 @@ struct PptxSlideCanvas {
           this.drawSlide(false);
         })
     }
-    .key(`slide-canvas-${this.reuseVersion}`)
+    .id(`slide-canvas-${this.reuseVersion}`)
     .width('100%')
     .accessibilityText(buildSlideAccessibilityLabel(this.page, this.slideNumber, this.slideCount))
     .accessibilityGroup(true)

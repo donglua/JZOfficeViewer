@@ -20,10 +20,10 @@ export class RenderUtils {
    * 若 alpha 为 0（透明），返回 null
    */
   public static argbToCss(argb: number): string | null {
-    const cached = RenderUtils.colorCache.get(argb);
+    const unsigned = argb >>> 0;
+    const cached = RenderUtils.colorCache.get(unsigned);
     if (cached !== undefined) return cached;
 
-    const unsigned = argb >>> 0;
     const a = (unsigned >>> 24) & 0xff;
     let result: string | null = null;
     if (a !== 0) {
@@ -39,7 +39,7 @@ export class RenderUtils {
         break;
       }
     }
-    RenderUtils.colorCache.set(argb, result);
+    RenderUtils.colorCache.set(unsigned, result);
     return result;
   }
 

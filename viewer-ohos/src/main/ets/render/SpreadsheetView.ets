@@ -391,10 +391,10 @@ export struct SpreadsheetView {
         this.vsync.start();
       } catch (_e) {
         this.vsync = null;
-        this.stepFlingFallback();
+        this.flingTimer = setTimeout(this.stepFlingFallback, 16);
       }
     } else {
-      this.stepFlingFallback();
+      this.flingTimer = setTimeout(this.stepFlingFallback, 16);
     }
   }
 
