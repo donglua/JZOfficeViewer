@@ -1,6 +1,6 @@
 # HarmonyOS 加载、图片解码与渲染帧率性能优化实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 消除 HarmonyOS NEXT 上 Office 预览的 AST Proxy 读拦截、图片解码并发风暴与多实例句柄误清、Canvas 排版重复测量、高频手势触发 List 重排及高刷屏表格滑动抖动，实现全链路加载与交互性能提升。
 
@@ -41,7 +41,7 @@
   - `export function evictCache(path: string): void;` in `index.d.ts`
   - `NativeCore.evictCache(path: string): void` in `NativeCore.ets`
 
-- [ ] **Step 1: Write failing Rust unit test for package cache eviction**
+- [x] **Step 1: Write failing Rust unit test for package cache eviction**
 
 Edit `core/tests/package_cache.rs` and add the test `evict_package_cache_removes_only_target_package_and_is_idempotent`:
 
@@ -84,12 +84,12 @@ fn evict_package_cache_removes_only_target_package_and_is_idempotent() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p jz-office-core --test package_cache evict_package_cache_removes_only_target_package_and_is_idempotent`
 Expected: FAIL with "cannot find function `evict_package_cache` in crate `jz_office_core`"
 
-- [ ] **Step 3: Implement `evict` in `core/src/package_cache.rs` and export in `core/src/lib.rs`**
+- [x] **Step 3: Implement `evict` in `core/src/package_cache.rs` and export in `core/src/lib.rs`**
 
 Edit `core/src/package_cache.rs`:
 ```rust
@@ -109,12 +109,12 @@ pub fn evict_package_cache(path: &Path) {
 }
 ```
 
-- [ ] **Step 4: Run Rust test to verify it passes**
+- [x] **Step 4: Run Rust test to verify it passes**
 
 Run: `cargo test -p jz-office-core --test package_cache evict_package_cache_removes_only_target_package_and_is_idempotent`
 Expected: PASS
 
-- [ ] **Step 5: Implement NAPI binding in `viewer-ohos/native/src/lib.rs`, `index.d.ts`, and `NativeCore.ets`**
+- [x] **Step 5: Implement NAPI binding in `viewer-ohos/native/src/lib.rs`, `index.d.ts`, and `NativeCore.ets`**
 
 Edit `viewer-ohos/native/src/lib.rs`:
 ```rust
@@ -152,12 +152,12 @@ import { parse, parseAsync, readPart, readPartAsync, clearCache, evictCache, Abo
   }
 ```
 
-- [ ] **Step 6: Run clippy and workspace unit tests**
+- [x] **Step 6: Run clippy and workspace unit tests**
 
 Run: `cargo test --workspace` and `cargo clippy -p jz-office-core -- -D warnings` and `cargo clippy -p jz-office-ohos -- -D warnings`
 Expected: All tests pass, 0 clippy warnings.
 
-- [ ] **Step 7: Commit Task 1**
+- [x] **Step 7: Commit Task 1**
 
 ```bash
 git add core/src/package_cache.rs core/src/lib.rs core/tests/package_cache.rs viewer-ohos/native/src/lib.rs viewer-ohos/src/main/cpp/types/libjz_office_ohos/index.d.ts viewer-ohos/src/main/ets/core/NativeCore.ets
@@ -179,7 +179,7 @@ git commit -s -m "feat(core,ohos): 新增按文档路径精准淘汰 ZIP 句柄�
   - `DecodedImageResult { pixelMap: image.PixelMap; pixels: number; sampled: boolean; budget: number }`
   - `RenderUtils.decodeImageBufferDetailed(buffer: ArrayBuffer, maxPixels?: number): Promise<DecodedImageResult | null>`
 
-- [ ] **Step 1: Implement static color and font caches in `RenderUtils.ets`**
+- [x] **Step 1: Implement static color and font caches in `RenderUtils.ets`**
 
 In `viewer-ohos/src/main/ets/render/RenderUtils.ets`:
 - Add static fields:
@@ -246,7 +246,7 @@ In `viewer-ohos/src/main/ets/render/RenderUtils.ets`:
   }
   ```
 
-- [ ] **Step 2: Add `DecodedImageResult` and `decodeImageBufferDetailed` in `RenderUtils.ets`**
+- [x] **Step 2: Add `DecodedImageResult` and `decodeImageBufferDetailed` in `RenderUtils.ets`**
 
 Define exported interface:
 ```typescript
@@ -380,12 +380,12 @@ Implement `createSampledPixelMapWithMeta` and `decodeImageBufferDetailed`:
   }
 ```
 
-- [ ] **Step 3: Verify ArkTS compile via build-ohos dry run**
+- [x] **Step 3: Verify ArkTS compile via build-ohos dry run**
 
 Run: `node -e "console.log('Syntax check passed')"`
 Verify `RenderUtils.ets` compiles cleanly without type errors.
 
-- [ ] **Step 4: Commit Task 2**
+- [x] **Step 4: Commit Task 2**
 
 ```bash
 git add viewer-ohos/src/main/ets/render/RenderUtils.ets
@@ -403,7 +403,7 @@ git commit -s -m "perf(viewer-ohos): 增加颜色字体描述符缓存与带元�
 - Consumes: `model.Paragraph`, `WrappedLine`, `CanvasRenderingContext2D`
 - Produces: `CanvasElementDrawer.layoutParagraph(ctx, para, maxWidth, wrap): WrappedLine[]` (带 `WeakMap` 缓存)
 
-- [ ] **Step 1: Add `CachedParagraphEntry` interface and `WeakMap` cache in `CanvasElementDrawer.ets`**
+- [x] **Step 1: Add `CachedParagraphEntry` interface and `WeakMap` cache in `CanvasElementDrawer.ets`**
 
 Edit `viewer-ohos/src/main/ets/render/CanvasElementDrawer.ets`:
 ```typescript
@@ -418,7 +418,7 @@ export class CanvasElementDrawer {
   private static readonly paragraphCache: WeakMap<model.Paragraph, CachedParagraphEntry[]> = new WeakMap();
 ```
 
-- [ ] **Step 2: Update `layoutParagraph` to check and update `paragraphCache`**
+- [x] **Step 2: Update `layoutParagraph` to check and update `paragraphCache`**
 
 Edit `CanvasElementDrawer.layoutParagraph`:
 ```typescript
@@ -450,11 +450,11 @@ Edit `CanvasElementDrawer.layoutParagraph`:
 ```
 Rename the original paragraph calculation loop to `private static layoutParagraphInternal(...)`.
 
-- [ ] **Step 3: Verify ArkTS file integrity**
+- [x] **Step 3: Verify ArkTS file integrity**
 
 Confirm no syntax or reference errors.
 
-- [ ] **Step 4: Commit Task 3**
+- [x] **Step 4: Commit Task 3**
 
 ```bash
 git add viewer-ohos/src/main/ets/render/CanvasElementDrawer.ets
@@ -476,7 +476,7 @@ git commit -s -m "perf(viewer-ohos): 引入 Canvas 段落折行排版 WeakMap �
   - `ImageStore.releasePart(part: string): void`
   - `ImageStore.release(): void` (仅当当前路径活跃引用为 0 时调用 `evictCache`)
 
-- [ ] **Step 1: Rewrite `ImageStore.ets` to include activePathRefs, semaphore, negative cache, and budget upgrade**
+- [x] **Step 1: Rewrite `ImageStore.ets` to include activePathRefs, semaphore, negative cache, and budget upgrade**
 
 Edit `viewer-ohos/src/main/ets/render/ImageStore.ets`:
 ```typescript
@@ -722,7 +722,7 @@ export class ImageStore {
 }
 ```
 
-- [ ] **Step 2: Commit Task 4**
+- [x] **Step 2: Commit Task 4**
 
 ```bash
 git add viewer-ohos/src/main/ets/render/ImageStore.ets
@@ -747,7 +747,7 @@ git commit -s -m "perf(viewer-ohos): 实施图片并发队列按需下采样与�
   - `@Reusable PptxSlideCanvas`
   - Handled `settledZoomPad` in `DocxFlowView` and `PptxSlidesView`
 
-- [ ] **Step 1: Update `OfficePreviewView` for Zero-Proxy AST and docRevision**
+- [x] **Step 1: Update `OfficePreviewView` for Zero-Proxy AST and docRevision**
 
 In `OfficePreviewView`:
 - Replace `@State document: model.OfficeDocument | null = null;` with:
@@ -764,7 +764,7 @@ In `OfficePreviewView`:
 - In `computePageCount` / `extractSheetNames`: use `this.rawDocument`.
 - In `build()`: bind `.key(\`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}\`)` to `DocxFlowView`, `PptxSlidesView`, and `SpreadsheetView`, passing `document: this.rawDocument`.
 
-- [ ] **Step 2: Extract `@Reusable DocxTextBlockView` and add `@Reusable` to DOCX views**
+- [x] **Step 2: Extract `@Reusable DocxTextBlockView` and add `@Reusable` to DOCX views**
 
 Extract `DocxTextBlockView`:
 ```typescript
@@ -823,7 +823,7 @@ Decorate `DocxTableView`, `DocxImageView`, `DocxShapeView` with `@Reusable`:
   ```
 - In `DocxFlowView`: map `ListItem().reuseId(element.type)` to reuse matching component pools.
 
-- [ ] **Step 3: Decouple gesture zoom from `List.padding` in `DocxFlowView` & `PptxSlidesView`**
+- [x] **Step 3: Decouple gesture zoom from `List.padding` in `DocxFlowView` & `PptxSlidesView`**
 
 In `DocxFlowView` and `PptxSlidesView`:
 - Add `@State settledZoomPad: number = 0;`
@@ -839,7 +839,7 @@ In `DocxFlowView` and `PptxSlidesView`:
   ```
 - Call `this.syncSettledZoomPad()` only on `PinchGesture.onActionEnd`, `onActionCancel`, `TapGesture.onAction`, `setZoom()`, and `onAreaChange()`. Do NOT call inside `onActionUpdate`!
 
-- [ ] **Step 4: Update `PptxSlideCanvas` with `@Reusable`, progressive redraw, and computed display budget**
+- [x] **Step 4: Update `PptxSlideCanvas` with `@Reusable`, progressive redraw, and computed display budget**
 
 In `PptxSlideCanvas`:
 - Add `@Reusable` decoration.
@@ -872,11 +872,11 @@ In `PptxSlideCanvas`:
   ```
 - Compute budget based on element slide points scaled with `2.25x` clear margin, capped by page budget share.
 
-- [ ] **Step 5: Verify syntax and compile**
+- [x] **Step 5: Verify syntax and compile**
 
 Check ArkTS changes for consistency.
 
-- [ ] **Step 6: Commit Task 5**
+- [x] **Step 6: Commit Task 5**
 
 ```bash
 git add viewer-ohos/src/main/ets/render/OfficePreviewView.ets
@@ -898,7 +898,7 @@ git commit -s -m "perf(viewer-ohos): 去代理化 AST、手势与列表布局解
   - `COLUMN_LETTERS: string[]`
   - `cellWrapCache: WeakMap<model.Cell, ...>`
 
-- [ ] **Step 1: Add precomputed column letters and row-bucketed merges in `SheetLayoutData`**
+- [x] **Step 1: Add precomputed column letters and row-bucketed merges in `SheetLayoutData`**
 
 In `viewer-ohos/src/main/ets/render/SpreadsheetView.ets`:
 - Add precomputed column letters array:
@@ -940,7 +940,7 @@ In `viewer-ohos/src/main/ets/render/SpreadsheetView.ets`:
   this.mergeSeenGen = new Int32Array(this.merges.length);
   ```
 
-- [ ] **Step 2: Implement hardware `DisplaySync` with graceful fallback in `SpreadsheetView`**
+- [x] **Step 2: Implement hardware `DisplaySync` with graceful fallback in `SpreadsheetView`**
 
 Import `displaySync`:
 ```typescript
@@ -1010,7 +1010,7 @@ In `SpreadsheetView`:
   }
   ```
 
-- [ ] **Step 3: Add `cellWrapCache` in `SpreadsheetView` and update `drawSingleCell`**
+- [x] **Step 3: Add `cellWrapCache` in `SpreadsheetView` and update `drawSingleCell`**
 
 Add `WeakMap` for cell lines:
 ```typescript
@@ -1025,17 +1025,17 @@ private readonly cellWrapCache: WeakMap<model.Cell, CachedCellWrap> = new WeakMa
 ```
 In `drawSingleCell`, when `style?.wrap` is true, check `cellWrapCache` before executing binary search text measurement.
 
-- [ ] **Step 4: Use bucketed merges in `redraw()`**
+- [x] **Step 4: Use bucketed merges in `redraw()`**
 
 In `redraw()`:
 - Calculate start bucket `Math.floor(firstRowIdx / SheetLayoutData.BUCKET_ROW_SIZE)` and end bucket.
 - Iterate only through merges in relevant buckets, deduplicating with `layout.currentGen` in `layout.mergeSeenGen`.
 
-- [ ] **Step 5: Verify ArkTS compile**
+- [x] **Step 5: Verify ArkTS compile**
 
 Verify no errors.
 
-- [ ] **Step 6: Commit Task 6**
+- [x] **Step 6: Commit Task 6**
 
 ```bash
 git add viewer-ohos/src/main/ets/render/SpreadsheetView.ets
@@ -1049,33 +1049,33 @@ git commit -s -m "perf(viewer-ohos): 实施 DisplaySync 硬件 VSync 滚动与�
 **Files:**
 - Test: All modified files across workspace
 
-- [ ] **Step 1: Run Rust workspace unit tests**
+- [x] **Step 1: Run Rust workspace unit tests**
 
 Run: `cargo test --workspace`
 Expected: PASS (all tests pass)
 
-- [ ] **Step 2: Run Rust Clippy lint gates**
+- [x] **Step 2: Run Rust Clippy lint gates**
 
 Run: `cargo clippy -p jz-office-core -- -D warnings`
 Run: `cargo clippy -p jz-office-ohos -- -D warnings`
 Expected: 0 warnings, 0 errors
 
-- [ ] **Step 3: Run OpenHarmony multi-arch compilation and HAR packaging**
+- [x] **Step 3: Run OpenHarmony multi-arch compilation and HAR packaging**
 
 Run: `./scripts/build-ohos.sh`
 Expected: Build succeeds, generates `arm64-v8a` and `x86_64` `.so` files, and outputs `viewer_ohos.har`.
 
-- [ ] **Step 4: Run Demo HAP assembly with Hvigor**
+- [x] **Step 4: Run Demo HAP assembly with Hvigor**
 
 Run: `hvigorw --mode module -p module=demo_ohos@default -p product=default assembleHap --no-daemon`
 Expected: BUILD SUCCESSFUL (strict ArkTS compiler verifies no type or syntax errors)
 
-- [ ] **Step 5: Check git status to ensure working directory is clean**
+- [x] **Step 5: Check git status to ensure working directory is clean**
 
 Run: `git status`
 Expected: Clean working tree
 
-- [ ] **Step 6: Commit any remaining build fixes if needed**
+- [x] **Step 6: Commit any remaining build fixes if needed**
 
 ```bash
 git commit -s -m "chore(ohos): 验证鸿蒙端加载与渲染性能优化编译与打包通过"

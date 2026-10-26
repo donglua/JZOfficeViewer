@@ -4,21 +4,21 @@
 
 底层共用 Rust 解析核心 `jz-office-core`，平台层使用原生组件与 Canvas 排版绘制，不依赖服务端转换、WebView、外部 Office 应用或内置字体。Android 端另提供可选的 `viewer-online` 模块，支持在线文档下载与缓存管理。
 
-当前最新版本为 **0.7.0**，详细变更记录见 [CHANGELOG](CHANGELOG.md)，开发、测试与发布规范见 [AGENT.md](AGENT.md)。
+当前最新版本为 **0.8.0**，详细变更记录见 [CHANGELOG](CHANGELOG.md)，开发、测试与发布规范见 [AGENT.md](AGENT.md)。
 
-- **GitHub Release**：[v0.7.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.7.0)
-- **Maven Central (Android)**：[io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.7.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.7.0)
-- **OHPM (HarmonyOS NEXT)**：`@jzdy/office`（`0.7.0`）
+- **GitHub Release**：[v0.8.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.8.0)
+- **Maven Central (Android)**：[io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.8.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.8.0)
+- **OHPM (HarmonyOS NEXT)**：`@jzdy/office`（`0.8.0`）
 
 ## 产物体积
 
-以下为 `0.7.0` Release 构建产物的实际大小（1 KiB = 1024 字节）：
+以下为 `0.8.0` Release 构建产物的实际大小（1 KiB = 1024 字节）：
 
 | 平台 | 产物 | 文件大小 | 说明 |
 | --- | --- | --- | --- |
-| Android | `viewer-0.7.0.aar` | **约 801 KiB** | DOCX / PPTX / XLSX 核心预览，含 `arm64-v8a` 与 `armeabi-v7a` |
-| Android | `viewer-online-0.7.0.aar` | **约 21.1 KiB** | 可选的在线下载与缓存模块，配合 `viewer` 使用，零额外网络库依赖 |
-| HarmonyOS | `jzdy-office-0.7.0.har` | **约 1014 KiB** | 鸿蒙 NEXT 核心预览 HAR（`@jzdy/office`），含 `arm64-v8a` 与 `x86_64` |
+| Android | `viewer-0.8.0.aar` | **约 802 KiB** | DOCX / PPTX / XLSX 核心预览，含 `arm64-v8a` 与 `armeabi-v7a` |
+| Android | `viewer-online-0.8.0.aar` | **约 21.1 KiB** | 可选的在线下载与缓存模块，配合 `viewer` 使用，零额外网络库依赖 |
+| HarmonyOS | `jzdy-office-0.8.0.har` | **约 1019 KiB** | 鸿蒙 NEXT 核心预览 HAR（`@jzdy/office`），含 `arm64-v8a` 与 `x86_64` |
 
 产物均不打包字体或演示样例。实际接入后的应用体积增量受 ABI 过滤、R8/混淆及打包配置影响。
 
@@ -73,14 +73,14 @@ dependencyResolutionManagement {
 ```kotlin
 dependencies {
     // 方式一：仅本地文档预览
-    implementation("io.github.donglua.office:viewer:0.7.0")
+    implementation("io.github.donglua.office:viewer:0.8.0")
 
     // 方式二：包含在线下载与缓存 + 本地预览
-    implementation("io.github.donglua.office:viewer-online:0.7.0")
+    implementation("io.github.donglua.office:viewer-online:0.8.0")
 }
 ```
 
-> 若直接拷贝 Release 附件中的 AAR 到本地 `libs/`，在线预览需同时引入 `viewer-0.7.0.aar` 和 `viewer-online-0.7.0.aar`。
+> 若直接拷贝 Release 附件中的 AAR 到本地 `libs/`，在线预览需同时引入 `viewer-0.8.0.aar` 和 `viewer-online-0.8.0.aar`。
 
 ### 2. 本地文档预览
 
@@ -177,7 +177,7 @@ ohpm install @jzdy/office
 ```json5
 {
   "dependencies": {
-    "@jzdy/office": "^0.7.0"
+    "@jzdy/office": "^0.8.0"
   }
 }
 ```

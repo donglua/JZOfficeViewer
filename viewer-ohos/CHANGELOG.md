@@ -2,6 +2,22 @@
 
 All notable changes to `@jzdy/office` will be documented in this file.
 
+## [0.8.0] - 2026-10-26
+
+### Added
+
+- Added `clearDocumentCache(path)` to `OfficePreviewController` and `NativeCore.evictCache(path)` for precisely evicting package handles and ZIP indexes of closed documents.
+- Hardware `DisplaySync` VSync frame scheduling and row-bucketed spatial merge indexing for spreadsheet rendering.
+- Zero-Proxy AST architecture and `@Reusable` component pooling across DOCX and PPTX viewports.
+- WeakMap caching for paragraph wrapping measurements in Canvas rendering.
+- Image concurrency queue with semaphore limiting, on-demand downsampling, and metadata-guided decode.
+
+### Fixed
+
+- Fixed image decoding failure for images larger than 2MB caused by OpenHarmony Node-API buffer size limit, using `napi_create_arraybuffer`.
+- Fixed race condition between async image decoding and `@Reusable` component recycling dirty flags.
+- Eliminated ArkTS strict mode type warnings in `RenderUtils.ets`.
+
 ## [0.7.0] - 2026-10-23
 
 ### Added

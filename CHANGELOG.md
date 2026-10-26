@@ -1,5 +1,29 @@
 # 更新日志
 
+## 0.8.0
+
+发布页面：[v0.8.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.8.0)。
+
+本版本主要更新鸿蒙端加载与渲染性能全链路重构、大图加载硬限制突破、双端表格合并单元格空间分桶索引与底层文档包缓存精准淘汰能力。
+
+### 性能与渲染
+
+- **双端表格空间分桶索引**：Android 与 HarmonyOS NEXT 双端为 `SheetRenderer` 引入行高分桶空间索引（Row Buckets），合并单元格按行范围分桶注册，帧绘制时仅遍历视口覆盖区间所命中的桶，并借助代数生成标记实现 $O(1)$ 无额外内存分配的跨桶去重，显著降低含数百上千合并单元格大表格的滚动开销。
+- **鸿蒙端硬件 VSync 滚动**：Spreadsheet 滚动调度接入硬件 `DisplaySync`，解耦每帧重绘与高频手势事件，手势惯性滑行动画更加丝滑流畅。
+- **鸿蒙端零代理 AST 与组件复用**：去代理化（Zero-Proxy）AST 数据结构，消除 ArkUI `@State` 深层代理遍历开销；拆分并重构 `@Reusable` DOCX 文本块与 PPTX 画布组件池，列表长滑动时内存与帧率大幅提升。
+- **鸿蒙端 Canvas 排版 WeakMap 缓存**：引入针对段落排版计算结果的 `WeakMap` 缓存，避免相同文本与样式在滚动中重复测算折行。
+- **鸿蒙端图片并发调度与下采样**：重构 `ImageStore`，实施并发信号量队列调度与带元数据的按需下采样解码，保证多图并发展开时的内存峰值平稳。
+
+### 特性与接口
+
+- **精准文档缓存淘汰**：跨平台 Rust 核心新增 `evict_package_cache(path)`，鸿蒙端导出 `NativeCore.evictCache(path)` 与 `OfficePreviewController.clearDocumentCache(path)`，支持在多文档切换时精准释放特定文档的 ZIP 句柄与内存索引。
+
+### 修复
+
+- **突破鸿蒙 Node-API 2MB 传输硬限制**：修复大于 2MB 的高清图片在 OpenHarmony Node-API 传递因 `napi_create_buffer` 限制导致报错返回 null 的问题，改用 `napi_create_arraybuffer` 直接分配。
+- **鸿蒙端图片异步竞态与复用修复**：修复组件复用脏标记与异步图片回填竞态，避免快速滑动时图片偶现闪烁或错位。
+- **ArkTS 严格模式与 Rust 规范**：消除 `RenderUtils.ets` 中的严格模式类型警告，规范 Rust 单测与全局格式化。
+
 ## 0.7.0
 
 发布页面：[v0.7.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.7.0)。
