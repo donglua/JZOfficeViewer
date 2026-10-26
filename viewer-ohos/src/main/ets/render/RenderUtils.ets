@@ -34,8 +34,10 @@ export class RenderUtils {
     }
 
     if (RenderUtils.colorCache.size >= RenderUtils.COLOR_CACHE_MAX) {
-      const firstKey = RenderUtils.colorCache.keys().next().value;
-      if (firstKey !== undefined) RenderUtils.colorCache.delete(firstKey);
+      for (const k of RenderUtils.colorCache.keys()) {
+        RenderUtils.colorCache.delete(k);
+        break;
+      }
     }
     RenderUtils.colorCache.set(argb, result);
     return result;
@@ -69,8 +71,10 @@ export class RenderUtils {
     }
 
     if (RenderUtils.fontCache.size >= RenderUtils.FONT_CACHE_MAX) {
-      const firstKey = RenderUtils.fontCache.keys().next().value;
-      if (firstKey !== undefined) RenderUtils.fontCache.delete(firstKey);
+      for (const k of RenderUtils.fontCache.keys()) {
+        RenderUtils.fontCache.delete(k);
+        break;
+      }
     }
     RenderUtils.fontCache.set(key, result);
     return result;
@@ -137,12 +141,12 @@ export class RenderUtils {
       srcH = info?.size?.height ?? 0;
     } catch (_infoErr) {
       const fallback = await RenderUtils.decodePixelMapFallback(imageSource);
-      return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false) : null;
+      return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false, 0) : null;
     }
 
     if (srcW <= 0 || srcH <= 0) {
       const fallback = await RenderUtils.decodePixelMapFallback(imageSource);
-      return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false) : null;
+      return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false, 0) : null;
     }
 
     let sampleSize = 1;
@@ -157,11 +161,12 @@ export class RenderUtils {
     const isSampled = sampleSize > 1;
     if (!isSampled) {
       const fallback = await RenderUtils.decodePixelMapFallback(imageSource);
-      return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false) : null;
+      return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false, srcW * srcH) : null;
     }
 
     const targetW = Math.max(1, Math.floor(srcW / sampleSize));
     const targetH = Math.max(1, Math.floor(srcH / sampleSize));
+    const targetPixels = targetW * targetH;
 
     try {
       const pm = await imageSource.createPixelMap({
@@ -169,7 +174,7 @@ export class RenderUtils {
         desiredSize: { width: targetW, height: targetH },
         desiredPixelFormat: image.PixelMapFormat.RGBA_8888
       });
-      if (pm) return RenderUtils.wrapPixelMapResult(pm, maxPixels, true);
+      if (pm) return RenderUtils.wrapPixelMapResult(pm, maxPixels, true, targetPixels);
     } catch (_err1) {}
 
     try {
@@ -177,7 +182,7 @@ export class RenderUtils {
         editable: false,
         desiredSize: { width: targetW, height: targetH }
       });
-      if (pm) return RenderUtils.wrapPixelMapResult(pm, maxPixels, true);
+      if (pm) return RenderUtils.wrapPixelMapResult(pm, maxPixels, true, targetPixels);
     } catch (_err2) {}
 
     try {
@@ -189,31 +194,20 @@ export class RenderUtils {
         try {
           await pm.scale(targetW / srcW, targetH / srcH);
         } catch (_scaleErr) {}
-        return RenderUtils.wrapPixelMapResult(pm, maxPixels, true);
+        return RenderUtils.wrapPixelMapResult(pm, maxPixels, true, targetPixels);
       }
     } catch (_err3) {}
 
     const fallback = await RenderUtils.decodePixelMapFallback(imageSource);
-    return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false) : null;
+    return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false, srcW * srcH) : null;
   }
 
   private static wrapPixelMapResult(
     pixelMap: image.PixelMap,
     budget: number,
-    sampled: boolean
+    sampled: boolean,
+    pixels: number
   ): DecodedImageResult {
-    let pixels = 0;
-    try {
-      // 优先同步获取图片像素尺寸，避免异步 Promise 开销
-      // @ts-ignore: getImageInfoSync 为 API 12 同步接口
-      if (typeof pixelMap.getImageInfoSync === 'function') {
-        // @ts-ignore
-        const info = pixelMap.getImageInfoSync();
-        pixels = Math.max(0, (info?.size?.width ?? 0) * (info?.size?.height ?? 0));
-      }
-    } catch (_syncErr) {
-      pixels = 0;
-    }
     return { pixelMap, pixels, sampled, budget };
   }
 
