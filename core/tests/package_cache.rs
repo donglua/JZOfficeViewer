@@ -54,27 +54,6 @@ impl TempArchive {
     }
 }
 
-fn create_test_package(name: &str, entries: &[(&str, &[u8])]) -> TempArchive {
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "jz_test_{}_{}_{}",
-        std::process::id(),
-        id,
-        name
-    ));
-
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-    for &(entry_name, data) in entries {
-        writer.start_file(entry_name, options).unwrap();
-        io::copy(&mut Cursor::new(data), &mut writer).unwrap();
-    }
-    let bytes = writer.finish().unwrap().into_inner();
-    fs::write(&path, bytes).unwrap();
-    TempArchive { path }
-}
-
 impl Drop for TempArchive {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
@@ -196,23 +175,17 @@ fn clear_cache_evicts_all_entries() -> TestResult {
 }
 
 #[test]
-fn evict_package_cache_removes_only_target_package_and_is_idempotent() {
-    let temp_a = create_test_package(
-        "evict_a.pptx",
-        &[("ppt/media/image1.png", b"test-image-a")],
-    );
-    let temp_b = create_test_package(
-        "evict_b.pptx",
-        &[("ppt/media/image1.png", b"test-image-b")],
-    );
+fn evict_package_cache_removes_only_target_package_and_is_idempotent() -> TestResult {
+    let temp_a = TempArchive::new(&[("ppt/media/image1.png", b"test-image-a")])?;
+    let temp_b = TempArchive::new(&[("ppt/media/image1.png", b"test-image-b")])?;
 
     // 预热两份包缓存
     assert_eq!(
-        jz_office_core::read_part(temp_a.path(), "ppt/media/image1.png").unwrap(),
+        jz_office_core::read_part(temp_a.path(), "ppt/media/image1.png")?,
         b"test-image-a"
     );
     assert_eq!(
-        jz_office_core::read_part(temp_b.path(), "ppt/media/image1.png").unwrap(),
+        jz_office_core::read_part(temp_b.path(), "ppt/media/image1.png")?,
         b"test-image-b"
     );
 
@@ -227,7 +200,8 @@ fn evict_package_cache_removes_only_target_package_and_is_idempotent() {
 
     // 包 B 读取依然正常
     assert_eq!(
-        jz_office_core::read_part(temp_b.path(), "ppt/media/image1.png").unwrap(),
+        jz_office_core::read_part(temp_b.path(), "ppt/media/image1.png")?,
         b"test-image-b"
     );
+    Ok(())
 }

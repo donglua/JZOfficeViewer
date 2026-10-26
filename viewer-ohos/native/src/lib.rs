@@ -26,12 +26,7 @@ fn create_arraybuffer_from_vec(env: &Env, data: Vec<u8>) -> Result<ArrayBuffer<'
     let mut data_ptr = std::ptr::null_mut();
     let len = data.len();
     let status = unsafe {
-        napi_ohos::sys::napi_create_arraybuffer(
-            env.raw(),
-            len,
-            &mut data_ptr,
-            &mut raw_value,
-        )
+        napi_ohos::sys::napi_create_arraybuffer(env.raw(), len, &mut data_ptr, &mut raw_value)
     };
     if status != napi_ohos::sys::Status::napi_ok {
         return Err(Error::from_status(Status::from(status)));
@@ -144,6 +139,8 @@ pub fn evict_cache(path: String) -> Result<()> {
     }));
     match result {
         Ok(()) => Ok(()),
-        Err(_) => Err(Error::from_reason("Failed to evict package cache".to_owned())),
+        Err(_) => Err(Error::from_reason(
+            "Failed to evict package cache".to_owned(),
+        )),
     }
 }

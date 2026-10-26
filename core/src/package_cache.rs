@@ -35,7 +35,9 @@ pub(crate) fn clear() {
 pub(crate) fn evict(path: &Path) {
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if let Ok(mut cache) = get_cache().lock() {
-        cache.entries.retain(|item| item.path != canonical && item.path != path);
+        cache
+            .entries
+            .retain(|item| item.path != canonical && item.path != path);
     }
 }
 
