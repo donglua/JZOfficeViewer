@@ -18,9 +18,16 @@ interface WrappedLine {
   maxFontSize: number;
 }
 
+interface CachedParagraphEntry {
+  readonly widthKey: number;
+  readonly wrap: boolean;
+  readonly lines: WrappedLine[];
+}
+
 export class CanvasElementDrawer {
   // 缓存已构建的 Path2D，避免滑动时每帧重复解析成百上千条矢量指令
   private static readonly pathCache: WeakMap<model.Path, Path2D> = new WeakMap();
+  private static readonly paragraphCache: WeakMap<model.Paragraph, CachedParagraphEntry[]> = new WeakMap();
 
   public static drawElement(
     ctx: CanvasRenderingContext2D,
@@ -370,9 +377,38 @@ export class CanvasElementDrawer {
   }
 
   /**
-   * 高性能段落折行：整段测量优先，仅在超出宽度时按需切分，使用 vp 字号单位对齐画布坐标系
+   * 高性能段落折行：带 WeakMap 缓存，避免重复渲染或图片异步加载重绘时反复进行 measureText 排版
    */
   private static layoutParagraph(
+    ctx: CanvasRenderingContext2D,
+    para: model.Paragraph,
+    maxWidth: number,
+    wrap: boolean
+  ): WrappedLine[] {
+    const widthKey = Math.round(maxWidth * 10);
+    const cachedEntries = CanvasElementDrawer.paragraphCache.get(para);
+    if (cachedEntries) {
+      for (const entry of cachedEntries) {
+        if (entry.widthKey === widthKey && entry.wrap === wrap) {
+          return entry.lines;
+        }
+      }
+    }
+
+    const lines = CanvasElementDrawer.layoutParagraphInternal(ctx, para, maxWidth, wrap);
+
+    // 每个段落最多保留最近 2 组排版结果（适应常规与旋转/缩放视图）
+    const entries: CachedParagraphEntry[] = cachedEntries ? cachedEntries.slice(-1) : [];
+    entries.push({ widthKey, wrap, lines });
+    CanvasElementDrawer.paragraphCache.set(para, entries);
+
+    return lines;
+  }
+
+  /**
+   * 高性能段落折行内部实现：整段测量优先，仅在超出宽度时按需切分，使用 vp 字号单位对齐画布坐标系
+   */
+  private static layoutParagraphInternal(
     ctx: CanvasRenderingContext2D,
     para: model.Paragraph,
     availableWidth: number,
