@@ -109,7 +109,8 @@ export struct OfficePreviewView {
   onError?: (error: Error) => void;
   onPageChange?: (pageNumber: number, pageCount: number) => void;
 
-  @State document: model.OfficeDocument | null = null;
+  private rawDocument: model.OfficeDocument | null = null;
+  @State private docRevision: number = 0;
   @State isLoading: boolean = true;
   @State errorMessage: string = '';
   private loadGeneration: number = 0;
@@ -124,9 +125,9 @@ export struct OfficePreviewView {
   private bindController(): void {
     if (!this.controller) return;
     this.controller.bind({
-      getPageCount: (): number => this.computePageCount(this.document),
+      getPageCount: (): number => this.computePageCount(this.rawDocument),
       getCurrentPage: (): number => this.currentPage,
-      getSheetNames: (): string[] => this.extractSheetNames(this.document),
+      getSheetNames: (): string[] => this.extractSheetNames(this.rawDocument),
       getZoom: (): number => (this.childGetZoom ? this.childGetZoom() : 1.0),
       setZoom: (value: number): void => {
         if (this.childSetZoom) this.childSetZoom(value);
@@ -135,17 +136,17 @@ export struct OfficePreviewView {
         if (this.childSetZoom) this.childSetZoom(1.0);
       },
       jumpToPage: (pageNumber: number): void => {
-        const count = this.computePageCount(this.document);
+        const count = this.computePageCount(this.rawDocument);
         if (pageNumber < 1 || pageNumber > count) return;
-        if (this.document?.kind === 'XLSX') {
+        if (this.rawDocument?.kind === 'XLSX') {
           if (this.childSelectSheet) this.childSelectSheet(pageNumber);
         } else {
           if (this.childJumpToPage) this.childJumpToPage(pageNumber);
         }
       },
       selectSheet: (sheetNumber: number): void => {
-        if (this.document?.kind !== 'XLSX') return;
-        const count = this.computePageCount(this.document);
+        if (this.rawDocument?.kind !== 'XLSX') return;
+        const count = this.computePageCount(this.rawDocument);
         if (sheetNumber < 1 || sheetNumber > count) return;
         if (this.childSelectSheet) this.childSelectSheet(sheetNumber);
       }
@@ -179,15 +180,16 @@ export struct OfficePreviewView {
   }
 
   private publishLoadedDocument(doc: model.OfficeDocument): void {
-    this.document = doc;
-    const count = this.computePageCount(doc);
+    this.rawDocument = doc;
+    this.docRevision++;
+    const count = this.computePageCount(this.rawDocument);
     this.currentPage = count > 0 ? 1 : 0;
     if (this.onLoaded) {
       this.onLoaded({
         format: doc.kind,
         pageCount: count,
         warnings: doc.warnings ? doc.warnings.slice() : [],
-        sheetNames: this.extractSheetNames(doc)
+        sheetNames: this.extractSheetNames(this.rawDocument)
       });
     }
     this.notifyPageChanged(this.currentPage, count);
@@ -207,7 +209,8 @@ export struct OfficePreviewView {
 
   aboutToDisappear(): void {
     this.loadGeneration++;
-    this.document = null;
+    this.rawDocument = null;
+    this.docRevision++;
     this.childGetZoom = null;
     this.childSetZoom = null;
     this.childJumpToPage = null;
@@ -225,7 +228,8 @@ export struct OfficePreviewView {
     const token = ++this.loadGeneration;
     this.isLoading = true;
     this.errorMessage = '';
-    this.document = null;
+    this.rawDocument = null;
+    this.docRevision++;
     this.childGetZoom = null;
     this.childSetZoom = null;
     this.childJumpToPage = null;
@@ -273,10 +277,10 @@ export struct OfficePreviewView {
         .width('100%')
         .height('100%')
         .justifyContent(FlexAlign.Center)
-      } else if (this.document) {
-        if (this.document.kind === 'DOCX') {
+      } else if (this.rawDocument) {
+        if (this.rawDocument.kind === 'DOCX') {
           DocxFlowView({
-            document: this.document,
+            document: this.rawDocument,
             filePath: this.filePath,
             registerControls: (
               jumpToPage: (pageNumber: number) => void,
@@ -288,11 +292,12 @@ export struct OfficePreviewView {
               this.childSetZoom = setZoom;
             }
           })
+            .key(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
             .width('100%')
             .height('100%')
-        } else if (this.document.kind === 'PPTX') {
+        } else if (this.rawDocument.kind === 'PPTX') {
           PptxSlidesView({
-            document: this.document,
+            document: this.rawDocument,
             filePath: this.filePath,
             onSlideChange: (pageNumber: number, pageCount: number): void => {
               this.notifyPageChanged(pageNumber, pageCount);
@@ -307,11 +312,12 @@ export struct OfficePreviewView {
               this.childSetZoom = setZoom;
             }
           })
+            .key(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
             .width('100%')
             .height('100%')
-        } else if (this.document.kind === 'XLSX') {
+        } else if (this.rawDocument.kind === 'XLSX') {
           SpreadsheetView({
-            document: this.document,
+            document: this.rawDocument,
             onSheetChange: (sheetNumber: number, sheetCount: number): void => {
               this.notifyPageChanged(sheetNumber, sheetCount);
             },
@@ -325,6 +331,7 @@ export struct OfficePreviewView {
               this.childSetZoom = setZoom;
             }
           })
+            .key(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
             .width('100%')
             .height('100%')
         }
@@ -356,6 +363,7 @@ struct DocxFlowView {
   @State offsetX: number = 0;
   @State offsetY: number = 0;
   @State isGesturing: boolean = false;
+  @State settledZoomPad: number = 0;
 
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
@@ -387,6 +395,13 @@ struct DocxFlowView {
   private verticalZoomPad(): number {
     if (this.zoom <= 1.0 || this.viewportHeight <= 0) return 0;
     return (this.viewportHeight * (this.zoom - 1)) / (2 * this.zoom);
+  }
+
+  private syncSettledZoomPad(): void {
+    const pad = this.verticalZoomPad();
+    if (Math.abs(this.settledZoomPad - pad) > 0.5) {
+      this.settledZoomPad = pad;
+    }
   }
 
   private clampOffsets(): void {
@@ -426,6 +441,7 @@ struct DocxFlowView {
         this.scroller.scrollBy(0, dy);
       }
     }
+    this.syncSettledZoomPad();
   }
 
   build() {
@@ -444,19 +460,10 @@ struct DocxFlowView {
                   } else if (element.type === 'RECT' || element.type === 'ELLIPSE' || element.type === 'LINE' || element.type === 'PATH') {
                     DocxShapeView({ element: element, imageStore: this.imageStore })
                   } else if (element.paragraphs && element.paragraphs.length > 0) {
-                    Column({ space: 4 }) {
-                      ForEach(
-                        element.paragraphs ?? [],
-                        (para: model.Paragraph) => {
-                          DocxParagraphView({ para: para })
-                        },
-                        (_para: model.Paragraph, pIdx: number) => `p-${pIdx}`
-                      )
-                    }
-                    .width('100%')
-                    .alignItems(HorizontalAlign.Start)
+                    DocxTextBlockView({ element: element })
                   }
                 }
+                .reuseId(element.type)
               },
               (_element: model.Element, index: number) => `block-${index}`
             )
@@ -467,8 +474,8 @@ struct DocxFlowView {
           .padding({
             left: 16,
             right: 16,
-            top: 16 + this.verticalZoomPad(),
-            bottom: 24 + this.verticalZoomPad()
+            top: 16 + this.settledZoomPad,
+            bottom: 24 + this.settledZoomPad
           })
           .backgroundColor('#ffffff')
         }
@@ -487,6 +494,7 @@ struct DocxFlowView {
         if (w > 0) this.viewportWidth = w;
         if (h > 0) this.viewportHeight = h;
         this.clampOffsets();
+        this.syncSettledZoomPad();
       })
       .gesture(
         GestureGroup(
@@ -501,6 +509,7 @@ struct DocxFlowView {
                 ? event.fingerList[0].localY
                 : (this.viewportHeight / 2);
               this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
+              this.syncSettledZoomPad();
             }),
           PinchGesture({ fingers: 2 })
             .onActionStart(() => {
@@ -531,9 +540,11 @@ struct DocxFlowView {
                 this.offsetX = 0;
                 this.offsetY = 0;
               }
+              this.syncSettledZoomPad();
             })
             .onActionCancel(() => {
               this.isGesturing = false;
+              this.syncSettledZoomPad();
             }),
           PanGesture({ direction: PanDirection.Horizontal })
             .onActionStart(() => {
@@ -561,6 +572,7 @@ struct DocxFlowView {
 /**
  * DOCX 内嵌图片异步解码与展示组件
  */
+@Reusable
 @Component
 struct DocxImageView {
   element: model.Element | null = null;
@@ -588,6 +600,24 @@ struct DocxImageView {
       this.imageStore.releasePart(this.acquiredPart);
       this.acquiredPart = '';
     }
+  }
+
+  aboutToRecycle(): void {
+    if (this.acquiredPart) {
+      this.imageStore.releasePart(this.acquiredPart);
+      this.acquiredPart = '';
+    }
+    this.pixelMap = null;
+    this.cropCanvasReady = false;
+  }
+
+  aboutToReuse(params: Record<string, Object>): void {
+    this.isDisappeared = false;
+    this.element = params['element'] as model.Element;
+    if (params['imageStore']) {
+      this.imageStore = params['imageStore'] as ImageStore;
+    }
+    this.loadImage();
   }
 
   private hasCustomBoundsOrFrame(): boolean {
@@ -618,12 +648,21 @@ struct DocxImageView {
     ctx.restore();
   }
 
+  private computePartBudget(): number {
+    const w = this.element?.width && this.element.width > 0 ? this.element.width : 720;
+    const h = this.element?.height && this.element.height > 0 ? this.element.height : 480;
+    return Math.max(100_000, Math.min(4_000_000, Math.round(w * h * 2.25)));
+  }
+
   private async loadImage(): Promise<void> {
     const part = this.element?.image;
     if (!part) {
       this.isLoading = false;
       this.loadFailed = true;
       return;
+    }
+    if (this.acquiredPart && this.acquiredPart !== part) {
+      this.imageStore.releasePart(this.acquiredPart);
     }
     this.acquiredPart = part;
     this.imageStore.acquire(part);
@@ -637,7 +676,8 @@ struct DocxImageView {
     this.isLoading = true;
     this.loadFailed = false;
     try {
-      await this.imageStore.load(part);
+      const budget = this.computePartBudget();
+      await this.imageStore.load(part, budget);
       if (this.isDisappeared) return;
       const loaded = this.imageStore.cache.get(part);
       if (loaded) {
@@ -722,14 +762,29 @@ struct DocxImageView {
 /**
  * DOCX 矢量图形块 (RECT / ELLIPSE / LINE / PATH) 绘制组件
  */
+@Reusable
 @Component
 struct DocxShapeView {
   element: model.Element | null = null;
   imageStore: ImageStore = new ImageStore('');
+  @State private reuseVersion: number = 0;
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
   private isReady: boolean = false;
+
+  aboutToReuse(params: Record<string, Object>): void {
+    if (params['element']) {
+      this.element = params['element'] as model.Element;
+    }
+    if (params['imageStore']) {
+      this.imageStore = params['imageStore'] as ImageStore;
+    }
+    this.reuseVersion++;
+    if (this.isReady) {
+      this.drawShape();
+    }
+  }
 
   private drawShape(): void {
     if (!this.isReady || !this.element) return;
@@ -852,9 +907,48 @@ struct DocxParagraphView {
   }
 }
 
+@Reusable
+@Component
+struct DocxTextBlockView {
+  element: model.Element | null = null;
+  @State private reuseVersion: number = 0;
+
+  aboutToReuse(params: Record<string, Object>): void {
+    if (params['element']) {
+      this.element = params['element'] as model.Element;
+      this.reuseVersion++;
+    }
+  }
+
+  build() {
+    if (this.element && this.element.paragraphs) {
+      Column({ space: 4 }) {
+        ForEach(
+          this.element.paragraphs,
+          (para: model.Paragraph) => {
+            DocxParagraphView({ para: para })
+          },
+          (_para: model.Paragraph, pIdx: number) => `p-${pIdx}-${this.reuseVersion}`
+        )
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+    }
+  }
+}
+
+@Reusable
 @Component
 struct DocxTableView {
   element: model.Element | null = null;
+  @State private reuseVersion: number = 0;
+
+  aboutToReuse(params: Record<string, Object>): void {
+    if (params['element']) {
+      this.element = params['element'] as model.Element;
+      this.reuseVersion++;
+    }
+  }
 
   build() {
     if (this.element) {
@@ -872,7 +966,7 @@ struct DocxTableView {
                       (para: model.Paragraph) => {
                         DocxParagraphView({ para: para })
                       },
-                      (_p: model.Paragraph, pIdx: number) => `cp-${pIdx}`
+                      (_p: model.Paragraph, pIdx: number) => `cp-${pIdx}-${this.reuseVersion}`
                     )
                   }
                   .layoutWeight(Math.max(1, this.element?.columnWidths?.[cIdx] ?? 1))
@@ -880,12 +974,12 @@ struct DocxTableView {
                   .border({ width: 0.5, color: '#b7bec7' })
                   .backgroundColor(RenderUtils.argbToCss(this.element?.cellFills?.[rIdx]?.[cIdx] ?? 0) ?? '#ffffff')
                 },
-                (_cell: model.Paragraph[], cIdx: number) => `c-${rIdx}-${cIdx}`
+                (_cell: model.Paragraph[], cIdx: number) => `c-${rIdx}-${cIdx}-${this.reuseVersion}`
               )
             }
             .width('100%')
           },
-          (_row: model.Paragraph[][], rIdx: number) => `r-${rIdx}`
+          (_row: model.Paragraph[][], rIdx: number) => `r-${rIdx}-${this.reuseVersion}`
         )
       }
       .width(this.element.width && this.element.width > 0 ? this.element.width : '100%')
@@ -913,6 +1007,7 @@ struct PptxSlidesView {
   @State offsetX: number = 0;
   @State offsetY: number = 0;
   @State isGesturing: boolean = false;
+  @State settledZoomPad: number = 0;
 
   private pinchStartZoom: number = 1.0;
   private pinchStartOffsetX: number = 0;
@@ -949,6 +1044,13 @@ struct PptxSlidesView {
   private verticalZoomPad(): number {
     if (this.zoom <= 1.0 || this.viewportHeight <= 0) return 0;
     return (this.viewportHeight * (this.zoom - 1)) / (2 * this.zoom);
+  }
+
+  private syncSettledZoomPad(): void {
+    const pad = this.verticalZoomPad();
+    if (Math.abs(this.settledZoomPad - pad) > 0.5) {
+      this.settledZoomPad = pad;
+    }
   }
 
   private clampOffsets(): void {
@@ -988,6 +1090,7 @@ struct PptxSlidesView {
         this.scroller.scrollBy(0, dy);
       }
     }
+    this.syncSettledZoomPad();
   }
 
   build() {
@@ -1013,6 +1116,7 @@ struct PptxSlidesView {
                   .width('100%')
                   .alignItems(HorizontalAlign.Center)
                 }
+                .reuseId('pptx-slide')
               },
               (_page: model.Page, index: number) => `slide-${index}`
             )
@@ -1032,8 +1136,8 @@ struct PptxSlidesView {
           .padding({
             left: 16,
             right: 16,
-            top: 16 + this.verticalZoomPad(),
-            bottom: 24 + this.verticalZoomPad()
+            top: 16 + this.settledZoomPad,
+            bottom: 24 + this.settledZoomPad
           })
         }
         .width('100%')
@@ -1051,6 +1155,7 @@ struct PptxSlidesView {
         if (w > 0) this.viewportWidth = w;
         if (h > 0) this.viewportHeight = h;
         this.clampOffsets();
+        this.syncSettledZoomPad();
       })
       .gesture(
         GestureGroup(
@@ -1065,6 +1170,7 @@ struct PptxSlidesView {
                 ? event.fingerList[0].localY
                 : (this.viewportHeight / 2);
               this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
+              this.syncSettledZoomPad();
             }),
           PinchGesture({ fingers: 2 })
             .onActionStart(() => {
@@ -1095,9 +1201,11 @@ struct PptxSlidesView {
                 this.offsetX = 0;
                 this.offsetY = 0;
               }
+              this.syncSettledZoomPad();
             })
             .onActionCancel(() => {
               this.isGesturing = false;
+              this.syncSettledZoomPad();
             }),
           PanGesture({ direction: PanDirection.Horizontal })
             .onActionStart(() => {
@@ -1148,6 +1256,7 @@ function buildSlideAccessibilityLabel(page: model.Page | null, slideNumber: numb
   return texts.length === 0 ? `${lead}，无文本内容` : `${lead}：${texts.join('')}`;
 }
 
+@Reusable
 @Component
 struct PptxSlideCanvas {
   page: model.Page | null = null;
@@ -1155,6 +1264,7 @@ struct PptxSlideCanvas {
   slideNumber: number = 1;
   slideCount: number = 1;
 
+  @State private reuseVersion: number = 0;
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
   private isReady: boolean = false;
@@ -1162,6 +1272,8 @@ struct PptxSlideCanvas {
   private acquiredParts: string[] = [];
   private lastDrawnWidth: number = 0;
   private lastDrawnHeight: number = 0;
+  private redrawTimer: number = -1;
+  private loadGeneration: number = 0;
 
   aboutToAppear(): void {
     this.isDisappeared = false;
@@ -1169,16 +1281,90 @@ struct PptxSlideCanvas {
   }
 
   aboutToDisappear(): void {
+    this.loadGeneration++;
     this.isDisappeared = true;
     this.isReady = false;
+    if (this.redrawTimer !== -1) {
+      clearTimeout(this.redrawTimer);
+      this.redrawTimer = -1;
+    }
     for (const part of this.acquiredParts) {
       this.imageStore.releasePart(part);
     }
     this.acquiredParts = [];
   }
 
-  /** 收集本页引用的全部图片，异步加载完成后强制重绘 */
-  private async loadImages(): Promise<void> {
+  aboutToRecycle(): void {
+    this.loadGeneration++;
+    if (this.redrawTimer !== -1) {
+      clearTimeout(this.redrawTimer);
+      this.redrawTimer = -1;
+    }
+    for (const part of this.acquiredParts) {
+      this.imageStore.releasePart(part);
+    }
+    this.acquiredParts = [];
+    this.lastDrawnWidth = 0;
+    this.lastDrawnHeight = 0;
+  }
+
+  aboutToReuse(params: Record<string, Object>): void {
+    this.isDisappeared = false;
+    if (params['page']) {
+      this.page = params['page'] as model.Page;
+    }
+    if (params['imageStore']) {
+      this.imageStore = params['imageStore'] as ImageStore;
+    }
+    if (params['slideNumber'] !== undefined) {
+      this.slideNumber = params['slideNumber'] as number;
+    }
+    if (params['slideCount'] !== undefined) {
+      this.slideCount = params['slideCount'] as number;
+    }
+    this.reuseVersion++;
+    this.lastDrawnWidth = 0;
+    this.lastDrawnHeight = 0;
+    this.loadImages();
+    if (this.isReady) {
+      this.drawSlide(true);
+    }
+  }
+
+  private scheduleRedraw(): void {
+    if (this.redrawTimer !== -1 || this.isDisappeared) return;
+    this.redrawTimer = setTimeout(() => {
+      this.redrawTimer = -1;
+      if (!this.isDisappeared) {
+        this.drawSlide(true);
+      }
+    }, 16);
+  }
+
+  private computePartBudget(part: string, count: number): number {
+    let maxAreaPoints = 0;
+    if (this.page?.elements) {
+      for (const el of this.page.elements) {
+        if (el.type === 'IMAGE' && el.image === part) {
+          const w = el.width && el.width > 0 ? el.width : (this.page.width || 720);
+          const h = el.height && el.height > 0 ? el.height : (this.page.height || 405);
+          const area = w * h;
+          if (area > maxAreaPoints) {
+            maxAreaPoints = area;
+          }
+        }
+      }
+    }
+    if (maxAreaPoints <= 0) {
+      maxAreaPoints = (this.page?.width || 720) * (this.page?.height || 405);
+    }
+    const scaledPoints = Math.round(maxAreaPoints * 2.25);
+    const pageBudgetShare = Math.floor(4_000_000 / Math.max(1, count));
+    return Math.max(64_000, Math.min(scaledPoints, pageBudgetShare));
+  }
+
+  /** 收集本页引用的全部图片，异步按预算加载，图片就绪后合并 16ms 节流重绘 */
+  private loadImages(): void {
     if (!this.page || !this.page.elements) return;
     const parts: string[] = [];
     for (const element of this.page.elements) {
@@ -1186,14 +1372,26 @@ struct PptxSlideCanvas {
         parts.push(element.image);
       }
     }
+    if (this.acquiredParts.length > 0) {
+      for (const part of this.acquiredParts) {
+        this.imageStore.releasePart(part);
+      }
+      this.acquiredParts = [];
+    }
     if (parts.length === 0) return;
     this.acquiredParts = parts;
     for (const part of parts) {
       this.imageStore.acquire(part);
     }
-    await Promise.all(parts.map((part: string) => this.imageStore.load(part)));
-    if (this.isDisappeared) return;
-    this.drawSlide(true);
+    const currentGen = ++this.loadGeneration;
+    const count = parts.length;
+    parts.forEach(async (part: string) => {
+      const budget = this.computePartBudget(part, count);
+      const updated = await this.imageStore.load(part, budget);
+      if (updated && !this.isDisappeared && this.loadGeneration === currentGen) {
+        this.scheduleRedraw();
+      }
+    });
   }
 
   private drawSlide(force: boolean = false): void {
