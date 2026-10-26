@@ -135,3 +135,15 @@ pub fn clear_cache() -> Result<()> {
     jz_office_core::clear_package_cache();
     Ok(())
 }
+
+/// 精准清除指定文档路径在底层缓存的包句柄与 ZIP 索引
+#[napi]
+pub fn evict_cache(path: String) -> Result<()> {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        jz_office_core::evict_package_cache(Path::new(&path));
+    }));
+    match result {
+        Ok(()) => Ok(()),
+        Err(_) => Err(Error::from_reason("Failed to evict package cache".to_owned())),
+    }
+}

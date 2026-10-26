@@ -79,3 +79,8 @@ pub fn read_part_limited(path: &Path, part: &str, limit: u64) -> Result<Vec<u8>>
 pub fn clear_package_cache() {
     package_cache::clear();
 }
+
+/// 从全局 Package 缓存中精准淘汰指定路径的文档包句柄与 ZIP 索引
+pub fn evict_package_cache(path: &Path) {
+    package_cache::evict(path);
+}

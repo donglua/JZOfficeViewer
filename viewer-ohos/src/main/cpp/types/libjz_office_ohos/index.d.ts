@@ -42,6 +42,9 @@ export class AbortSignal {
 /** 清除当前缓存的所有文档包及 ZIP 索引句柄 */
 export declare function clearCache(): void
 
+/** 精准清除指定文档路径在底层缓存的包句柄与 ZIP 索引 */
+export declare function evictCache(path: string): void
+
 /** 同步解析接口（对齐 Android NativeCore.parse） */
 export declare function parse(path: string): string
 

@@ -1,4 +1,4 @@
-import { parse, parseAsync, readPart, readPartAsync, clearCache, AbortSignal } from 'libjz_office_ohos.so';
+import { parse, parseAsync, readPart, readPartAsync, clearCache, evictCache, AbortSignal } from 'libjz_office_ohos.so';
 import { OfficeDocument } from './OfficeModel';
 
 export class NativeCore {
@@ -60,6 +60,16 @@ export class NativeCore {
    */
   public static clearCache(): void {
     clearCache();
+  }
+
+  /**
+   * 精准清除指定文档路径在 Native 底层缓存的文件句柄与 ZIP 索引
+   * @param path 沙箱中的本地文件路径
+   */
+  public static evictCache(path: string): void {
+    if (path) {
+      evictCache(path);
+    }
   }
 }
 
