@@ -2,24 +2,43 @@ import { image } from '@kit.ImageKit';
 import { util } from '@kit.ArkTS';
 import * as model from '../core/OfficeModel';
 
+export interface DecodedImageResult {
+  readonly pixelMap: image.PixelMap;
+  readonly pixels: number;
+  readonly sampled: boolean;
+  readonly budget: number;
+}
+
 export class RenderUtils {
+  private static readonly COLOR_CACHE_MAX = 512;
+  private static readonly colorCache: Map<number, string | null> = new Map();
+  private static readonly FONT_CACHE_MAX = 128;
+  private static readonly fontCache: Map<string, string> = new Map();
+
   /**
    * 将 Rust 输出的 32 位 ARGB 颜色整数转换为 Canvas / ArkUI 支持的 rgba() 字符串
    * 若 alpha 为 0（透明），返回 null
    */
   public static argbToCss(argb: number): string | null {
+    const cached = RenderUtils.colorCache.get(argb);
+    if (cached !== undefined) return cached;
+
     const unsigned = argb >>> 0;
     const a = (unsigned >>> 24) & 0xff;
-    if (a === 0) {
-      return null;
+    let result: string | null = null;
+    if (a !== 0) {
+      const r = (unsigned >>> 16) & 0xff;
+      const g = (unsigned >>> 8) & 0xff;
+      const b = unsigned & 0xff;
+      result = a === 255 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
     }
-    const r = (unsigned >>> 16) & 0xff;
-    const g = (unsigned >>> 8) & 0xff;
-    const b = unsigned & 0xff;
-    if (a === 255) {
-      return `rgb(${r}, ${g}, ${b})`;
+
+    if (RenderUtils.colorCache.size >= RenderUtils.COLOR_CACHE_MAX) {
+      const firstKey = RenderUtils.colorCache.keys().next().value;
+      if (firstKey !== undefined) RenderUtils.colorCache.delete(firstKey);
     }
-    return `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
+    RenderUtils.colorCache.set(argb, result);
+    return result;
   }
 
   /**
@@ -28,22 +47,33 @@ export class RenderUtils {
    * - 思源黑体 CN Light / Source Han Sans CN Light / Source Han Sans SC Light / Noto Sans CJK SC Light -> sans-serif-light
    */
   public static resolveFontFamily(fontFace?: string, quoteCustom: boolean = false): string {
+    const key = `${quoteCustom ? 1 : 0}:${fontFace ?? ''}`;
+    const cached = RenderUtils.fontCache.get(key);
+    if (cached !== undefined) return cached;
+
     const trimmed = fontFace ? fontFace.trim() : '';
-    if (trimmed.length === 0) {
-      return 'sans-serif';
+    let result = 'sans-serif';
+    if (trimmed.length > 0) {
+      if (trimmed.toLowerCase() === 'impact') {
+        result = 'sans-serif-condensed, sans-serif';
+      } else if (
+        trimmed === '思源黑体 CN Light' ||
+        trimmed === 'Source Han Sans CN Light' ||
+        trimmed === 'Source Han Sans SC Light' ||
+        trimmed === 'Noto Sans CJK SC Light'
+      ) {
+        result = 'sans-serif-light, sans-serif';
+      } else {
+        result = quoteCustom ? `"${trimmed}", sans-serif` : `${trimmed}, sans-serif`;
+      }
     }
-    if (trimmed.toLowerCase() === 'impact') {
-      return 'sans-serif-condensed, sans-serif';
+
+    if (RenderUtils.fontCache.size >= RenderUtils.FONT_CACHE_MAX) {
+      const firstKey = RenderUtils.fontCache.keys().next().value;
+      if (firstKey !== undefined) RenderUtils.fontCache.delete(firstKey);
     }
-    if (
-      trimmed === '思源黑体 CN Light' ||
-      trimmed === 'Source Han Sans CN Light' ||
-      trimmed === 'Source Han Sans SC Light' ||
-      trimmed === 'Noto Sans CJK SC Light'
-    ) {
-      return 'sans-serif-light, sans-serif';
-    }
-    return quoteCustom ? `"${trimmed}", sans-serif` : `${trimmed}, sans-serif`;
+    RenderUtils.fontCache.set(key, result);
+    return result;
   }
 
   /**
@@ -95,10 +125,10 @@ export class RenderUtils {
     return buffer as ArrayBuffer;
   }
 
-  private static async createSampledPixelMap(
+  private static async createSampledPixelMapWithMeta(
     imageSource: image.ImageSource,
     maxPixels: number = RenderUtils.DEFAULT_MAX_PIXELS
-  ): Promise<image.PixelMap> {
+  ): Promise<DecodedImageResult | null> {
     let srcW = 0;
     let srcH = 0;
     try {
@@ -106,11 +136,13 @@ export class RenderUtils {
       srcW = info?.size?.width ?? 0;
       srcH = info?.size?.height ?? 0;
     } catch (_infoErr) {
-      return await RenderUtils.decodePixelMapFallback(imageSource);
+      const fallback = await RenderUtils.decodePixelMapFallback(imageSource);
+      return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false) : null;
     }
 
     if (srcW <= 0 || srcH <= 0) {
-      return await RenderUtils.decodePixelMapFallback(imageSource);
+      const fallback = await RenderUtils.decodePixelMapFallback(imageSource);
+      return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false) : null;
     }
 
     let sampleSize = 1;
@@ -122,71 +154,81 @@ export class RenderUtils {
       sampleSize *= 2;
     }
 
-    // 若无需降采样，直接兜底解码（显式指定 RGBA_8888 确保调色板索引图正确映射为 32 位真彩色）
-    if (sampleSize <= 1) {
-      return await RenderUtils.decodePixelMapFallback(imageSource);
+    const isSampled = sampleSize > 1;
+    if (!isSampled) {
+      const fallback = await RenderUtils.decodePixelMapFallback(imageSource);
+      return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false) : null;
     }
 
     const targetW = Math.max(1, Math.floor(srcW / sampleSize));
     const targetH = Math.max(1, Math.floor(srcH / sampleSize));
 
-    // 尝试一：通过 desiredSize + RGBA_8888 一步完成下采样解码
     try {
-      return await imageSource.createPixelMap({
+      const pm = await imageSource.createPixelMap({
         editable: false,
-        desiredSize: {
-          width: targetW,
-          height: targetH
-        },
+        desiredSize: { width: targetW, height: targetH },
         desiredPixelFormat: image.PixelMapFormat.RGBA_8888
       });
-    } catch (_err1) {
-      // 某些底层解码器（如处理调色板 Indexed PNG 时）可能不支持 desiredSize + 格式转换联合调用
-    }
+      if (pm) return RenderUtils.wrapPixelMapResult(pm, maxPixels, true);
+    } catch (_err1) {}
 
-    // 尝试二：尝试仅 desiredSize 下采样
     try {
-      return await imageSource.createPixelMap({
+      const pm = await imageSource.createPixelMap({
         editable: false,
-        desiredSize: {
-          width: targetW,
-          height: targetH
-        }
+        desiredSize: { width: targetW, height: targetH }
       });
-    } catch (_err2) {
-      // desiredSize 失败
-    }
+      if (pm) return RenderUtils.wrapPixelMapResult(pm, maxPixels, true);
+    } catch (_err2) {}
 
-    // 尝试三：全尺寸解码为 RGBA_8888 后，调用 pixelMap.scale 进行缩放
     try {
-      const pixelMap = await imageSource.createPixelMap({
+      const pm = await imageSource.createPixelMap({
         editable: true,
         desiredPixelFormat: image.PixelMapFormat.RGBA_8888
       });
-      if (pixelMap) {
+      if (pm) {
         try {
-          await pixelMap.scale(targetW / srcW, targetH / srcH);
-        } catch (_scaleErr) {
-          // 若 scale 失败，仍返回已解码的原尺寸 PixelMap，保证图片正常呈现
-        }
-        return pixelMap;
+          await pm.scale(targetW / srcW, targetH / srcH);
+        } catch (_scaleErr) {}
+        return RenderUtils.wrapPixelMapResult(pm, maxPixels, true);
       }
-    } catch (_err3) {
-      // 原图 RGBA 解码失败
-    }
+    } catch (_err3) {}
 
-    // 终极兜底：无参数默认解码
-    return await RenderUtils.decodePixelMapFallback(imageSource);
+    const fallback = await RenderUtils.decodePixelMapFallback(imageSource);
+    return fallback ? RenderUtils.wrapPixelMapResult(fallback, maxPixels, false) : null;
   }
 
-  private static async decodePixelMapFallback(imageSource: image.ImageSource): Promise<image.PixelMap> {
+  private static wrapPixelMapResult(
+    pixelMap: image.PixelMap,
+    budget: number,
+    sampled: boolean
+  ): DecodedImageResult {
+    let pixels = 0;
+    try {
+      // 优先同步获取图片像素尺寸，避免异步 Promise 开销
+      // @ts-ignore: getImageInfoSync 为 API 12 同步接口
+      if (typeof pixelMap.getImageInfoSync === 'function') {
+        // @ts-ignore
+        const info = pixelMap.getImageInfoSync();
+        pixels = Math.max(0, (info?.size?.width ?? 0) * (info?.size?.height ?? 0));
+      }
+    } catch (_syncErr) {
+      pixels = 0;
+    }
+    return { pixelMap, pixels, sampled, budget };
+  }
+
+  private static async decodePixelMapFallback(imageSource: image.ImageSource): Promise<image.PixelMap | null> {
     try {
       return await imageSource.createPixelMap({
         editable: false,
         desiredPixelFormat: image.PixelMapFormat.RGBA_8888
       });
     } catch (_e1) {
-      return await imageSource.createPixelMap({ editable: false });
+      try {
+        return await imageSource.createPixelMap({ editable: false });
+      } catch (_e2) {
+        return null;
+      }
     }
   }
 
@@ -194,7 +236,6 @@ export class RenderUtils {
    * 将 Element.image 中的 Base64 字符串解码为鸿蒙 PixelMap
    */
   public static async decodeBase64Image(base64Str: string): Promise<image.PixelMap | null> {
-    let imageSource: image.ImageSource | null = null;
     try {
       // 剥离可能存在的 data:image/png;base64, 前缀
       const commaIdx = base64Str.indexOf(',');
@@ -204,10 +245,27 @@ export class RenderUtils {
       const uint8: Uint8Array = helper.decodeSync(pureBase64);
       const buffer: ArrayBuffer = RenderUtils.toArrayBuffer(uint8);
 
-      imageSource = image.createImageSource(buffer);
-      return await RenderUtils.createSampledPixelMap(imageSource);
+      return await RenderUtils.decodeImageBuffer(buffer);
     } catch (e) {
       console.warn(`[RenderUtils] decodeBase64Image failed: ${e}`);
+      return null;
+    }
+  }
+
+  /**
+   * 将 ArrayBuffer 二进制流直接解码为鸿蒙 PixelMap 并返回详细元数据（实际像素数、预算及是否下采样）
+   */
+  public static async decodeImageBufferDetailed(
+    buffer: ArrayBuffer,
+    maxPixels: number = RenderUtils.DEFAULT_MAX_PIXELS
+  ): Promise<DecodedImageResult | null> {
+    let imageSource: image.ImageSource | null = null;
+    try {
+      const cleanBuffer = RenderUtils.toArrayBuffer(buffer);
+      imageSource = image.createImageSource(cleanBuffer);
+      return await RenderUtils.createSampledPixelMapWithMeta(imageSource, maxPixels);
+    } catch (e) {
+      console.warn(`[RenderUtils] decodeImageBufferDetailed failed: ${e}`);
       return null;
     } finally {
       if (imageSource) {
@@ -223,18 +281,7 @@ export class RenderUtils {
     buffer: ArrayBuffer,
     maxPixels: number = RenderUtils.DEFAULT_MAX_PIXELS
   ): Promise<image.PixelMap | null> {
-    let imageSource: image.ImageSource | null = null;
-    try {
-      const cleanBuffer = RenderUtils.toArrayBuffer(buffer);
-      imageSource = image.createImageSource(cleanBuffer);
-      return await RenderUtils.createSampledPixelMap(imageSource, maxPixels);
-    } catch (e) {
-      console.warn(`[RenderUtils] decodeImageBuffer failed: ${e}`);
-      return null;
-    } finally {
-      if (imageSource) {
-        await imageSource.release();
-      }
-    }
+    const detailed = await RenderUtils.decodeImageBufferDetailed(buffer, maxPixels);
+    return detailed ? detailed.pixelMap : null;
   }
 }
