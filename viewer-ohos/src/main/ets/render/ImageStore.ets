@@ -142,12 +142,6 @@ export class ImageStore {
       return false;
     }
 
-    // 替换为新 PixelMap，扣减旧像素并释放旧图
-    if (oldPixelMap) {
-      this.totalPixels = Math.max(0, this.totalPixels - oldPixels);
-      oldPixelMap.release();
-    }
-
     let pixels = result.pixels;
     if (pixels <= 0) {
       try {
@@ -161,6 +155,12 @@ export class ImageStore {
     if (this.closed) {
       result.pixelMap.release();
       return false;
+    }
+
+    // 替换为新 PixelMap，扣减旧像素并释放旧图
+    if (oldPixelMap) {
+      this.totalPixels = Math.max(0, this.totalPixels - oldPixels);
+      oldPixelMap.release();
     }
 
     this.pixelMaps.set(part, result.pixelMap);
