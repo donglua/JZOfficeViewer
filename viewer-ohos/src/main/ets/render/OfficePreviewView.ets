@@ -583,6 +583,7 @@ struct DocxImageView {
   @State loadFailed: boolean = false;
   private isDisappeared: boolean = false;
   private acquiredPart: string = '';
+  private loadGeneration: number = 0;
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private cropCtx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
   private cropCanvasReady: boolean = false;
@@ -593,6 +594,7 @@ struct DocxImageView {
   }
 
   aboutToDisappear(): void {
+    this.loadGeneration++;
     this.isDisappeared = true;
     this.cropCanvasReady = false;
     this.pixelMap = null;
@@ -603,6 +605,7 @@ struct DocxImageView {
   }
 
   aboutToRecycle(): void {
+    this.loadGeneration++;
     if (this.acquiredPart) {
       this.imageStore.releasePart(this.acquiredPart);
       this.acquiredPart = '';
@@ -673,12 +676,13 @@ struct DocxImageView {
       this.drawCroppedImage();
       return;
     }
+    const currentGen = ++this.loadGeneration;
     this.isLoading = true;
     this.loadFailed = false;
     try {
       const budget = this.computePartBudget();
       await this.imageStore.load(part, budget);
-      if (this.isDisappeared) return;
+      if (this.isDisappeared || this.loadGeneration !== currentGen || this.acquiredPart !== part) return;
       const loaded = this.imageStore.cache.get(part);
       if (loaded) {
         this.pixelMap = loaded;
@@ -687,11 +691,11 @@ struct DocxImageView {
         this.loadFailed = true;
       }
     } catch (_e) {
-      if (!this.isDisappeared) {
+      if (!this.isDisappeared && this.loadGeneration === currentGen) {
         this.loadFailed = true;
       }
     } finally {
-      if (!this.isDisappeared) {
+      if (!this.isDisappeared && this.loadGeneration === currentGen) {
         this.isLoading = false;
       }
     }
@@ -817,6 +821,7 @@ struct DocxShapeView {
             this.drawShape();
           })
       }
+      .key(`shape-${this.reuseVersion}`)
       .width('100%')
       .justifyContent(FlexAlign.Center)
       .margin({ top: 4, bottom: 6 })
@@ -1451,6 +1456,7 @@ struct PptxSlideCanvas {
           this.drawSlide(false);
         })
     }
+    .key(`slide-canvas-${this.reuseVersion}`)
     .width('100%')
     .accessibilityText(buildSlideAccessibilityLabel(this.page, this.slideNumber, this.slideCount))
     .accessibilityGroup(true)
