@@ -1,3 +1,4 @@
+import { displaySync } from '@kit.ArkGraphics2D';
 import * as model from '../core/OfficeModel';
 import { RenderUtils } from './RenderUtils';
 
@@ -6,6 +7,23 @@ const HEADER_HEIGHT = 22;
 const GRID_COLOR = '#dce1e5';
 const HEADER_BG = '#f3f5f7';
 const HEADER_TEXT = '#52606d';
+
+/**
+ * 预计算 0..255 列标字母，彻底消除表头绘制时的高频字符串循环拼接
+ */
+const COLUMN_LETTERS: string[] = (() => {
+  const arr: string[] = new Array(256);
+  for (let i = 0; i < 256; i++) {
+    let letter = '';
+    let temp = i;
+    while (temp >= 0) {
+      letter = String.fromCharCode((temp % 26) + 65) + letter;
+      temp = Math.floor(temp / 26) - 1;
+    }
+    arr[i] = letter;
+  }
+  return arr;
+})();
 
 /**
  * 轴前缀和与二分查找空间索引
@@ -67,8 +85,10 @@ class SheetMergeItem {
  * 1. 采用 rowStarts 稀疏索引与二分查找，仅遍历视口内可见单元格，彻底消除全表 O(N) 扫描
  * 2. 采用 Uint8Array 记录合并从属关系，消除每帧几十万次字符串分配与垃圾回收 (GC)
  * 3. 预先计算无缩放基础前缀和，重绘时零数组分配
+ * 4. 采用 64 行分桶空间索引与代际去重，避免遍历全表千量级合并单元格
  */
 class SheetLayoutData {
+  static readonly BUCKET_ROW_SIZE = 64;
   readonly sheet: model.Sheet;
   readonly rows: SheetAxis;
   readonly columns: SheetAxis;
@@ -77,6 +97,9 @@ class SheetLayoutData {
   readonly rowStarts: Int32Array;
   readonly mergedCells: Uint8Array;
   readonly merges: SheetMergeItem[];
+  readonly mergeBuckets: Int32Array[];
+  readonly mergeSeenGen: Int32Array;
+  currentGen: number = 0;
 
   constructor(sheet: model.Sheet) {
     this.sheet = sheet;
@@ -123,6 +146,27 @@ class SheetLayoutData {
         this.merges.push(new SheetMergeItem(left, top, right, bottom, anchor));
       }
     }
+
+    const bucketCount = Math.max(1, Math.ceil(rowCount / SheetLayoutData.BUCKET_ROW_SIZE) + 1);
+    const rawBuckets: number[][] = [];
+    for (let b = 0; b < bucketCount; b++) {
+      rawBuckets.push([]);
+    }
+    if (sheet.merges) {
+      for (let mIdx = 0; mIdx < this.merges.length; mIdx++) {
+        const m = sheet.merges[mIdx];
+        const startB = Math.max(0, Math.min(bucketCount - 1, Math.floor(m.startRow / SheetLayoutData.BUCKET_ROW_SIZE)));
+        const endB = Math.max(startB, Math.min(bucketCount - 1, Math.floor(m.endRow / SheetLayoutData.BUCKET_ROW_SIZE)));
+        for (let b = startB; b <= endB; b++) {
+          rawBuckets[b].push(mIdx);
+        }
+      }
+    }
+    this.mergeBuckets = new Array(bucketCount);
+    for (let b = 0; b < bucketCount; b++) {
+      this.mergeBuckets[b] = new Int32Array(rawBuckets[b]);
+    }
+    this.mergeSeenGen = new Int32Array(this.merges.length);
   }
 
   // 二分查找：找到指定行中，列号 >= column 的第一个单元格下标
@@ -139,6 +183,13 @@ class SheetLayoutData {
     }
     return low;
   }
+}
+
+interface CachedCellWrap {
+  readonly scaleKey: number;
+  readonly availWKey: number;
+  readonly maxLines: number;
+  readonly lines: string[];
 }
 
 /**
@@ -175,12 +226,18 @@ export struct SpreadsheetView {
   private pinchStartOffsetX: number = 0;
   private pinchStartOffsetY: number = 0;
 
-  // 惯性滑动 (Fling) 物理仿真状态
+  // 惯性滑动 (Fling) 物理仿真状态与硬件 VSync
   private flingTimer: number = -1;
   private retryTimer: number = -1;
   private flingVx: number = 0;
   private flingVy: number = 0;
   private lastFlingTime: number = 0;
+  private vsync: displaySync.DisplaySync | null = null;
+  private flingRunning: boolean = false;
+  private lastVsyncTimestamp: number = 0;
+
+  // 单元格折行排版 WeakMap 缓存，避免平移滑动时重复进行 measureText 二分折行排版
+  private readonly cellWrapCache: WeakMap<model.Cell, CachedCellWrap> = new WeakMap();
 
   // 缓存当前 Sheet 的空间索引与几何布局（完全对齐安卓端的 SheetLayout）
   private cachedSheet: model.Sheet | null = null;
@@ -262,6 +319,14 @@ export struct SpreadsheetView {
   aboutToDisappear(): void {
     this.isReady = false;
     this.stopFling();
+    if (this.vsync) {
+      try {
+        this.vsync.off('frame');
+      } catch (_e) {
+        // ignore
+      }
+      this.vsync = null;
+    }
     if (this.retryTimer !== -1) {
       clearTimeout(this.retryTimer);
       this.retryTimer = -1;
@@ -271,6 +336,15 @@ export struct SpreadsheetView {
   }
 
   private stopFling(): void {
+    this.flingRunning = false;
+    this.lastVsyncTimestamp = 0;
+    if (this.vsync) {
+      try {
+        this.vsync.stop();
+      } catch (_e) {
+        // ignore
+      }
+    }
     if (this.flingTimer !== -1) {
       clearTimeout(this.flingTimer);
       this.flingTimer = -1;
@@ -290,15 +364,45 @@ export struct SpreadsheetView {
     }
     this.flingVx = vx;
     this.flingVy = vy;
+    this.flingRunning = true;
+    this.lastVsyncTimestamp = 0;
     this.lastFlingTime = Date.now();
-    this.stepFling();
+
+    if (!this.vsync) {
+      try {
+        this.vsync = displaySync.create();
+        this.vsync.on('frame', (frameInfo: displaySync.IntervalInfo) => {
+          if (!this.flingRunning) return;
+          const ts = frameInfo.timestamp;
+          let dt = 0.016;
+          if (this.lastVsyncTimestamp > 0 && ts > this.lastVsyncTimestamp) {
+            dt = Math.min(0.032, Math.max(0.001, (ts - this.lastVsyncTimestamp) / 1e9));
+          }
+          this.lastVsyncTimestamp = ts;
+          this.stepFlingWithDt(dt);
+        });
+      } catch (_e) {
+        this.vsync = null;
+      }
+    }
+
+    if (this.vsync) {
+      try {
+        this.vsync.start();
+      } catch (_e) {
+        this.vsync = null;
+        this.stepFlingFallback();
+      }
+    } else {
+      this.stepFlingFallback();
+    }
   }
 
-  private stepFling = (): void => {
-    if (this.flingVx === 0 && this.flingVy === 0) return;
-    const now = Date.now();
-    const dt = Math.min(0.032, Math.max(0.001, (now - this.lastFlingTime) / 1000));
-    this.lastFlingTime = now;
+  private stepFlingWithDt(dt: number): void {
+    if (!this.flingRunning || (this.flingVx === 0 && this.flingVy === 0)) {
+      this.stopFling();
+      return;
+    }
 
     // 指数阻尼衰减
     const friction = 2.8;
@@ -326,7 +430,17 @@ export struct SpreadsheetView {
     }
 
     this.redraw();
-    this.flingTimer = setTimeout(this.stepFling, 16);
+  }
+
+  private stepFlingFallback = (): void => {
+    if (!this.flingRunning) return;
+    const now = Date.now();
+    const dt = Math.min(0.032, Math.max(0.001, (now - this.lastFlingTime) / 1000));
+    this.lastFlingTime = now;
+    this.stepFlingWithDt(dt);
+    if (this.flingRunning) {
+      this.flingTimer = setTimeout(this.stepFlingFallback, 16);
+    }
   };
 
   private getCurrentSheet(): model.Sheet | undefined {
@@ -483,30 +597,57 @@ export struct SpreadsheetView {
         }
         ctx.stroke();
 
-        // 1.4 绘制可见的合并单元格（覆盖内部网格线并绘制锚点文本）
+        // 1.4 绘制可见的合并单元格（覆盖内部网格线并绘制锚点文本，使用行分桶与代际去重）
         const visibleMerges: SheetMergeItem[] = [];
-        for (const m of layout.merges) {
-          if (m.right <= unscaledScrollX || m.left >= unscaledBodyRight ||
-              m.bottom <= unscaledScrollY || m.top >= unscaledBodyBottom) {
-            continue;
-          }
-          visibleMerges.push(m);
-          const left = HEADER_WIDTH + ox + m.left * s;
-          const top = HEADER_HEIGHT + oy + m.top * s;
-          const right = HEADER_WIDTH + ox + m.right * s;
-          const bottom = HEADER_HEIGHT + oy + m.bottom * s;
-          const mergeW = right - left;
-          const mergeH = bottom - top;
-          if (mergeW <= 0 || mergeH <= 0) continue;
+        layout.currentGen++;
+        if (layout.currentGen >= 0x7FFFFFFF) {
+          layout.currentGen = 1;
+          layout.mergeSeenGen.fill(0);
+        }
+        const currentGen = layout.currentGen;
 
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(left, top, mergeW, mergeH);
-          if (m.anchor) {
-            this.drawSingleCell(ctx, m.anchor, left, top, mergeW, mergeH, s);
+        const startRow = firstRowIdx < rows.visible.length ? rows.visible[firstRowIdx] : 0;
+        let endRow = startRow;
+        const lastVisIdx = rows.first(unscaledBodyBottom);
+        if (lastVisIdx < rows.visible.length) {
+          endRow = rows.visible[lastVisIdx];
+        } else if (rows.visible.length > 0) {
+          endRow = rows.visible[rows.visible.length - 1];
+        }
+        const startB = Math.max(0, Math.min(layout.mergeBuckets.length - 1, Math.floor(startRow / SheetLayoutData.BUCKET_ROW_SIZE)));
+        const endB = Math.max(startB, Math.min(layout.mergeBuckets.length - 1, Math.floor(endRow / SheetLayoutData.BUCKET_ROW_SIZE)));
+
+        for (let b = startB; b <= endB; b++) {
+          const bucket = layout.mergeBuckets[b];
+          for (let k = 0; k < bucket.length; k++) {
+            const mIdx = bucket[k];
+            if (layout.mergeSeenGen[mIdx] === currentGen) {
+              continue;
+            }
+            layout.mergeSeenGen[mIdx] = currentGen;
+            const m = layout.merges[mIdx];
+            if (m.right <= unscaledScrollX || m.left >= unscaledBodyRight ||
+                m.bottom <= unscaledScrollY || m.top >= unscaledBodyBottom) {
+              continue;
+            }
+            visibleMerges.push(m);
+            const left = HEADER_WIDTH + ox + m.left * s;
+            const top = HEADER_HEIGHT + oy + m.top * s;
+            const right = HEADER_WIDTH + ox + m.right * s;
+            const bottom = HEADER_HEIGHT + oy + m.bottom * s;
+            const mergeW = right - left;
+            const mergeH = bottom - top;
+            if (mergeW <= 0 || mergeH <= 0) continue;
+
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(left, top, mergeW, mergeH);
+            if (m.anchor) {
+              this.drawSingleCell(ctx, m.anchor, left, top, mergeW, mergeH, s);
+            }
+            ctx.strokeStyle = GRID_COLOR;
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(left, top, mergeW, mergeH);
           }
-          ctx.strokeStyle = GRID_COLOR;
-          ctx.lineWidth = 0.5;
-          ctx.strokeRect(left, top, mergeW, mergeH);
         }
 
         // 1.5 绘制可见单元格边框 (style.borders)
@@ -665,42 +806,55 @@ export struct SpreadsheetView {
       rawText = rawText.substring(0, end) + '\u2026';
     }
 
-    const finalLines: string[] = [];
+    let finalLines: string[] = [];
     if (style?.wrap) {
-      const paragraphs = rawText.split('\n');
-      for (const p of paragraphs) {
-        if (finalLines.length >= maxLines) break;
-        if (p.length === 0) {
-          finalLines.push('');
-          continue;
-        }
-        let remaining = p;
-        while (remaining.length > 0 && finalLines.length < maxLines) {
-          const w = ctx.measureText(remaining).width;
-          if (w <= availW) {
-            finalLines.push(remaining);
-            break;
+      const scaleKey = Math.round(scale * 1000);
+      const availWKey = Math.round(availW);
+      const cached = this.cellWrapCache.get(cell);
+      if (cached && cached.scaleKey === scaleKey && cached.availWKey === availWKey && cached.maxLines === maxLines) {
+        finalLines = cached.lines;
+      } else {
+        const paragraphs = rawText.split('\n');
+        for (const p of paragraphs) {
+          if (finalLines.length >= maxLines) break;
+          if (p.length === 0) {
+            finalLines.push('');
+            continue;
           }
-          // 二分查找单行最大字符数
-          let low = 1;
-          let high = remaining.length;
-          let best = 1;
-          while (low <= high) {
-            const mid = (low + high) >>> 1;
-            if (ctx.measureText(remaining.substring(0, mid)).width <= availW) {
-              best = mid;
-              low = mid + 1;
-            } else {
-              high = mid - 1;
+          let remaining = p;
+          while (remaining.length > 0 && finalLines.length < maxLines) {
+            const w = ctx.measureText(remaining).width;
+            if (w <= availW) {
+              finalLines.push(remaining);
+              break;
             }
+            // 二分查找单行最大字符数
+            let low = 1;
+            let high = remaining.length;
+            let best = 1;
+            while (low <= high) {
+              const mid = (low + high) >>> 1;
+              if (ctx.measureText(remaining.substring(0, mid)).width <= availW) {
+                best = mid;
+                low = mid + 1;
+              } else {
+                high = mid - 1;
+              }
+            }
+            // 代理对保护：切到高代理时避免劈半产生非法 Unicode 字符
+            if (best < remaining.length && remaining.charCodeAt(best - 1) >= 0xD800 && remaining.charCodeAt(best - 1) <= 0xDBFF) {
+              best = best > 1 ? best - 1 : best + 1;
+            }
+            finalLines.push(remaining.substring(0, best));
+            remaining = remaining.substring(best);
           }
-          // 代理对保护：切到高代理时避免劈半产生非法 Unicode 字符
-          if (best < remaining.length && remaining.charCodeAt(best - 1) >= 0xD800 && remaining.charCodeAt(best - 1) <= 0xDBFF) {
-            best = best > 1 ? best - 1 : best + 1;
-          }
-          finalLines.push(remaining.substring(0, best));
-          remaining = remaining.substring(best);
         }
+        this.cellWrapCache.set(cell, {
+          scaleKey,
+          availWKey,
+          maxLines,
+          lines: finalLines
+        });
       }
     } else {
       if (rawText.indexOf('\n') !== -1) {
@@ -793,6 +947,9 @@ export struct SpreadsheetView {
   }
 
   private indexToColumnLetter(index: number): string {
+    if (index >= 0 && index < COLUMN_LETTERS.length) {
+      return COLUMN_LETTERS[index];
+    }
     let letter = '';
     let temp = index;
     while (temp >= 0) {
