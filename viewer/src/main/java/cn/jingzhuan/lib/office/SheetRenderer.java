@@ -20,6 +20,7 @@ final class SheetRenderer {
     private static final float PADDING = 2, VERTICAL_PADDING = 1;
     private static final int GRID_COLOR = 0xffdce1e5, HEADER_COLOR = 0xfff3f5f7;
     private static final int MAX_CACHED_LAYOUTS = 256, MAX_LAYOUT_COST = 256 * 1024;
+    private static final int BUCKET_ROW_SIZE = 64;
     private static final Typeface[] TYPEFACES = {
         Typeface.create(Typeface.DEFAULT, Typeface.NORMAL),
         Typeface.create(Typeface.DEFAULT, Typeface.BOLD),
@@ -34,6 +35,8 @@ final class SheetRenderer {
     private SheetLayout.Axis rows, columns;
     private final List<Merge> merges = new ArrayList<>();
     private final List<Merge> visibleMerges = new ArrayList<>();
+    private List<Merge>[] mergeBuckets;
+    private int renderGen;
     private final LinkedHashMap<SpreadsheetDocument.Cell, StaticLayout> layouts = new LinkedHashMap<>(32, .75f, true);
     private int layoutCost;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -50,6 +53,7 @@ final class SheetRenderer {
         sheet = null; styles = Collections.emptyList(); rows = columns = null;
         layout = null; width = height = 0;
         merges.clear(); visibleMerges.clear(); layouts.clear(); layoutCost = 0;
+        mergeBuckets = null;
     }
 
     void setSheet(SpreadsheetDocument.Sheet selected, List<SpreadsheetDocument.CellStyle> cellStyles) {
@@ -62,12 +66,26 @@ final class SheetRenderer {
         layout = precomputedLayout;
         rows = layout.rows; columns = layout.columns;
         width = layout.width; height = layout.height;
+        int bucketCount = Math.max(1, (layout.rows.offsets.length + BUCKET_ROW_SIZE - 1) / BUCKET_ROW_SIZE);
+        @SuppressWarnings("unchecked")
+        List<Merge>[] buckets = (List<Merge>[]) new List<?>[bucketCount];
+        for (int i = 0; i < bucketCount; i++) {
+            buckets[i] = new ArrayList<>();
+        }
         for (SheetLayout.Merge source : layout.merges) {
             Merge merge = new Merge();
             merge.bounds.set(source.left, source.top, source.right, source.bottom);
             merge.anchor = source.anchor;
+            merge.startRow = source.startRow;
+            merge.endRow = source.endRow;
             merges.add(merge);
+            int startBucket = Math.max(0, source.startRow / BUCKET_ROW_SIZE);
+            int endBucket = Math.min(bucketCount - 1, source.endRow / BUCKET_ROW_SIZE);
+            for (int b = startBucket; b <= endBucket; b++) {
+                buckets[b].add(merge);
+            }
         }
+        mergeBuckets = buckets;
     }
 
     void draw(Canvas canvas, RectF viewport) {
@@ -85,12 +103,32 @@ final class SheetRenderer {
             drawCells(canvas, firstRow, firstColumn, false);
             drawGrid(canvas, firstRow, firstColumn);
             visibleMerges.clear();
-            for (Merge merge : merges) {
-                if (merge.bounds.isEmpty() || !RectF.intersects(body, merge.bounds)) continue;
-                visibleMerges.add(merge);
-                fill(canvas, merge.bounds, 0xffffffff);
-                if (merge.anchor != null) drawCell(canvas, merge.anchor, merge.bounds);
-                stroke(canvas, merge.bounds, GRID_COLOR, .5f);
+            if (mergeBuckets != null && mergeBuckets.length > 0) {
+                int firstRowIdx = firstRow < rows.visible.length ? rows.visible[firstRow] : 0;
+                int lastRowSearch = rows.first(body.bottom);
+                int lastRowIdx = lastRowSearch < rows.visible.length
+                    ? rows.visible[lastRowSearch]
+                    : (rows.visible.length > 0 ? rows.visible[rows.visible.length - 1] : firstRowIdx);
+                int startBucket = Math.max(0, firstRowIdx / BUCKET_ROW_SIZE);
+                int endBucket = Math.min(mergeBuckets.length - 1, lastRowIdx / BUCKET_ROW_SIZE);
+                int currentGen = ++renderGen;
+                if (currentGen == 0) {
+                    currentGen = renderGen = 1;
+                    for (Merge m : merges) m.lastSeenGen = 0;
+                }
+                for (int b = startBucket; b <= endBucket; b++) {
+                    List<Merge> bucket = mergeBuckets[b];
+                    for (int i = 0; i < bucket.size(); i++) {
+                        Merge merge = bucket.get(i);
+                        if (merge.lastSeenGen == currentGen) continue;
+                        merge.lastSeenGen = currentGen;
+                        if (merge.bounds.isEmpty() || !RectF.intersects(body, merge.bounds)) continue;
+                        visibleMerges.add(merge);
+                        fill(canvas, merge.bounds, 0xffffffff);
+                        if (merge.anchor != null) drawCell(canvas, merge.anchor, merge.bounds);
+                        stroke(canvas, merge.bounds, GRID_COLOR, .5f);
+                    }
+                }
             }
             drawCells(canvas, firstRow, firstColumn, true);
             for (Merge merge : visibleMerges) {
@@ -266,5 +304,7 @@ final class SheetRenderer {
     private static final class Merge {
         final RectF bounds = new RectF();
         SpreadsheetDocument.Cell anchor;
+        int startRow, endRow;
+        int lastSeenGen;
     }
 }

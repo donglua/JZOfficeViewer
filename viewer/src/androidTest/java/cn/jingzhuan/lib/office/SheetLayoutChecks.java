@@ -21,6 +21,7 @@ public final class SheetLayoutChecks {
         check(Arrays.equals(layout.mergedCells, new boolean[] {true, false, true, false, false}), "Merge membership");
         SheetLayout.Merge merge = layout.merges.get(0);
         check(merge.left == 42 && merge.top == 20 && merge.right == 222 && merge.bottom == 114, "Inclusive merge bounds");
+        check(merge.startRow == 0 && merge.endRow == 3, "Merge row bounds");
         check(merge.anchor == sheet.cells.get(0), "Anchor identity retained for renderer text cache");
         check(layout.merges.get(1).anchor == null, "Missing anchor stays empty");
         check(layout.merges.get(2).top == layout.merges.get(2).bottom, "Hidden merge has zero height");

@@ -38,7 +38,8 @@ final class SheetLayout {
                 }
             }
             merges.add(new Merge(columns.offsets[range.startColumn], rows.offsets[range.startRow],
-                columns.offsets[range.endColumn + 1], rows.offsets[range.endRow + 1], anchor));
+                columns.offsets[range.endColumn + 1], rows.offsets[range.endRow + 1],
+                range.startRow, range.endRow, anchor));
         }
     }
 
@@ -54,10 +55,16 @@ final class SheetLayout {
 
     static final class Merge {
         final float left, top, right, bottom;
+        final int startRow, endRow;
         final SpreadsheetDocument.Cell anchor;
 
         Merge(float left, float top, float right, float bottom, SpreadsheetDocument.Cell anchor) {
-            this.left = left; this.top = top; this.right = right; this.bottom = bottom; this.anchor = anchor;
+            this(left, top, right, bottom, 0, 0, anchor);
+        }
+
+        Merge(float left, float top, float right, float bottom, int startRow, int endRow, SpreadsheetDocument.Cell anchor) {
+            this.left = left; this.top = top; this.right = right; this.bottom = bottom;
+            this.startRow = startRow; this.endRow = endRow; this.anchor = anchor;
         }
     }
 
