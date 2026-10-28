@@ -297,6 +297,7 @@ final class AccessibilityChecks {
     }
 
     private static boolean scrollerIdle(OfficePreviewView view) throws Exception {
+        view.computeScroll();
         Field declared = OfficePreviewView.class.getDeclaredField("scroller");
         declared.setAccessible(true);
         return ((android.widget.OverScroller) declared.get(view)).isFinished();

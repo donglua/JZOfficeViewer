@@ -348,8 +348,13 @@ public final class OfficePreviewView extends View {
     /** 经 OverScroller 平滑滚动一个视口，滚动结束后复用翻页播报 */
     private void scrollViewport(int direction) {
         if (!canScrollVertically(direction)) return;
+        int targetY = direction > 0
+            ? Math.min(maxY(), Math.round(offsetY + getHeight() * 0.8f))
+            : Math.max(0, Math.round(offsetY - getHeight() * 0.8f));
+        int dy = targetY - Math.round(offsetY);
+        if (dy == 0) return;
         scroller.forceFinished(true);
-        scroller.startScroll((int) offsetX, (int) offsetY, 0, (int) (getHeight() * 0.8f * direction), 250);
+        scroller.startScroll((int) offsetX, (int) offsetY, 0, dy, 250);
         postInvalidateOnAnimation();
     }
 
@@ -438,7 +443,10 @@ public final class OfficePreviewView extends View {
     @Override public boolean performClick() { super.performClick(); return true; }
     @Override public void computeScroll() {
         if (scroller.computeScrollOffset()) {
-            offsetX = scroller.getCurrX(); offsetY = scroller.getCurrY(); updateCurrentPage(); postInvalidateOnAnimation();
+            offsetX = scroller.getCurrX(); offsetY = scroller.getCurrY();
+            clampOffsets();
+            updateCurrentPage();
+            postInvalidateOnAnimation();
         } else if (document != null) {
             announcePageIfSettled();
         }
