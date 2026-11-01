@@ -64,10 +64,15 @@ impl Parser<'_> {
         if root_name != "hdr" && root_name != "ftr" {
             return Err(Error::Invalid("Invalid header/footer root element"));
         }
+        // 页眉页脚部件拥有独立的 word/_rels/header1.xml.rels，其中的图片等资源关系与正文不同源，
+        // 解析期间必须临时切换到该部件的关系表，否则 r:embed 会错误命中正文关系。
+        let relationships = self.package.relationships(part)?;
+        let saved_relationships = std::mem::replace(&mut self.relationships, relationships);
         // 临时交换 blocks，让 body() 把解析结果写入临时 Vec；text_bytes 在 body() 内正常累计
         let saved = std::mem::take(&mut self.document.blocks);
         let result = self.body(&root);
         let blocks = std::mem::replace(&mut self.document.blocks, saved);
+        self.relationships = saved_relationships;
         result?;
         if self.text_bytes > super::MAX_TEXT {
             return Err(Error::Limit("DOCX header/footer text exceeds 8 MiB"));

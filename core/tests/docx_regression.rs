@@ -167,6 +167,46 @@ fn header_is_parsed_into_header_blocks_not_document_flow() -> TestResult {
 }
 
 #[test]
+fn header_images_use_the_header_relationship_part() -> TestResult {
+    let mut parts = docx::parts();
+    // 页眉部件内含图片引用 rLogo；正文关系表故意把同一个 rId 指向另一张图片
+    parts.push(("word/media/header.png", PNG.to_vec()));
+    parts.push((
+        "word/_rels/header1.xml.rels",
+        support::package::relationships(&[("rLogo", "image", "media/header.png")]).into_bytes(),
+    ));
+    replace(&mut parts, "word/header1.xml", HEADER_WITH_IMAGE);
+    let document_rels = support::package::relationships(&[
+        ("rStyles", "styles", "styles.xml"),
+        ("rImage", "image", "media/pixel.png"),
+        ("rHeader", "header", "header1.xml"),
+        ("rFooter", "footer", "footer1.xml"),
+        ("rLogo", "image", "media/pixel.png"),
+    ]);
+    replace(&mut parts, "word/_rels/document.xml.rels", &document_rels);
+
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+
+    let image = checks::element(&document.header_blocks, ElementType::IMAGE)?;
+    assert_eq!(image.image.as_deref(), Some("word/media/header.png"));
+    Ok(())
+}
+
+const HEADER_WITH_IMAGE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+ xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+ xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+ xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">
+  <wp:extent cx="914400" cy="457200"/>
+  <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+    <pic:pic><pic:blipFill><a:blip r:embed="rLogo"/></pic:blipFill></pic:pic>
+  </a:graphicData></a:graphic>
+</wp:inline></w:drawing></w:r></w:p>
+</w:hdr>"#;
+
+#[test]
 fn hidden_runs_and_ruby_rt_are_omitted_from_document_flow() -> TestResult {
     let mut parts = docx::parts();
     let body_with_hidden = r#"<w:p>
