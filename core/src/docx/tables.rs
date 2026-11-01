@@ -67,7 +67,7 @@ impl Parser<'_> {
         }
         let count = u16::try_from(table.column_widths.len())
             .map_err(|_| Error::Limit("DOCX table exceeds 32 columns"))?;
-        let available = self.document.width - 64.0;
+        let available = self.flow_width();
         for width in &mut table.column_widths {
             if *width <= 0.0 {
                 *width = available / f32::from(count);

@@ -60,8 +60,9 @@ final class OfficeRenderer {
     void layout(OfficeDocument document) {
         clear(); this.document = document; width = Math.max(1, document.width);
         if (document.kind == OfficeDocument.Kind.DOCX) {
-            float marginLeft = document.marginLeft > 0 ? document.marginLeft : 72;
-            float marginRight = document.marginRight > 0 ? document.marginRight : 72;
+            float maxMargin = Math.max(36, (width - 120) / 2);
+            float marginLeft = Math.min(maxMargin, document.marginLeft > 0 ? document.marginLeft : 72);
+            float marginRight = Math.min(maxMargin, document.marginRight > 0 ? document.marginRight : 72);
             float contentX = marginLeft;
             float contentWidth = Math.max(1, width - marginLeft - marginRight);
             Page page = new Page(); page.width = width; page.background = 0xffffffff;

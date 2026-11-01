@@ -55,23 +55,33 @@ fn collect<'a>(node: &'a Node, sections: &mut Vec<&'a Node>) {
     }
 }
 
-/// 解析 sectPr/pgMar 页边距与页眉页脚距离（单位：点，twips / 20）
-pub(super) fn page_margins(sect: &Node) -> (f32, f32, f32, f32, f32, f32, f32) {
+/// 页边距与页眉页脚距离（单位：点）
+pub(super) struct PageMargins {
+    pub header: f32,
+    pub footer: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
+}
+
+/// 解析 sectPr/pgMar 页边距与页眉页脚距离（单位：点，twips / 20），并限制在合理范围内
+pub(super) fn page_margins(sect: &Node, page_width: f32) -> PageMargins {
     let pg_mar = sect.child("pgMar");
     let attr = |name: &str, fallback: f32| -> f32 {
         pg_mar
             .map(|n| xml::number(n.attr(name), fallback * 20.0) / 20.0)
             .unwrap_or(fallback)
     };
-    (
-        attr("header", 36.0), // header_distance 默认 720 twips = 36pt
-        attr("footer", 36.0), // footer_distance 默认 720 twips = 36pt
-        attr("top", 72.0),    // margin_top 默认 1440 twips = 72pt
-        attr("bottom", 72.0),
-        attr("left", 72.0),
-        attr("right", 72.0),
-        0.0, // gutter 不使用
-    )
+    let max_horizontal = ((page_width - 120.0) / 2.0).max(36.0);
+    PageMargins {
+        header: attr("header", 36.0).clamp(0.0, 288.0), // 默认 720 twips = 36pt
+        footer: attr("footer", 36.0).clamp(0.0, 288.0), // 默认 720 twips = 36pt
+        top: attr("top", 72.0).clamp(0.0, 288.0),       // 默认 1440 twips = 72pt
+        bottom: attr("bottom", 72.0).clamp(0.0, 288.0),
+        left: attr("left", 72.0).clamp(0.0, max_horizontal),
+        right: attr("right", 72.0).clamp(0.0, max_horizontal),
+    }
 }
 
 impl Parser<'_> {

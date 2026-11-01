@@ -364,6 +364,10 @@ struct DocxFlowView {
   @State offsetY: number = 0;
   @State isGesturing: boolean = false;
   @State settledZoomPad: number = 0;
+  private headerCount: number = 0;
+  private bodyCount: number = 0;
+  /** 页眉与正文、正文与页脚之间的额外留白，对齐 Android OfficeRenderer 的 10pt 分隔 */
+  private sectionGap: number = 10;
 
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
@@ -371,6 +375,8 @@ struct DocxFlowView {
     const headerBlocks = this.document?.headerBlocks ?? [];
     const bodyBlocks = this.document?.blocks ?? [];
     const footerBlocks = this.document?.footerBlocks ?? [];
+    this.headerCount = headerBlocks.length;
+    this.bodyCount = bodyBlocks.length;
     this.blockSource = new ArrayDataSource([...headerBlocks, ...bodyBlocks, ...footerBlocks]);
     if (this.registerControls) {
       this.registerControls(
@@ -455,7 +461,7 @@ struct DocxFlowView {
           List({ space: 8, scroller: this.scroller }) {
             LazyForEach(
               this.blockSource,
-              (element: model.Element) => {
+              (element: model.Element, index: number) => {
                 ListItem() {
                   if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
                     DocxTableView({ element: element })
@@ -468,6 +474,11 @@ struct DocxFlowView {
                   }
                 }
                 .reuseId(element.type)
+                // 页眉最后一块之后、页脚第一块之前额外留白，让页眉页脚与正文视觉分开
+                .margin({
+                  top: this.headerCount + this.bodyCount === index ? this.sectionGap : 0,
+                  bottom: this.headerCount > 0 && this.headerCount - 1 === index ? this.sectionGap : 0
+                })
               },
               (_element: model.Element, index: number) => `block-${index}`
             )

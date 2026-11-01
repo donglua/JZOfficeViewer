@@ -276,6 +276,61 @@ const MULTI_SECTION_DOCUMENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </w:body></w:document>"#;
 
 #[test]
+fn table_width_follows_page_margins() -> TestResult {
+    let mut with_margins = docx::parts();
+    replace(&mut with_margins, "word/document.xml", TABLE_DOCUMENT);
+    let margined = parse_reader(Cursor::new(archive(&with_margins)?))?;
+    // 612pt 页宽减去左右各 72pt 页边距后，两列各占 234pt
+    let table = checks::element(&margined.blocks, ElementType::TABLE)?;
+    checks::near(table.width, 468.0);
+    checks::near(table.column_widths[0], 234.0);
+    checks::near(table.column_widths[1], 234.0);
+
+    // 没有 sectPr 的文档按 Word 默认 72pt 页边距回退，595pt 页宽下两列各占 225.5pt
+    let mut without_margins = docx::parts();
+    replace(
+        &mut without_margins,
+        "word/document.xml",
+        &TABLE_DOCUMENT
+            .replace("<w:sectPr>", "<w:none>")
+            .replace("</w:sectPr>", "</w:none>"),
+    );
+    let plain = parse_reader(Cursor::new(archive(&without_margins)?))?;
+    let table = checks::element(&plain.blocks, ElementType::TABLE)?;
+    checks::near(table.width, 451.0);
+    checks::near(table.column_widths[0], 225.5);
+
+    // 异常超大的左右页边距会被限制，保证正文始终保有最小可用宽度（>= 120pt）
+    let mut extreme_margins = docx::parts();
+    replace(
+        &mut extreme_margins,
+        "word/document.xml",
+        &TABLE_DOCUMENT.replace(
+            r#"w:right="1440" w:bottom="1440" w:left="1440""#,
+            r#"w:right="20000" w:bottom="1440" w:left="20000""#,
+        ),
+    );
+    let clamped = parse_reader(Cursor::new(archive(&extreme_margins)?))?;
+    let table = checks::element(&clamped.blocks, ElementType::TABLE)?;
+    checks::near(clamped.margin_left, 246.0);
+    checks::near(clamped.margin_right, 246.0);
+    checks::near(table.width, 120.0);
+    Ok(())
+}
+
+const TABLE_DOCUMENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:tbl><w:tblGrid><w:gridCol w:w="0"/><w:gridCol w:w="0"/></w:tblGrid>
+    <w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr>
+  </w:tbl>
+  <w:sectPr><w:pgSz w:w="12240" w:h="15840"/>
+    <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>
+  </w:sectPr>
+</w:body></w:document>"#;
+
+#[test]
 fn hidden_runs_and_ruby_rt_are_omitted_from_document_flow() -> TestResult {
     let mut parts = docx::parts();
     let body_with_hidden = r#"<w:p>

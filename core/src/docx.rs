@@ -19,6 +19,8 @@ const MAX_CELLS: usize = 5000;
 const MAX_COLUMNS: usize = 32;
 const MAX_ROWS: usize = 500;
 const MAX_COORDINATE: f32 = 1200.0;
+/// Word 默认页边距（点），用于未声明 sectPr/pgMar 的文档
+const DEFAULT_MARGIN: f32 = 72.0;
 pub(super) const MAX_TEXT: usize = 8 * 1024 * 1024;
 
 /// 当前解析目标的块数量上限及其超限提示
@@ -46,20 +48,25 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
         .child("body")
         .ok_or(Error::Invalid("Missing DOCX body"))?;
     let mut document = Document::new(Kind::DOCX);
-    let sect = body.child("sectPr").or_else(|| body.descendant("sectPr"));
-    if let Some(sect) = sect {
-        if let Some(size) = sect.child("pgSz") {
+    let sections = section::properties(body);
+    if let Some(&sect) = sections.last() {
+        if let Some(size) = sections.iter().rev().find_map(|s| s.child("pgSz")) {
             document.width =
                 (xml::number(size.attr("w"), 11900.0) / 20.0).clamp(300.0, MAX_COORDINATE);
         }
-        let (header_dist, footer_dist, m_top, m_bottom, m_left, m_right, _gutter) =
-            section::page_margins(sect);
-        document.header_distance = header_dist;
-        document.footer_distance = footer_dist;
-        document.margin_top = m_top;
-        document.margin_bottom = m_bottom;
-        document.margin_left = m_left;
-        document.margin_right = m_right;
+        let margins_sect = sections
+            .iter()
+            .rev()
+            .find(|s| s.child("pgMar").is_some())
+            .copied()
+            .unwrap_or(sect);
+        let margins = section::page_margins(margins_sect, document.width);
+        document.header_distance = margins.header;
+        document.footer_distance = margins.footer;
+        document.margin_top = margins.top;
+        document.margin_bottom = margins.bottom;
+        document.margin_left = margins.left;
+        document.margin_right = margins.right;
     }
     inspect(body, &mut document);
     let relationships = package.relationships(main_part)?;
@@ -75,9 +82,8 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
     };
     parser.body(body)?;
     // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）。
-    // 多节文档中页眉页脚引用按节继承，需要按文档顺序收集全部 sectPr。
-    if sect.is_some() {
-        let sections = section::properties(body);
+    // 多节文档中页眉页脚引用按节继承，使用按文档顺序收集的全部 sectPr。
+    if !sections.is_empty() {
         parser.parse_sections(&sections)?;
     }
     Ok(parser.document)
@@ -129,6 +135,22 @@ impl Parser<'_> {
         }
         self.document.blocks.push(element);
         Ok(())
+    }
+
+    /// 流式正文的可用宽度：扣除左右页边距。未从 sectPr 读到边距时按 Word 默认 72pt 回退，
+    /// 与 Android OfficeRenderer 计算 contentWidth 的方式保持一致。
+    fn flow_width(&self) -> f32 {
+        let margin = |value: f32| {
+            if value > 0.0 {
+                value
+            } else {
+                DEFAULT_MARGIN
+            }
+        };
+        (self.document.width
+            - margin(self.document.margin_left)
+            - margin(self.document.margin_right))
+        .max(1.0)
     }
 
     /// 解析各节的页眉页脚引用，把内容块写入 document.header_blocks / footer_blocks。

@@ -10,7 +10,7 @@ impl Parser<'_> {
             current: paragraph.clone(),
             template: paragraph,
             elements: Vec::new(),
-            width: self.document.width - 64.0,
+            width: self.flow_width(),
             in_cell,
             limit: if in_cell {
                 1
