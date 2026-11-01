@@ -229,6 +229,53 @@ fn header_blocks_stop_at_the_platform_section_limit() -> TestResult {
 }
 
 #[test]
+fn later_sections_inherit_header_and_footer_from_earlier_sections() -> TestResult {
+    let mut parts = docx::parts();
+    replace(&mut parts, "word/document.xml", MULTI_SECTION_DOCUMENT);
+
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+
+    // 最后一节未重复声明引用，按继承规则沿用第一节的页眉页脚
+    assert!(checks::text(&document.header_blocks[0].paragraphs).contains("示例文档"));
+    assert!(checks::text(&document.footer_blocks[0].paragraphs).contains("页脚"));
+    Ok(())
+}
+
+#[test]
+fn unsupported_header_content_records_warnings() -> TestResult {
+    let mut parts = docx::parts();
+    let header = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+ xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+<w:p><m:oMath><m:r><m:t>x=1</m:t></m:r></m:oMath></w:p>
+</w:hdr>"#;
+    replace(&mut parts, "word/header1.xml", header);
+
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+
+    assert!(document
+        .warnings
+        .iter()
+        .any(|warning| warning == "Mathematical equations are omitted."));
+    Ok(())
+}
+
+const MULTI_SECTION_DOCUMENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+  <w:p><w:pPr><w:sectPr>
+    <w:headerReference w:type="default" r:id="rHeader"/>
+    <w:footerReference w:type="default" r:id="rFooter"/>
+    <w:pgSz w:w="12240" w:h="15840"/>
+  </w:sectPr></w:pPr><w:r><w:t>First section</w:t></w:r></w:p>
+  <w:p><w:r><w:t>Second section body</w:t></w:r></w:p>
+  <w:sectPr><w:pgSz w:w="12240" w:h="15840"/>
+    <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>
+  </w:sectPr>
+</w:body></w:document>"#;
+
+#[test]
 fn hidden_runs_and_ruby_rt_are_omitted_from_document_flow() -> TestResult {
     let mut parts = docx::parts();
     let body_with_hidden = r#"<w:p>

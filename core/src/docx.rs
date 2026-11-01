@@ -76,9 +76,11 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
         block_limit: FLOW_LIMIT,
     };
     parser.body(body)?;
-    // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）
-    if let Some(sect) = sect {
-        parser.parse_sections(sect)?;
+    // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）。
+    // 多节文档中页眉页脚引用按节继承，需要按文档顺序收集全部 sectPr。
+    if sect.is_some() {
+        let sections = section::properties(body);
+        parser.parse_sections(&sections)?;
     }
     Ok(parser.document)
 }
@@ -131,30 +133,11 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// 解析 sectPr 中的页眉页脚引用，把内容块写入 document.header_blocks / footer_blocks
-    fn parse_sections(&mut self, sect: &Node) -> Result<()> {
-        let refs = section::references(sect);
-        let mut header_part: Option<String> = None;
-        let mut footer_part: Option<String> = None;
-        for (kind, rel_id, ref_type) in &refs {
-            let Some(target) = self.relationships.get(rel_id) else {
-                continue;
-            };
-            // 优先选择 default 类型；没有 default 时取第一个
-            match kind {
-                section::SectionKind::Header => {
-                    if header_part.is_none() || ref_type == "default" {
-                        header_part = Some(target.clone());
-                    }
-                }
-                section::SectionKind::Footer => {
-                    if footer_part.is_none() || ref_type == "default" {
-                        footer_part = Some(target.clone());
-                    }
-                }
-            }
-        }
-        if let Some(part) = header_part {
+    /// 解析各节的页眉页脚引用，把内容块写入 document.header_blocks / footer_blocks。
+    /// 多节文档中，后一节未重复声明引用时按 OOXML 规则继承前一节的页眉页脚，
+    /// 因此从最后一节向前查找最近一个声明了该类型引用的节。
+    fn parse_sections(&mut self, sections: &[&Node]) -> Result<()> {
+        if let Some(part) = self.section_part(sections, section::SectionKind::Header) {
             if self.package.has(&part) {
                 let blocks = self.section_blocks(&part)?;
                 if !blocks.is_empty() {
@@ -162,7 +145,7 @@ impl Parser<'_> {
                 }
             }
         }
-        if let Some(part) = footer_part {
+        if let Some(part) = self.section_part(sections, section::SectionKind::Footer) {
             if self.package.has(&part) {
                 let blocks = self.section_blocks(&part)?;
                 if !blocks.is_empty() {
@@ -171,6 +154,28 @@ impl Parser<'_> {
             }
         }
         Ok(())
+    }
+
+    /// 取指定类型页眉/页脚对应部件路径：从最后一节向前，第一个声明了该类型且关系可解析的节生效
+    fn section_part(&self, sections: &[&Node], kind: section::SectionKind) -> Option<String> {
+        for sect in sections.iter().rev() {
+            let mut chosen: Option<(String, String)> = None;
+            for (reference_kind, rel_id, ref_type) in section::references(sect) {
+                if reference_kind != kind {
+                    continue;
+                }
+                // 优先选择 default 类型；没有 default 时取第一个
+                if chosen.as_ref().is_none_or(|(_, kind)| *kind != "default") {
+                    chosen = Some((rel_id, ref_type));
+                }
+            }
+            if let Some((rel_id, _)) = chosen {
+                if let Some(target) = self.relationships.get(&rel_id) {
+                    return Some(target.clone());
+                }
+            }
+        }
+        None
     }
 }
 

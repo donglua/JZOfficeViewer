@@ -37,6 +37,24 @@ pub(super) fn references(sect: &Node) -> Vec<(SectionKind, String, String)> {
     result
 }
 
+/// 按文档顺序收集 body 下所有节属性（段落级 w:p/w:pPr/w:sectPr 与 body 末尾的 w:sectPr）。
+/// 多节文档的页眉页脚引用按节继承，需要完整的节序列才能解析。
+pub(super) fn properties(body: &Node) -> Vec<&Node> {
+    let mut sections = Vec::new();
+    collect(body, &mut sections);
+    sections
+}
+
+fn collect<'a>(node: &'a Node, sections: &mut Vec<&'a Node>) {
+    for child in &node.children {
+        if child.name == "sectPr" {
+            sections.push(child);
+        } else {
+            collect(child, sections);
+        }
+    }
+}
+
 /// 解析 sectPr/pgMar 页边距与页眉页脚距离（单位：点，twips / 20）
 pub(super) fn page_margins(sect: &Node) -> (f32, f32, f32, f32, f32, f32, f32) {
     let pg_mar = sect.child("pgMar");
@@ -64,6 +82,8 @@ impl Parser<'_> {
         if root_name != "hdr" && root_name != "ftr" {
             return Err(Error::Invalid("Invalid header/footer root element"));
         }
+        // 页眉页脚同样可能出现公式、浮动图形等不支持元素，需要一并记录告警
+        super::inspect(&root, &mut self.document);
         // 页眉页脚部件拥有独立的 word/_rels/header1.xml.rels，其中的图片等资源关系与正文不同源，
         // 解析期间必须临时切换到该部件的关系表，否则 r:embed 会错误命中正文关系。
         let relationships = self.package.relationships(part)?;
