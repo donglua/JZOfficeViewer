@@ -1,6 +1,6 @@
 pub mod support;
 
-use jz_office_core::{model::ElementType, parse_reader, Package};
+use jz_office_core::{model::ElementType, parse_reader, Error, Package};
 use std::io::Cursor;
 use support::{
     checks, docx,
@@ -205,6 +205,28 @@ const HEADER_WITH_IMAGE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   </a:graphicData></a:graphic>
 </wp:inline></w:drawing></w:r></w:p>
 </w:hdr>"#;
+
+#[test]
+fn header_blocks_stop_at_the_platform_section_limit() -> TestResult {
+    let mut paragraphs = String::new();
+    for index in 0..=500 {
+        paragraphs.push_str(&format!("<w:p><w:r><w:t>Line {index}</w:t></w:r></w:p>"));
+    }
+    let header = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{paragraphs}</w:hdr>"#
+    );
+    let mut parts = docx::parts();
+    replace(&mut parts, "word/header1.xml", &header);
+
+    let error = parse_reader(Cursor::new(archive(&parts)?));
+
+    assert!(matches!(
+        error,
+        Err(Error::Limit("DOCX header/footer exceeds 500 blocks"))
+    ));
+    Ok(())
+}
 
 #[test]
 fn hidden_runs_and_ruby_rt_are_omitted_from_document_flow() -> TestResult {

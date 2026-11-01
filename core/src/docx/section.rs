@@ -68,15 +68,15 @@ impl Parser<'_> {
         // 解析期间必须临时切换到该部件的关系表，否则 r:embed 会错误命中正文关系。
         let relationships = self.package.relationships(part)?;
         let saved_relationships = std::mem::replace(&mut self.relationships, relationships);
+        // 页眉页脚使用更小的块数量上限，保证 core 不会输出平台层解码会拒绝的模型
+        let saved_limit = std::mem::replace(&mut self.block_limit, super::SECTION_LIMIT);
         // 临时交换 blocks，让 body() 把解析结果写入临时 Vec；text_bytes 在 body() 内正常累计
         let saved = std::mem::take(&mut self.document.blocks);
         let result = self.body(&root);
         let blocks = std::mem::replace(&mut self.document.blocks, saved);
+        self.block_limit = saved_limit;
         self.relationships = saved_relationships;
         result?;
-        if self.text_bytes > super::MAX_TEXT {
-            return Err(Error::Limit("DOCX header/footer text exceeds 8 MiB"));
-        }
         Ok(blocks)
     }
 }

@@ -12,11 +12,30 @@ use std::collections::HashMap;
 use styles::Styles;
 
 const MAX_BLOCKS: usize = 5000;
+/// 单个页眉/页脚部件的块数量上限，必须与 Android DocumentDecoder 的校验保持一致，
+/// 否则 core 解析成功但平台层解码会直接抛异常。
+const MAX_SECTION_BLOCKS: usize = 500;
 const MAX_CELLS: usize = 5000;
 const MAX_COLUMNS: usize = 32;
 const MAX_ROWS: usize = 500;
 const MAX_COORDINATE: f32 = 1200.0;
 pub(super) const MAX_TEXT: usize = 8 * 1024 * 1024;
+
+/// 当前解析目标的块数量上限及其超限提示
+#[derive(Clone, Copy)]
+struct BlockLimit {
+    count: usize,
+    message: &'static str,
+}
+
+const FLOW_LIMIT: BlockLimit = BlockLimit {
+    count: MAX_BLOCKS,
+    message: "DOCX exceeds 5000 flow blocks",
+};
+const SECTION_LIMIT: BlockLimit = BlockLimit {
+    count: MAX_SECTION_BLOCKS,
+    message: "DOCX header/footer exceeds 500 blocks",
+};
 
 pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> {
     let root = package.xml(main_part)?;
@@ -54,6 +73,7 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
         styles,
         cells: 0,
         text_bytes: 0,
+        block_limit: FLOW_LIMIT,
     };
     parser.body(body)?;
     // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）
@@ -70,6 +90,7 @@ struct Parser<'a> {
     styles: Styles,
     cells: usize,
     text_bytes: usize,
+    block_limit: BlockLimit,
 }
 
 impl Parser<'_> {
@@ -103,8 +124,8 @@ impl Parser<'_> {
     }
 
     fn push(&mut self, element: Element) -> Result<()> {
-        if self.document.blocks.len() >= MAX_BLOCKS {
-            return Err(Error::Limit("DOCX exceeds 5000 flow blocks"));
+        if self.document.blocks.len() >= self.block_limit.count {
+            return Err(Error::Limit(self.block_limit.message));
         }
         self.document.blocks.push(element);
         Ok(())

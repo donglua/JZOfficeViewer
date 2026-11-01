@@ -5,6 +5,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 final class DocumentDecoder {
+    /** 单个页眉/页脚部件的块数量上限，须与 core 的 MAX_SECTION_BLOCKS 保持一致 */
+    private static final int MAX_SECTION_BLOCKS = 500;
+
     static OfficeDocument decode(String json) throws IOException {
         if (json == null) throw new IOException("Invalid core display model");
         try {
@@ -69,7 +72,7 @@ final class DocumentDecoder {
                     case "headerBlocks":
                         c.beginArray();
                         while (c.hasNext()) {
-                            if (document.headerBlocks.size() >= 500) throw new IllegalArgumentException("Too many header blocks");
+                            if (document.headerBlocks.size() >= MAX_SECTION_BLOCKS) throw new IllegalArgumentException("Too many header blocks");
                             document.headerBlocks.add(element(c));
                         }
                         c.endArray();
@@ -77,7 +80,7 @@ final class DocumentDecoder {
                     case "footerBlocks":
                         c.beginArray();
                         while (c.hasNext()) {
-                            if (document.footerBlocks.size() >= 500) throw new IllegalArgumentException("Too many footer blocks");
+                            if (document.footerBlocks.size() >= MAX_SECTION_BLOCKS) throw new IllegalArgumentException("Too many footer blocks");
                             document.footerBlocks.add(element(c));
                         }
                         c.endArray();

@@ -1,4 +1,4 @@
-use super::{alternate, format, skipped, Parser, MAX_BLOCKS, MAX_TEXT};
+use super::{alternate, format, skipped, Parser, MAX_TEXT};
 use crate::model::{Element, Paragraph, Run};
 use crate::xml::Node;
 use crate::{Error, Result};
@@ -15,8 +15,11 @@ impl Parser<'_> {
             limit: if in_cell {
                 1
             } else {
-                MAX_BLOCKS.saturating_sub(self.document.blocks.len())
+                self.block_limit
+                    .count
+                    .saturating_sub(self.document.blocks.len())
             },
+            limit_message: self.block_limit.message,
             text_bytes: self.text_bytes,
         };
         self.inline(node, &font, &mut flow)?;
@@ -98,6 +101,7 @@ struct Flow {
     width: f32,
     in_cell: bool,
     limit: usize,
+    limit_message: &'static str,
     text_bytes: usize,
 }
 
@@ -135,7 +139,7 @@ impl Flow {
 
     fn push(&mut self, element: Element) -> Result<()> {
         if self.elements.len() >= self.limit {
-            return Err(Error::Limit("DOCX exceeds 5000 flow blocks"));
+            return Err(Error::Limit(self.limit_message));
         }
         self.elements.push(element);
         Ok(())
@@ -155,6 +159,7 @@ mod tests {
             width: 500.0,
             in_cell: false,
             limit: 5000,
+            limit_message: "DOCX exceeds 5000 flow blocks",
             text_bytes: 0,
         };
         let chunk = "a".repeat(1024 * 1024);

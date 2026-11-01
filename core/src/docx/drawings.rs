@@ -1,4 +1,4 @@
-use super::{Parser, MAX_BLOCKS, MAX_COORDINATE};
+use super::{Parser, MAX_COORDINATE};
 use crate::model::{Element, ElementType};
 use crate::xml::{self, Node};
 use crate::{Error, Result};
@@ -41,8 +41,8 @@ impl Parser<'_> {
                 self.document
                     .warn("Oversized image extents are limited to 1200 points.");
             }
-            if images.len() >= MAX_BLOCKS {
-                return Err(Error::Limit("DOCX exceeds 5000 image blocks"));
+            if images.len() >= self.block_limit.count {
+                return Err(Error::Limit(self.block_limit.message));
             }
             images.push(Element {
                 kind: ElementType::IMAGE,
