@@ -185,7 +185,10 @@ impl Parser<'_> {
                     continue;
                 }
                 // 优先选择 default 类型；没有 default 时取第一个
-                if chosen.as_ref().is_none_or(|(_, kind)| *kind != "default") {
+                if chosen
+                    .as_ref()
+                    .is_none_or(|(_, chosen_type)| chosen_type != "default")
+                {
                     chosen = Some((rel_id, ref_type));
                 }
             }
