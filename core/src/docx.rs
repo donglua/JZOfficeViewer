@@ -60,8 +60,6 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
         document.margin_bottom = m_bottom;
         document.margin_left = m_left;
         document.margin_right = m_right;
-    } else if let Some(size) = body.descendant("sectPr").and_then(|s| s.child("pgSz")) {
-        document.width = (xml::number(size.attr("w"), 11900.0) / 20.0).clamp(300.0, MAX_COORDINATE);
     }
     inspect(body, &mut document);
     let relationships = package.relationships(main_part)?;
