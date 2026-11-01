@@ -367,7 +367,11 @@ struct DocxFlowView {
 
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
-    this.blockSource = new ArrayDataSource(this.document?.blocks ?? []);
+    // 将页眉块插入到正文开头、页脚块追加到正文末尾，实现基础页眉页脚展示
+    const headerBlocks = this.document?.headerBlocks ?? [];
+    const bodyBlocks = this.document?.blocks ?? [];
+    const footerBlocks = this.document?.footerBlocks ?? [];
+    this.blockSource = new ArrayDataSource([...headerBlocks, ...bodyBlocks, ...footerBlocks]);
     if (this.registerControls) {
       this.registerControls(
         (_pageNumber: number): void => {

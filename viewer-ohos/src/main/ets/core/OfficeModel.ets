@@ -129,4 +129,17 @@ export interface OfficeDocument {
   warnings: string[];
   sheets: Sheet[];
   cellStyles: CellStyle[];
+  /** DOCX 页眉内容块（schemaVersion 9 新增可选字段） */
+  headerBlocks?: Element[];
+  /** DOCX 页脚内容块 */
+  footerBlocks?: Element[];
+  /** 页眉距页面顶部距离（点） */
+  headerDistance?: number;
+  /** 页脚距页面底部距离（点） */
+  footerDistance?: number;
+  /** 页边距（点） */
+  marginTop?: number;
+  marginBottom?: number;
+  marginLeft?: number;
+  marginRight?: number;
 }

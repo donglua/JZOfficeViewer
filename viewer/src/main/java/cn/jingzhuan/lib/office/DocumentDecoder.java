@@ -66,6 +66,40 @@ final class DocumentDecoder {
                         c.endArray();
                         hasSheets = true;
                         break;
+                    case "headerBlocks":
+                        c.beginArray();
+                        while (c.hasNext()) {
+                            if (document.headerBlocks.size() >= 500) throw new IllegalArgumentException("Too many header blocks");
+                            document.headerBlocks.add(element(c));
+                        }
+                        c.endArray();
+                        break;
+                    case "footerBlocks":
+                        c.beginArray();
+                        while (c.hasNext()) {
+                            if (document.footerBlocks.size() >= 500) throw new IllegalArgumentException("Too many footer blocks");
+                            document.footerBlocks.add(element(c));
+                        }
+                        c.endArray();
+                        break;
+                    case "headerDistance":
+                        document.headerDistance = (float) c.nextDouble();
+                        break;
+                    case "footerDistance":
+                        document.footerDistance = (float) c.nextDouble();
+                        break;
+                    case "marginTop":
+                        document.marginTop = (float) c.nextDouble();
+                        break;
+                    case "marginBottom":
+                        document.marginBottom = (float) c.nextDouble();
+                        break;
+                    case "marginLeft":
+                        document.marginLeft = (float) c.nextDouble();
+                        break;
+                    case "marginRight":
+                        document.marginRight = (float) c.nextDouble();
+                        break;
                     default:
                         c.skipValue();
                         break;

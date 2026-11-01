@@ -16,6 +16,11 @@ final class OfficeDocument {
     final List<SpreadsheetDocument.Sheet> sheets = new ArrayList<>();
     final List<SpreadsheetDocument.CellStyle> cellStyles = new ArrayList<>();
     final List<String> warnings = new ArrayList<>();
+    // DOCX 页眉页脚与页边距（schemaVersion 9 新增的可选字段）
+    final List<Element> headerBlocks = new ArrayList<>();
+    final List<Element> footerBlocks = new ArrayList<>();
+    float headerDistance, footerDistance;
+    float marginTop, marginBottom, marginLeft, marginRight;
 
     void warn(String message) {
         if (!warnings.contains(message)) warnings.add(message);

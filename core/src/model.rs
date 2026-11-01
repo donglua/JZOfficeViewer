@@ -91,6 +91,31 @@ pub struct Document {
     pub warnings: Vec<String>,
     pub sheets: Vec<Sheet>,
     pub cell_styles: Vec<CellStyle>,
+    /// DOCX 页眉内容块（来自 headerReference 关联的 header*.xml），为空时不序列化
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub header_blocks: Vec<Element>,
+    /// DOCX 页脚内容块（来自 footerReference 关联的 footer*.xml），为空时不序列化
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub footer_blocks: Vec<Element>,
+    /// 页眉距页面顶部的距离（点），来自 sectPr/pgMar@header
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub header_distance: f32,
+    /// 页脚距页面底部的距离（点），来自 sectPr/pgMar@footer
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub footer_distance: f32,
+    /// 页边距（点），来自 sectPr/pgMar
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub margin_top: f32,
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub margin_bottom: f32,
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub margin_left: f32,
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub margin_right: f32,
+}
+
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl Document {
@@ -104,6 +129,14 @@ impl Document {
             warnings: Vec::new(),
             sheets: Vec::new(),
             cell_styles: Vec::new(),
+            header_blocks: Vec::new(),
+            footer_blocks: Vec::new(),
+            header_distance: 0.0,
+            footer_distance: 0.0,
+            margin_top: 0.0,
+            margin_bottom: 0.0,
+            margin_left: 0.0,
+            margin_right: 0.0,
         }
     }
 

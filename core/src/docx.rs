@@ -1,6 +1,7 @@
 mod drawings;
 mod format;
 mod paragraphs;
+mod section;
 mod styles;
 mod tables;
 
@@ -26,11 +27,21 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
         .child("body")
         .ok_or(Error::Invalid("Missing DOCX body"))?;
     let mut document = Document::new(Kind::DOCX);
-    if let Some(size) = body
-        .child("sectPr")
-        .or_else(|| body.descendant("sectPr"))
-        .and_then(|section| section.child("pgSz"))
-    {
+    let sect = body.child("sectPr").or_else(|| body.descendant("sectPr"));
+    if let Some(sect) = sect {
+        if let Some(size) = sect.child("pgSz") {
+            document.width =
+                (xml::number(size.attr("w"), 11900.0) / 20.0).clamp(300.0, MAX_COORDINATE);
+        }
+        let (header_dist, footer_dist, m_top, m_bottom, m_left, m_right, _gutter) =
+            section::page_margins(sect);
+        document.header_distance = header_dist;
+        document.footer_distance = footer_dist;
+        document.margin_top = m_top;
+        document.margin_bottom = m_bottom;
+        document.margin_left = m_left;
+        document.margin_right = m_right;
+    } else if let Some(size) = body.descendant("sectPr").and_then(|s| s.child("pgSz")) {
         document.width = (xml::number(size.attr("w"), 11900.0) / 20.0).clamp(300.0, MAX_COORDINATE);
     }
     inspect(body, &mut document);
@@ -45,6 +56,10 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
         text_bytes: 0,
     };
     parser.body(body)?;
+    // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）
+    if let Some(sect) = sect {
+        parser.parse_sections(sect)?;
+    }
     Ok(parser.document)
 }
 
@@ -94,6 +109,48 @@ impl Parser<'_> {
         self.document.blocks.push(element);
         Ok(())
     }
+
+    /// 解析 sectPr 中的页眉页脚引用，把内容块写入 document.header_blocks / footer_blocks
+    fn parse_sections(&mut self, sect: &Node) -> Result<()> {
+        let refs = section::references(sect);
+        let mut header_part: Option<String> = None;
+        let mut footer_part: Option<String> = None;
+        for (kind, rel_id, ref_type) in &refs {
+            let Some(target) = self.relationships.get(rel_id) else {
+                continue;
+            };
+            // 优先选择 default 类型；没有 default 时取第一个
+            match kind {
+                section::SectionKind::Header => {
+                    if header_part.is_none() || ref_type == "default" {
+                        header_part = Some(target.clone());
+                    }
+                }
+                section::SectionKind::Footer => {
+                    if footer_part.is_none() || ref_type == "default" {
+                        footer_part = Some(target.clone());
+                    }
+                }
+            }
+        }
+        if let Some(part) = header_part {
+            if self.package.has(&part) {
+                let blocks = self.section_blocks(&part)?;
+                if !blocks.is_empty() {
+                    self.document.header_blocks = blocks;
+                }
+            }
+        }
+        if let Some(part) = footer_part {
+            if self.package.has(&part) {
+                let blocks = self.section_blocks(&part)?;
+                if !blocks.is_empty() {
+                    self.document.footer_blocks = blocks;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn alternate(node: &Node) -> Option<&Node> {
@@ -129,7 +186,7 @@ fn skipped(name: &str) -> bool {
 
 fn inspect(node: &Node, document: &mut Document) {
     let warning = match node.name.as_str() {
-        "headerReference" | "footerReference" => Some("Headers and footers are omitted."),
+        "headerReference" | "footerReference" => None, // 已支持页眉页脚
         "footnoteReference" | "endnoteReference" => Some("Footnotes and endnotes are omitted."),
         "oMath" | "oMathPara" => Some("Mathematical equations are omitted."),
         "anchor" => Some("Floating drawings use document flow; anchors and wrapping are ignored."),

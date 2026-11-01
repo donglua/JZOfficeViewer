@@ -1,6 +1,7 @@
 use super::package::{content_types, relationships, xml, Parts, PNG};
 
 pub const HEADER_REFERENCE: &str = r#"<w:headerReference w:type="default" r:id="rHeader"/>"#;
+pub const FOOTER_REFERENCE: &str = r#"<w:footerReference w:type="default" r:id="rFooter"/>"#;
 
 pub fn parts() -> Parts {
     vec![
@@ -10,6 +11,7 @@ pub fn parts() -> Parts {
                 ("word/document.xml", "wordprocessingml.document.main"),
                 ("word/styles.xml", "wordprocessingml.styles"),
                 ("word/header1.xml", "wordprocessingml.header"),
+                ("word/footer1.xml", "wordprocessingml.footer"),
             ]),
         ),
         xml(
@@ -19,12 +21,14 @@ pub fn parts() -> Parts {
         xml("word/document.xml", DOCUMENT),
         xml("word/styles.xml", STYLES),
         xml("word/header1.xml", HEADER),
+        xml("word/footer1.xml", FOOTER),
         xml(
             "word/_rels/document.xml.rels",
             &relationships(&[
                 ("rStyles", "styles", "styles.xml"),
                 ("rImage", "image", "media/../media/pixel.png"),
                 ("rHeader", "header", "header1.xml"),
+                ("rFooter", "footer", "footer1.xml"),
             ]),
         ),
         ("word/media/pixel.png", PNG.to_vec()),
@@ -48,8 +52,17 @@ pub const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 pub const HEADER: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-<w:p><w:r><w:t>Optional header omitted from flow</w:t></w:r></w:p>
+<w:p><w:pPr><w:jc w:val="center"/></w:pPr>
+  <w:r><w:rPr><w:b/><w:color w:val="52606D"/><w:sz w:val="18"/></w:rPr><w:t>JZ Office Viewer 示例文档</w:t></w:r>
+</w:p>
 </w:hdr>"#;
+
+pub const FOOTER: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:p><w:pPr><w:jc w:val="center"/></w:pPr>
+  <w:r><w:rPr><w:color w:val="9AA0A6"/><w:sz w:val="16"/></w:rPr><w:t>页脚：DOCX 页眉页脚已支持</w:t></w:r>
+</w:p>
+</w:ftr>"#;
 
 pub const DOCUMENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -88,7 +101,7 @@ pub const DOCUMENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <w:tr><w:tc><w:tcPr><w:tcW w:w="2880" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>&#x4E2D;&#x6587;</w:t></w:r></w:p></w:tc>
       <w:tc><w:tcPr><w:tcW w:w="4320" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>Hello &#x4F60;&#x597D;</w:t></w:r></w:p></w:tc></w:tr>
   </w:tbl>
-  <w:sectPr><w:headerReference w:type="default" r:id="rHeader"/>
+  <w:sectPr><w:headerReference w:type="default" r:id="rHeader"/><w:footerReference w:type="default" r:id="rFooter"/>
     <w:pgSz w:w="12240" w:h="15840"/>
     <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
   </w:sectPr>

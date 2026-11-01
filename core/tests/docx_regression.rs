@@ -137,7 +137,7 @@ fn docx_image_uses_normalized_relative_package_path() -> TestResult {
 }
 
 #[test]
-fn optional_header_adds_warning_without_entering_document_flow() -> TestResult {
+fn header_is_parsed_into_header_blocks_not_document_flow() -> TestResult {
     let mut baseline = docx::parts();
     replace(
         &mut baseline,
@@ -148,15 +148,21 @@ fn optional_header_adds_warning_without_entering_document_flow() -> TestResult {
 
     let document = parse_reader(Cursor::new(archive(&docx::parts())?))?;
 
-    assert_eq!(document.warnings.len(), baseline.warnings.len() + 1);
-    assert_eq!(
-        serde_json::to_value(&document.blocks)?,
-        serde_json::to_value(&baseline.blocks)?
-    );
+    // 页眉不再产生 warning
+    assert_eq!(document.warnings.len(), baseline.warnings.len());
+    // 页眉内容进入 header_blocks，不进入正文 blocks
+    assert!(!document.header_blocks.is_empty());
     assert!(document
         .blocks
         .iter()
-        .all(|block| !checks::text(&block.paragraphs).contains("Optional header")));
+        .all(|block| !checks::text(&block.paragraphs).contains("示例文档")));
+    assert!(checks::text(&document.header_blocks[0].paragraphs).contains("示例文档"));
+    // 页脚也已解析
+    assert!(!document.footer_blocks.is_empty());
+    assert!(checks::text(&document.footer_blocks[0].paragraphs).contains("页脚"));
+    // 页边距已解析
+    assert!(document.margin_top > 0.0);
+    assert!(document.header_distance > 0.0);
     Ok(())
 }
 

@@ -60,12 +60,35 @@ final class OfficeRenderer {
     void layout(OfficeDocument document) {
         clear(); this.document = document; width = Math.max(1, document.width);
         if (document.kind == OfficeDocument.Kind.DOCX) {
+            float marginLeft = document.marginLeft > 0 ? document.marginLeft : 72;
+            float marginRight = document.marginRight > 0 ? document.marginRight : 72;
+            float contentX = marginLeft;
+            float contentWidth = Math.max(1, width - marginLeft - marginRight);
             Page page = new Page(); page.width = width; page.background = 0xffffffff;
             float y = 32;
+            // 页眉作为文档流开头（随内容滚动）
+            for (OfficeDocument.Element source : document.headerBlocks) {
+                Element drawn = element(source, contentWidth, true, document);
+                drawn.x = contentX; drawn.y = y;
+                if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (contentWidth - drawn.width) / 2;
+                position(drawn, true);
+                page.elements.add(drawn); y += drawn.height + 6;
+            }
+            if (!document.headerBlocks.isEmpty()) y += 10; // 页眉与正文间距
+            // 正文
             for (OfficeDocument.Element source : document.blocks) {
-                Element drawn = element(source, width - 64, true, document);
-                drawn.x = 32; drawn.y = y;
-                if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (width - 64 - drawn.width) / 2;
+                Element drawn = element(source, contentWidth, true, document);
+                drawn.x = contentX; drawn.y = y;
+                if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (contentWidth - drawn.width) / 2;
+                position(drawn, true);
+                page.elements.add(drawn); y += drawn.height + 6;
+            }
+            // 页脚作为文档流末尾（随内容滚动）
+            if (!document.footerBlocks.isEmpty()) y += 10; // 正文与页脚间距
+            for (OfficeDocument.Element source : document.footerBlocks) {
+                Element drawn = element(source, contentWidth, true, document);
+                drawn.x = contentX; drawn.y = y;
+                if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (contentWidth - drawn.width) / 2;
                 position(drawn, true);
                 page.elements.add(drawn); y += drawn.height + 6;
             }
