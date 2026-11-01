@@ -166,3 +166,59 @@ fn empty_sheets_have_minimum_extent_and_merge_only_sheets_extend() -> TestResult
     }
     Ok(())
 }
+
+#[test]
+fn sheet_geometry_is_precomputed_with_offsets_rowstarts_and_merges() -> TestResult {
+    let json = parse(&xlsx::parts())?;
+    let geometry = &json["sheets"][0]["geometry"];
+    assert!(geometry.is_object(), "geometry should be present");
+
+    // columnOffsets 长度 = columnWidths + 1，首元素为 0
+    let col_offsets = geometry["columnOffsets"]
+        .as_array()
+        .ok_or("missing columnOffsets")?;
+    let col_widths = json["sheets"][0]["columnWidths"]
+        .as_array()
+        .ok_or("missing columnWidths")?;
+    assert_eq!(col_offsets.len(), col_widths.len() + 1);
+    assert_eq!(col_offsets[0], 0.0);
+
+    // rowStarts 长度 = rowHeights + 1，最后一个等于 cells 总数
+    let row_starts = geometry["rowStarts"]
+        .as_array()
+        .ok_or("missing rowStarts")?;
+    let row_heights = json["sheets"][0]["rowHeights"]
+        .as_array()
+        .ok_or("missing rowHeights")?;
+    let cell_count = json["sheets"][0]["cells"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    assert_eq!(row_starts.len(), row_heights.len() + 1);
+    let last_start = row_starts
+        .last()
+        .and_then(|v| v.as_u64())
+        .ok_or("empty rowStarts")?;
+    assert_eq!(last_start as usize, cell_count);
+
+    // mergedCells 长度等于 cells 数
+    let merged = geometry["mergedCells"]
+        .as_array()
+        .ok_or("missing mergedCells")?;
+    assert_eq!(merged.len(), cell_count);
+
+    // mergeRects 包含 A1:D1 的合并区域
+    let merge_rects = geometry["mergeRects"]
+        .as_array()
+        .ok_or("missing mergeRects")?;
+    assert_eq!(merge_rects.len(), 1);
+    assert_eq!(merge_rects[0]["left"], 0.0);
+    assert_eq!(merge_rects[0]["top"], 0.0);
+
+    // visible 数组只包含非零尺寸的索引
+    let col_visible = geometry["columnVisible"]
+        .as_array()
+        .ok_or("missing columnVisible")?;
+    assert!(col_visible.len() <= col_widths.len());
+    Ok(())
+}

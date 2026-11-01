@@ -110,7 +110,8 @@ pub(crate) fn parse(package: &mut Package, part: &str) -> Result<Document> {
             document.warn("Non-worksheet sheets are not supported");
             continue;
         }
-        let parsed = worksheet::parse(&node, name, &mut workbook, &mut document)?;
+        let mut parsed = worksheet::parse(&node, name, &mut workbook, &mut document)?;
+        parsed.geometry = Some(crate::spreadsheet::SheetGeometry::compute(&parsed));
         document.sheets.push(parsed);
     }
     if document.sheets.is_empty() {

@@ -12,6 +12,24 @@ final class SpreadsheetDocument {
         float[] columnWidths = {64};
         final List<Cell> cells = new ArrayList<>();
         final List<CellRange> merges = new ArrayList<>();
+        /** 预计算的几何布局（来自 core），为 null 时由平台层现场计算（兼容旧 core） */
+        Geometry geometry;
+    }
+
+    /** 预计算的工作表几何数据（core 输出） */
+    static final class Geometry {
+        float[] columnOffsets;
+        float[] rowOffsets;
+        int[] columnVisible;
+        int[] rowVisible;
+        int[] rowStarts;
+        boolean[] mergedCells;
+        final List<MergeRect> mergeRects = new ArrayList<>();
+    }
+
+    static final class MergeRect {
+        float left, top, right, bottom;
+        int anchor; // cells 数组索引，-1 表示无 anchor
     }
 
     static final class Cell {

@@ -15,31 +15,49 @@ final class SheetLayout {
 
     SheetLayout(SpreadsheetDocument.Sheet sheet, float headerWidth, float headerHeight) {
         this.sheet = sheet;
-        rows = new Axis(sheet.rowHeights, headerHeight);
-        columns = new Axis(sheet.columnWidths, headerWidth);
-        width = columns.offsets[columns.offsets.length - 1];
-        height = rows.offsets[rows.offsets.length - 1];
-        rowStarts = new int[sheet.rowHeights.length + 1];
-        int next = 0;
-        for (int row = 0; row < sheet.rowHeights.length; row++) {
-            rowStarts[row] = next;
-            while (next < sheet.cells.size() && sheet.cells.get(next).row == row) next++;
-        }
-        rowStarts[sheet.rowHeights.length] = next;
-        mergedCells = new boolean[sheet.cells.size()];
-        for (SpreadsheetDocument.CellRange range : sheet.merges) {
-            SpreadsheetDocument.Cell anchor = null;
-            for (int row = range.startRow; row <= range.endRow; row++) {
-                for (int i = firstCell(row, range.startColumn); i < rowStarts[row + 1]; i++) {
-                    SpreadsheetDocument.Cell cell = sheet.cells.get(i);
-                    if (cell.column > range.endColumn) break;
-                    mergedCells[i] = true;
-                    if (row == range.startRow && cell.column == range.startColumn) anchor = cell;
-                }
+        SpreadsheetDocument.Geometry g = sheet.geometry;
+        if (g != null && g.columnOffsets != null && g.rowOffsets != null && g.rowStarts != null) {
+            // 使用 core 预计算的几何数据，平台层只加 header 偏移
+            columns = new Axis(g.columnOffsets, g.columnVisible, headerWidth);
+            rows = new Axis(g.rowOffsets, g.rowVisible, headerHeight);
+            rowStarts = g.rowStarts;
+            mergedCells = g.mergedCells != null ? g.mergedCells : new boolean[sheet.cells.size()];
+            width = columns.offsets[columns.offsets.length - 1];
+            height = rows.offsets[rows.offsets.length - 1];
+            for (SpreadsheetDocument.MergeRect r : g.mergeRects) {
+                SpreadsheetDocument.Cell anchor = r.anchor >= 0 && r.anchor < sheet.cells.size()
+                    ? sheet.cells.get(r.anchor) : null;
+                merges.add(new Merge(r.left + headerWidth, r.top + headerHeight,
+                    r.right + headerWidth, r.bottom + headerHeight, 0, 0, anchor));
             }
-            merges.add(new Merge(columns.offsets[range.startColumn], rows.offsets[range.startRow],
-                columns.offsets[range.endColumn + 1], rows.offsets[range.endRow + 1],
-                range.startRow, range.endRow, anchor));
+        } else {
+            // 回退：旧 core 无 geometry，现场计算
+            rows = new Axis(sheet.rowHeights, headerHeight);
+            columns = new Axis(sheet.columnWidths, headerWidth);
+            width = columns.offsets[columns.offsets.length - 1];
+            height = rows.offsets[rows.offsets.length - 1];
+            rowStarts = new int[sheet.rowHeights.length + 1];
+            int next = 0;
+            for (int row = 0; row < sheet.rowHeights.length; row++) {
+                rowStarts[row] = next;
+                while (next < sheet.cells.size() && sheet.cells.get(next).row == row) next++;
+            }
+            rowStarts[sheet.rowHeights.length] = next;
+            mergedCells = new boolean[sheet.cells.size()];
+            for (SpreadsheetDocument.CellRange range : sheet.merges) {
+                SpreadsheetDocument.Cell anchor = null;
+                for (int row = range.startRow; row <= range.endRow; row++) {
+                    for (int i = firstCell(row, range.startColumn); i < rowStarts[row + 1]; i++) {
+                        SpreadsheetDocument.Cell cell = sheet.cells.get(i);
+                        if (cell.column > range.endColumn) break;
+                        mergedCells[i] = true;
+                        if (row == range.startRow && cell.column == range.startColumn) anchor = cell;
+                    }
+                }
+                merges.add(new Merge(columns.offsets[range.startColumn], rows.offsets[range.startRow],
+                    columns.offsets[range.endColumn + 1], rows.offsets[range.endRow + 1],
+                    range.startRow, range.endRow, anchor));
+            }
         }
     }
 
@@ -72,6 +90,14 @@ final class SheetLayout {
         final float[] offsets;
         final int[] visible;
 
+        /** 用预计算的 offsets/visible 构造，gutter 加在 offsets[0] 上 */
+        Axis(float[] precomputedOffsets, int[] precomputedVisible, float gutter) {
+            offsets = new float[precomputedOffsets.length];
+            for (int i = 0; i < precomputedOffsets.length; i++) offsets[i] = precomputedOffsets[i] + gutter;
+            visible = precomputedVisible != null ? precomputedVisible : new int[0];
+        }
+
+        /** 现场计算（兼容旧 core） */
         Axis(float[] sizes, float gutter) {
             offsets = new float[sizes.length + 1]; offsets[0] = gutter;
             int[] indices = new int[sizes.length];

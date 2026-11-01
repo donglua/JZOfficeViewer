@@ -244,6 +244,9 @@ final class DocumentDecoder {
                     c.endArray();
                     raw.hasMerges = true;
                     break;
+                case "geometry":
+                    sheet.geometry = rawGeometry(c);
+                    break;
                 default: c.skipValue(); break;
             }
         }
@@ -289,6 +292,83 @@ final class DocumentDecoder {
         c.endObject();
         if (!hasSr || !hasEr || !hasSc || !hasEc) throw new IllegalArgumentException("Missing merge fields");
         return range;
+    }
+
+    private static SpreadsheetDocument.Geometry rawGeometry(Cursor c) {
+        SpreadsheetDocument.Geometry g = new SpreadsheetDocument.Geometry();
+        c.beginObject();
+        while (c.hasNext()) {
+            switch (c.nextName()) {
+                case "columnOffsets": g.columnOffsets = floats(c, 257); break;
+                case "rowOffsets": g.rowOffsets = floats(c, 10001); break;
+                case "columnVisible": g.columnVisible = ints(c, 256); break;
+                case "rowVisible": g.rowVisible = ints(c, 10000); break;
+                case "rowStarts": g.rowStarts = ints(c, 10001); break;
+                case "mergedCells":
+                    c.beginArray();
+                    {
+                        java.util.List<Boolean> list = new ArrayList<>();
+                        while (c.hasNext()) {
+                            if (list.size() >= 50000) throw new IllegalArgumentException("Too many merged flags");
+                            list.add(c.nextBoolean());
+                        }
+                        g.mergedCells = new boolean[list.size()];
+                        for (int i = 0; i < list.size(); i++) g.mergedCells[i] = list.get(i);
+                    }
+                    c.endArray();
+                    break;
+                case "mergeRects":
+                    c.beginArray();
+                    while (c.hasNext()) {
+                        if (g.mergeRects.size() >= 1000) throw new IllegalArgumentException("Too many merge rects");
+                        SpreadsheetDocument.MergeRect r = new SpreadsheetDocument.MergeRect();
+                        c.beginObject();
+                        while (c.hasNext()) {
+                            switch (c.nextName()) {
+                                case "left": r.left = (float) c.nextDouble(); break;
+                                case "top": r.top = (float) c.nextDouble(); break;
+                                case "right": r.right = (float) c.nextDouble(); break;
+                                case "bottom": r.bottom = (float) c.nextDouble(); break;
+                                case "anchor": r.anchor = (int) c.nextDouble(); break;
+                                default: c.skipValue(); break;
+                            }
+                        }
+                        c.endObject();
+                        g.mergeRects.add(r);
+                    }
+                    c.endArray();
+                    break;
+                default: c.skipValue(); break;
+            }
+        }
+        c.endObject();
+        return g;
+    }
+
+    private static float[] floats(Cursor c, int limit) {
+        c.beginArray();
+        java.util.List<Float> list = new ArrayList<>();
+        while (c.hasNext()) {
+            if (list.size() >= limit) throw new IllegalArgumentException("Array too large");
+            list.add((float) c.nextDouble());
+        }
+        c.endArray();
+        float[] result = new float[list.size()];
+        for (int i = 0; i < list.size(); i++) result[i] = list.get(i);
+        return result;
+    }
+
+    private static int[] ints(Cursor c, int limit) {
+        c.beginArray();
+        java.util.List<Integer> list = new ArrayList<>();
+        while (c.hasNext()) {
+            if (list.size() >= limit) throw new IllegalArgumentException("Array too large");
+            list.add(nonNegativeInt(c.nextDouble(), "index"));
+        }
+        c.endArray();
+        int[] result = new int[list.size()];
+        for (int i = 0; i < list.size(); i++) result[i] = list.get(i);
+        return result;
     }
 
     private static SpreadsheetDocument.Sheet validateSheet(RawSheet raw, int styleCount) {

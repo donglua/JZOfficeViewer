@@ -118,6 +118,27 @@ export interface Sheet {
   columnWidths: number[];
   cells: Cell[];
   merges: CellRange[];
+  /** 预计算的几何布局数据（core 输出，schemaVersion 9 新增可选字段） */
+  geometry?: SheetGeometry;
+}
+
+export interface SheetGeometry {
+  columnOffsets: number[];
+  rowOffsets: number[];
+  columnVisible: number[];
+  rowVisible: number[];
+  rowStarts: number[];
+  mergedCells: boolean[];
+  mergeRects: MergeRect[];
+}
+
+export interface MergeRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  /** anchor cell 在 cells 数组中的索引，无 anchor 时为 4294967295 */
+  anchor: number;
 }
 
 export interface OfficeDocument {

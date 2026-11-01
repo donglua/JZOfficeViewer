@@ -32,17 +32,28 @@ class SheetAxis {
   readonly offsets: number[];
   readonly visible: number[];
 
-  constructor(sizes: number[]) {
-    this.offsets = new Array(sizes.length + 1);
-    this.offsets[0] = 0;
-    const vis: number[] = [];
-    for (let i = 0; i < sizes.length; i++) {
-      this.offsets[i + 1] = this.offsets[i] + sizes[i];
-      if (sizes[i] > 0) {
-        vis.push(i);
+  /** 用预计算的 offsets/visible 构造 */
+  constructor(offsets: number[], visible?: number[]);
+  /** 现场计算（兼容旧 core） */
+  constructor(sizes: number[]);
+  constructor(arg: number[], visible?: number[]) {
+    if (visible !== undefined) {
+      this.offsets = arg;
+      this.visible = visible;
+    } else {
+      // 现场计算模式：arg 是 sizes
+      const sizes = arg;
+      this.offsets = new Array(sizes.length + 1);
+      this.offsets[0] = 0;
+      const vis: number[] = [];
+      for (let i = 0; i < sizes.length; i++) {
+        this.offsets[i + 1] = this.offsets[i] + sizes[i];
+        if (sizes[i] > 0) {
+          vis.push(i);
+        }
       }
+      this.visible = vis;
     }
-    this.visible = vis;
   }
 
   // 二分查找：找到第一个使得 offsets[visible[mid] + 1] > position 的下标（在 visible 数组中的 index）
@@ -103,50 +114,77 @@ class SheetLayoutData {
 
   constructor(sheet: model.Sheet) {
     this.sheet = sheet;
-    this.rows = new SheetAxis(sheet.rowHeights);
-    this.columns = new SheetAxis(sheet.columnWidths);
-    this.totalWidth = this.columns.offsets[this.columns.offsets.length - 1] ?? 0;
-    this.totalHeight = this.rows.offsets[this.rows.offsets.length - 1] ?? 0;
-
-    const rowCount = sheet.rowHeights.length;
-    this.rowStarts = new Int32Array(rowCount + 1);
-    const totalCells = sheet.cells.length;
-    let next = 0;
-    for (let r = 0; r < rowCount; r++) {
-      this.rowStarts[r] = next;
-      while (next < totalCells && sheet.cells[next].row === r) {
-        next++;
+    const g = sheet.geometry;
+    if (g && g.columnOffsets && g.rowOffsets && g.rowStarts) {
+      // 使用 core 预计算的几何数据
+      this.columns = new SheetAxis(g.columnOffsets, g.columnVisible);
+      this.rows = new SheetAxis(g.rowOffsets, g.rowVisible);
+      this.totalWidth = this.columns.offsets[this.columns.offsets.length - 1] ?? 0;
+      this.totalHeight = this.rows.offsets[this.rows.offsets.length - 1] ?? 0;
+      this.rowStarts = Int32Array.from(g.rowStarts);
+      const totalCells = sheet.cells.length;
+      this.mergedCells = new Uint8Array(totalCells);
+      if (g.mergedCells) {
+        for (let i = 0; i < Math.min(g.mergedCells.length, totalCells); i++) {
+          this.mergedCells[i] = g.mergedCells[i] ? 1 : 0;
+        }
       }
-    }
-    this.rowStarts[rowCount] = next;
+      this.merges = [];
+      if (g.mergeRects) {
+        for (const r of g.mergeRects) {
+          const anchorIdx = r.anchor < totalCells ? r.anchor : -1;
+          this.merges.push(new SheetMergeItem(r.left, r.top, r.right, r.bottom,
+            anchorIdx >= 0 ? sheet.cells[anchorIdx] : null));
+        }
+      }
+    } else {
+      // 回退：旧 core 无 geometry，现场计算
+      this.rows = new SheetAxis(sheet.rowHeights);
+      this.columns = new SheetAxis(sheet.columnWidths);
+      this.totalWidth = this.columns.offsets[this.columns.offsets.length - 1] ?? 0;
+      this.totalHeight = this.rows.offsets[this.rows.offsets.length - 1] ?? 0;
 
-    this.mergedCells = new Uint8Array(totalCells);
-    this.merges = [];
+      const rowCount = sheet.rowHeights.length;
+      this.rowStarts = new Int32Array(rowCount + 1);
+      const totalCells = sheet.cells.length;
+      let next = 0;
+      for (let r = 0; r < rowCount; r++) {
+        this.rowStarts[r] = next;
+        while (next < totalCells && sheet.cells[next].row === r) {
+          next++;
+        }
+      }
+      this.rowStarts[rowCount] = next;
 
-    if (sheet.merges) {
-      for (const m of sheet.merges) {
-        let anchor: model.Cell | null = null;
-        for (let r = m.startRow; r <= m.endRow; r++) {
-          if (r >= rowCount) break;
-          const startIdx = this.firstCell(r, m.startColumn);
-          const endIdx = this.rowStarts[r + 1];
-          for (let i = startIdx; i < endIdx; i++) {
-            const cell = sheet.cells[i];
-            if (cell.column > m.endColumn) break;
-            this.mergedCells[i] = 1;
-            if (r === m.startRow && cell.column === m.startColumn) {
-              anchor = cell;
+      this.mergedCells = new Uint8Array(totalCells);
+      this.merges = [];
+
+      if (sheet.merges) {
+        for (const m of sheet.merges) {
+          let anchor: model.Cell | null = null;
+          for (let r = m.startRow; r <= m.endRow; r++) {
+            if (r >= rowCount) break;
+            const startIdx = this.firstCell(r, m.startColumn);
+            const endIdx = this.rowStarts[r + 1];
+            for (let i = startIdx; i < endIdx; i++) {
+              const cell = sheet.cells[i];
+              if (cell.column > m.endColumn) break;
+              this.mergedCells[i] = 1;
+              if (r === m.startRow && cell.column === m.startColumn) {
+                anchor = cell;
+              }
             }
           }
+          const left = this.columns.offsets[Math.min(m.startColumn, this.columns.offsets.length - 1)] ?? 0;
+          const top = this.rows.offsets[Math.min(m.startRow, this.rows.offsets.length - 1)] ?? 0;
+          const right = this.columns.offsets[Math.min(m.endColumn + 1, this.columns.offsets.length - 1)] ?? 0;
+          const bottom = this.rows.offsets[Math.min(m.endRow + 1, this.rows.offsets.length - 1)] ?? 0;
+          this.merges.push(new SheetMergeItem(left, top, right, bottom, anchor));
         }
-        const left = this.columns.offsets[Math.min(m.startColumn, this.columns.offsets.length - 1)] ?? 0;
-        const top = this.rows.offsets[Math.min(m.startRow, this.rows.offsets.length - 1)] ?? 0;
-        const right = this.columns.offsets[Math.min(m.endColumn + 1, this.columns.offsets.length - 1)] ?? 0;
-        const bottom = this.rows.offsets[Math.min(m.endRow + 1, this.rows.offsets.length - 1)] ?? 0;
-        this.merges.push(new SheetMergeItem(left, top, right, bottom, anchor));
       }
     }
 
+    const rowCount = sheet.rowHeights.length;
     const bucketCount = Math.max(1, Math.ceil(rowCount / SheetLayoutData.BUCKET_ROW_SIZE) + 1);
     const rawBuckets: number[][] = [];
     for (let b = 0; b < bucketCount; b++) {

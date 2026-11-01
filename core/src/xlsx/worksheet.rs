@@ -25,6 +25,7 @@ pub(super) fn parse(
         column_widths: vec![column_width],
         cells: Vec::new(),
         merges: Vec::new(),
+        geometry: None,
     };
     let mut column_styles = [0_u32; 256];
     if let Some(columns) = root.child("cols") {
