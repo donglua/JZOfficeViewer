@@ -16,7 +16,7 @@ final class SheetLayout {
     SheetLayout(SpreadsheetDocument.Sheet sheet, float headerWidth, float headerHeight) {
         this.sheet = sheet;
         SpreadsheetDocument.Geometry g = sheet.geometry;
-        if (g != null && g.columnOffsets != null && g.rowOffsets != null && g.rowStarts != null) {
+        if (usable(g, sheet)) {
             // 使用 core 预计算的几何数据，平台层只加 header 偏移
             columns = new Axis(g.columnOffsets, g.columnVisible, headerWidth);
             rows = new Axis(g.rowOffsets, g.rowVisible, headerHeight);
@@ -28,7 +28,7 @@ final class SheetLayout {
                 SpreadsheetDocument.Cell anchor = r.anchor >= 0 && r.anchor < sheet.cells.size()
                     ? sheet.cells.get(r.anchor) : null;
                 merges.add(new Merge(r.left + headerWidth, r.top + headerHeight,
-                    r.right + headerWidth, r.bottom + headerHeight, 0, 0, anchor));
+                    r.right + headerWidth, r.bottom + headerHeight, r.startRow, r.endRow, anchor));
             }
         } else {
             // 回退：旧 core 无 geometry，现场计算
@@ -71,6 +71,16 @@ final class SheetLayout {
         return low;
     }
 
+    /** 预计算几何是否可直接使用：长度须与行列维度、单元格数量匹配，否则回退现场计算 */
+    private static boolean usable(SpreadsheetDocument.Geometry g, SpreadsheetDocument.Sheet sheet) {
+        return g != null
+            && g.columnOffsets != null && g.columnOffsets.length == sheet.columnWidths.length + 1
+            && g.rowOffsets != null && g.rowOffsets.length == sheet.rowHeights.length + 1
+            && g.rowStarts != null && g.rowStarts.length == sheet.rowHeights.length + 1
+            && (g.mergedCells == null || g.mergedCells.length == sheet.cells.size())
+            && g.mergeRects.size() == sheet.merges.size();
+    }
+
     static final class Merge {
         final float left, top, right, bottom;
         final int startRow, endRow;
@@ -94,7 +104,15 @@ final class SheetLayout {
         Axis(float[] precomputedOffsets, int[] precomputedVisible, float gutter) {
             offsets = new float[precomputedOffsets.length];
             for (int i = 0; i < precomputedOffsets.length; i++) offsets[i] = precomputedOffsets[i] + gutter;
-            visible = precomputedVisible != null ? precomputedVisible : new int[0];
+            // 越界索引会让二分查找访问 offsets 之外的元素，这里直接滤除
+            int limit = precomputedOffsets.length - 1;
+            int[] indices = new int[precomputedVisible != null ? precomputedVisible.length : 0];
+            int count = 0;
+            for (int i = 0; i < indices.length; i++) {
+                int value = precomputedVisible[i];
+                if (value >= 0 && value < limit) indices[count++] = value;
+            }
+            visible = count == indices.length ? indices : Arrays.copyOf(indices, count);
         }
 
         /** 现场计算（兼容旧 core） */

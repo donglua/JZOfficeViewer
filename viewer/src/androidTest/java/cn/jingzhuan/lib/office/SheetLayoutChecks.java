@@ -60,6 +60,7 @@ public final class SheetLayoutChecks {
 
     private static void verify(SpreadsheetDocument.Sheet sheet) {
         SheetLayout layout = new SheetLayout(sheet, 42, 20);
+        if (sheet.geometry == null) verifyPrecomputedGeometry(sheet);
         verifyAxis(layout.rows, sheet.rowHeights, 20);
         verifyAxis(layout.columns, sheet.columnWidths, 42);
         for (int row = 0; row < sheet.rowHeights.length; row++) {
@@ -96,6 +97,116 @@ public final class SheetLayoutChecks {
             }
             check(merge.anchor == anchor, "Anchor is the top-left cell, including hidden anchors");
         }
+    }
+
+    /**
+     * 校验 core 预计算几何分支：与现场计算结果完全一致；长度不匹配的几何数据安全回退。
+     */
+    private static void verifyPrecomputedGeometry(SpreadsheetDocument.Sheet sheet) {
+        SheetLayout expected = new SheetLayout(sheet, 42, 20);
+        sheet.geometry = geometry(sheet);
+        SheetLayout actual = new SheetLayout(sheet, 42, 20);
+        check(actual.width == expected.width && actual.height == expected.height, "Precomputed geometry size matches");
+        check(Arrays.equals(actual.rowStarts, expected.rowStarts), "Precomputed row starts match");
+        check(Arrays.equals(actual.mergedCells, expected.mergedCells), "Precomputed merge membership matches");
+        check(actual.merges.size() == expected.merges.size(), "Precomputed merge count matches");
+        for (int index = 0; index < actual.merges.size(); index++) {
+            SheetLayout.Merge left = expected.merges.get(index), right = actual.merges.get(index);
+            check(left.left == right.left && left.top == right.top
+                && left.right == right.right && left.bottom == right.bottom
+                && left.startRow == right.startRow && left.endRow == right.endRow
+                && left.anchor == right.anchor, "Precomputed merge bounds and anchor match");
+        }
+
+        // 几何数据与行列维度不匹配时必须回退现场计算，不能越界
+        SpreadsheetDocument.Geometry saved = sheet.geometry;
+        sheet.geometry = copy(saved);
+        sheet.geometry.rowStarts = truncated(saved.rowStarts, 1);
+        verifyFallback(sheet, expected, "row starts");
+        sheet.geometry = new SpreadsheetDocument.Geometry();
+        sheet.geometry.columnOffsets = new float[0];
+        sheet.geometry.rowOffsets = saved.rowOffsets;
+        sheet.geometry.rowStarts = saved.rowStarts;
+        sheet.geometry.mergedCells = saved.mergedCells;
+        verifyFallback(sheet, expected, "empty column offsets");
+        sheet.geometry = saved;
+    }
+
+    private static SpreadsheetDocument.Geometry copy(SpreadsheetDocument.Geometry source) {
+        SpreadsheetDocument.Geometry target = new SpreadsheetDocument.Geometry();
+        target.columnOffsets = source.columnOffsets;
+        target.rowOffsets = source.rowOffsets;
+        target.columnVisible = source.columnVisible;
+        target.rowVisible = source.rowVisible;
+        target.rowStarts = source.rowStarts;
+        target.mergedCells = source.mergedCells;
+        target.mergeRects.addAll(source.mergeRects);
+        return target;
+    }
+
+    private static void verifyFallback(SpreadsheetDocument.Sheet sheet, SheetLayout expected, String label) {
+        SheetLayout fallback = new SheetLayout(sheet, 42, 20);
+        check(fallback.width == expected.width && fallback.height == expected.height
+            && Arrays.equals(fallback.rowStarts, expected.rowStarts)
+            && fallback.merges.size() == expected.merges.size(), "Malformed geometry falls back: " + label);
+    }
+
+    /** 按 core 的算法构造预计算几何，供预计算分支与现场计算分支对照 */
+    private static SpreadsheetDocument.Geometry geometry(SpreadsheetDocument.Sheet sheet) {
+        SpreadsheetDocument.Geometry g = new SpreadsheetDocument.Geometry();
+        g.columnOffsets = offsets(sheet.columnWidths);
+        g.rowOffsets = offsets(sheet.rowHeights);
+        g.columnVisible = visibleIndices(sheet.columnWidths);
+        g.rowVisible = visibleIndices(sheet.rowHeights);
+        int rowCount = sheet.rowHeights.length;
+        g.rowStarts = new int[rowCount + 1];
+        int next = 0;
+        for (int row = 0; row < rowCount; row++) {
+            g.rowStarts[row] = next;
+            while (next < sheet.cells.size() && sheet.cells.get(next).row == row) next++;
+        }
+        g.rowStarts[rowCount] = next;
+        g.mergedCells = new boolean[sheet.cells.size()];
+        for (SpreadsheetDocument.CellRange range : sheet.merges) {
+            int anchor = -1;
+            for (int row = range.startRow; row <= range.endRow && row < rowCount; row++) {
+                for (int index = 0; index < sheet.cells.size(); index++) {
+                    SpreadsheetDocument.Cell cell = sheet.cells.get(index);
+                    if (cell.row != row || cell.column < range.startColumn || cell.column > range.endColumn) continue;
+                    g.mergedCells[index] = true;
+                    if (row == range.startRow && cell.column == range.startColumn) anchor = index;
+                }
+            }
+            SpreadsheetDocument.MergeRect rect = new SpreadsheetDocument.MergeRect();
+            rect.left = g.columnOffsets[range.startColumn];
+            rect.top = g.rowOffsets[range.startRow];
+            rect.right = g.columnOffsets[Math.min(range.endColumn + 1, g.columnOffsets.length - 1)];
+            rect.bottom = g.rowOffsets[Math.min(range.endRow + 1, g.rowOffsets.length - 1)];
+            rect.anchor = anchor;
+            rect.startRow = range.startRow;
+            rect.endRow = range.endRow;
+            g.mergeRects.add(rect);
+        }
+        return g;
+    }
+
+    private static float[] offsets(float[] sizes) {
+        float[] values = new float[sizes.length + 1];
+        for (int index = 0; index < sizes.length; index++) values[index + 1] = values[index] + sizes[index];
+        return values;
+    }
+
+    private static int[] visibleIndices(float[] sizes) {
+        int[] indices = new int[sizes.length];
+        int count = 0;
+        for (int index = 0; index < sizes.length; index++) {
+            if (sizes[index] > 0) indices[count++] = index;
+        }
+        return Arrays.copyOf(indices, count);
+    }
+
+    private static int[] truncated(int[] values, int length) {
+        return Arrays.copyOf(values, Math.max(0, values.length - length));
     }
 
     private static void verifyAxis(SheetLayout.Axis axis, float[] sizes, float gutter) {

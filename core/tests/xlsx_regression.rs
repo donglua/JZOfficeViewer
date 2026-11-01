@@ -207,18 +207,41 @@ fn sheet_geometry_is_precomputed_with_offsets_rowstarts_and_merges() -> TestResu
         .ok_or("missing mergedCells")?;
     assert_eq!(merged.len(), cell_count);
 
-    // mergeRects 包含 A1:D1 的合并区域
+    // mergeRects 包含 A1:D1 的合并区域，且必须携带行范围（平台层分桶依赖）
     let merge_rects = geometry["mergeRects"]
         .as_array()
         .ok_or("missing mergeRects")?;
     assert_eq!(merge_rects.len(), 1);
     assert_eq!(merge_rects[0]["left"], 0.0);
     assert_eq!(merge_rects[0]["top"], 0.0);
+    assert_eq!(merge_rects[0]["startRow"], 0);
+    assert_eq!(merge_rects[0]["endRow"], 0);
+    assert_eq!(merge_rects[0]["anchor"], 0);
 
     // visible 数组只包含非零尺寸的索引
     let col_visible = geometry["columnVisible"]
         .as_array()
         .ok_or("missing columnVisible")?;
     assert!(col_visible.len() <= col_widths.len());
+    Ok(())
+}
+
+#[test]
+fn merge_rects_carry_row_range_for_bucketed_rendering() -> TestResult {
+    // B2:E4 合并区域跨越多行且左上角无单元格，验证 startRow/endRow 及无锚点 -1 输出
+    let mut parts = xlsx::parts();
+    replace(
+        &mut parts,
+        "xl/worksheets/sheet2.xml",
+        &xlsx::sheet(r#"<mergeCells><mergeCell ref="B2:E4"/></mergeCells>"#),
+    );
+    let json = parse(&parts)?;
+    let merge_rects = json["sheets"][0]["geometry"]["mergeRects"]
+        .as_array()
+        .ok_or("missing mergeRects")?;
+    assert_eq!(merge_rects.len(), 1);
+    assert_eq!(merge_rects[0]["anchor"], -1);
+    assert_eq!(merge_rects[0]["startRow"], 1); // B2 -> row index 1
+    assert_eq!(merge_rects[0]["endRow"], 3); // E4 -> row index 3
     Ok(())
 }

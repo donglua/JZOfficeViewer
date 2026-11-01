@@ -41,8 +41,12 @@ pub struct MergeRect {
     pub top: f32,
     pub right: f32,
     pub bottom: f32,
-    /// anchor cell 在 cells 数组中的索引，无 anchor 时为 u32::MAX
-    pub anchor: u32,
+    /// anchor cell 在 cells 数组中的索引，无 anchor 时为 -1
+    pub anchor: i32,
+    /// 合并区域起始行（用于平台层分桶索引）
+    pub start_row: u32,
+    /// 合并区域结束行
+    pub end_row: u32,
 }
 
 impl SheetGeometry {
@@ -83,7 +87,7 @@ impl SheetGeometry {
         let mut merged_cells = vec![false; sheet.cells.len()];
         let mut merge_rects = Vec::with_capacity(sheet.merges.len());
         for range in &sheet.merges {
-            let mut anchor = u32::MAX;
+            let mut anchor = -1_i32;
             for row in range.start_row..=range.end_row {
                 if row as usize >= row_count {
                     break;
@@ -96,7 +100,7 @@ impl SheetGeometry {
                     }
                     merged_cells[i] = true;
                     if row == range.start_row && cell.column == range.start_column {
-                        anchor = i as u32;
+                        anchor = i32::try_from(i).unwrap_or(-1);
                     }
                 }
             }
@@ -122,6 +126,8 @@ impl SheetGeometry {
                 right,
                 bottom,
                 anchor,
+                start_row: range.start_row,
+                end_row: range.end_row,
             });
         }
 

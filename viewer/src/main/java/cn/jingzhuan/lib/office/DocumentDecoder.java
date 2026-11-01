@@ -332,7 +332,9 @@ final class DocumentDecoder {
                                 case "top": r.top = (float) c.nextDouble(); break;
                                 case "right": r.right = (float) c.nextDouble(); break;
                                 case "bottom": r.bottom = (float) c.nextDouble(); break;
-                                case "anchor": r.anchor = (int) c.nextDouble(); break;
+                                case "anchor": r.anchor = anchorIndex(c.nextDouble()); break;
+                                case "startRow": r.startRow = nonNegativeInt(c.nextDouble(), "startRow"); break;
+                                case "endRow": r.endRow = nonNegativeInt(c.nextDouble(), "endRow"); break;
                                 default: c.skipValue(); break;
                             }
                         }
@@ -406,7 +408,72 @@ final class DocumentDecoder {
                 }
             }
         }
+        if (sheet.geometry != null) validateGeometry(sheet);
         return sheet;
+    }
+
+    /**
+     * 校验 core 预计算的几何数据：长度必须与行列维度、单元格数量匹配，
+     * 前缀和单调、可见索引与合并区域在界内，否则平台层绘制会数组越界。
+     */
+    private static void validateGeometry(SpreadsheetDocument.Sheet sheet) {
+        SpreadsheetDocument.Geometry g = sheet.geometry;
+        int rowLimit = sheet.rowHeights.length, colLimit = sheet.columnWidths.length;
+        if (g.columnOffsets == null || g.columnOffsets.length != colLimit + 1
+            || g.rowOffsets == null || g.rowOffsets.length != rowLimit + 1
+            || g.rowStarts == null || g.rowStarts.length != rowLimit + 1
+            || g.mergedCells == null || g.mergedCells.length != sheet.cells.size()
+            || g.columnVisible == null || g.rowVisible == null
+            || g.mergeRects.size() != sheet.merges.size()) {
+            throw new IllegalArgumentException("Invalid sheet geometry sizes");
+        }
+        offsets(g.columnOffsets, "columnOffsets");
+        offsets(g.rowOffsets, "rowOffsets");
+        visibleIndices(g.columnVisible, colLimit, "columnVisible");
+        visibleIndices(g.rowVisible, rowLimit, "rowVisible");
+        int previous = 0;
+        for (int row = 0; row <= rowLimit; row++) {
+            int start = g.rowStarts[row];
+            if (start < previous || start > sheet.cells.size()) {
+                throw new IllegalArgumentException("Invalid row starts");
+            }
+            previous = start;
+        }
+        if (previous != sheet.cells.size()) throw new IllegalArgumentException("Invalid row starts");
+        for (SpreadsheetDocument.MergeRect rect : g.mergeRects) {
+            if (!Float.isFinite(rect.left) || !Float.isFinite(rect.top)
+                || !Float.isFinite(rect.right) || !Float.isFinite(rect.bottom)
+                || rect.left > rect.right || rect.top > rect.bottom
+                || rect.startRow > rect.endRow || rect.endRow >= rowLimit
+                || rect.anchor < -1 || rect.anchor >= sheet.cells.size()) {
+                throw new IllegalArgumentException("Invalid merge rect");
+            }
+        }
+    }
+
+    private static void offsets(float[] values, String name) {
+        if (values[0] != 0) throw new IllegalArgumentException("Invalid " + name);
+        for (int i = 1; i < values.length; i++) {
+            if (!(values[i] >= values[i - 1]) || !Float.isFinite(values[i])) {
+                throw new IllegalArgumentException("Invalid " + name);
+            }
+        }
+    }
+
+    private static void visibleIndices(int[] values, int limit, String name) {
+        int previous = -1;
+        for (int value : values) {
+            if (value <= previous || value >= limit) throw new IllegalArgumentException("Invalid " + name);
+            previous = value;
+        }
+    }
+
+    private static int anchorIndex(double value) {
+        if (value == 4294967295.0) return -1;
+        if (value < -1 || value > Integer.MAX_VALUE || value != Math.floor(value)) {
+            throw new IllegalArgumentException("Invalid merge anchor");
+        }
+        return (int) value;
     }
 
     private static int nonNegativeInt(double value, String name) {

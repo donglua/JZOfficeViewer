@@ -30,6 +30,7 @@ final class SpreadsheetDocument {
     static final class MergeRect {
         float left, top, right, bottom;
         int anchor; // cells 数组索引，-1 表示无 anchor
+        int startRow, endRow; // 合并区域行范围（用于分桶索引）
     }
 
     static final class Cell {

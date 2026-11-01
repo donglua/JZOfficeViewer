@@ -11,7 +11,55 @@ public final class DocumentDecoderChecks {
         checkPptxAndDocxWithOmittedFields();
         checkGeometryAndPathValidation();
         checkEscapesAndOutOfOrderKeys();
+        checkSheetGeometryValidation();
         System.out.println("PASS DocumentDecoderChecks (" + passed + " assertions)");
+    }
+
+    private static void checkSheetGeometryValidation() throws Exception {
+        String head = "{\"schemaVersion\":9,\"kind\":\"XLSX\",\"width\":1,\"warnings\":[],\"blocks\":[],\"pages\":[],"
+            + "\"cellStyles\":[{\"fontSize\":11,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,"
+            + "\"fill\":0,\"alignment\":3,\"verticalAlignment\":\"BOTTOM\",\"wrap\":false,\"borders\":[null,null,null,null]}],"
+            + "\"sheets\":[{\"name\":\"S\",\"rowHeights\":[20,20],\"columnWidths\":[10,10],"
+            + "\"cells\":[{\"row\":0,\"column\":0,\"text\":\"a\",\"style\":0,\"numeric\":false}],"
+            + "\"merges\":[{\"startRow\":0,\"startColumn\":0,\"endRow\":0,\"endColumn\":1}],";
+        String good = "\"columnOffsets\":[0,10,20],\"rowOffsets\":[0,20,40],\"columnVisible\":[0,1],"
+            + "\"rowVisible\":[0,1],\"rowStarts\":[0,1,1],\"mergedCells\":[true],"
+            + "\"mergeRects\":[{\"left\":0,\"top\":0,\"right\":20,\"bottom\":20,\"anchor\":0,\"startRow\":0,\"endRow\":0}]";
+        OfficeDocument decoded = DocumentDecoder.decode(head + "\"geometry\":{" + good + "}}]}");
+        SpreadsheetDocument.Geometry geometry = decoded.sheets.get(0).geometry;
+        check(geometry != null && geometry.rowStarts[2] == 1, "sheet geometry decoded");
+        check(geometry.mergedCells.length == 1 && geometry.mergedCells[0], "geometry merge flags decoded");
+        check(geometry.mergeRects.get(0).startRow == 0 && geometry.mergeRects.get(0).endRow == 0, "geometry merge rows decoded");
+
+        OfficeDocument missingAnchor = DocumentDecoder.decode(
+            head + "\"geometry\":{" + good.replace("\"anchor\":0", "\"anchor\":-1") + "}}]}");
+        check(missingAnchor.sheets.get(0).geometry.mergeRects.get(0).anchor == -1, "missing merge anchor -1 decoded");
+        OfficeDocument legacyMissingAnchor = DocumentDecoder.decode(
+            head + "\"geometry\":{" + good.replace("\"anchor\":0", "\"anchor\":4294967295") + "}}]}");
+        check(legacyMissingAnchor.sheets.get(0).geometry.mergeRects.get(0).anchor == -1,
+            "legacy u32::MAX merge anchor normalized to -1");
+
+        reject(head + "\"geometry\":{}" + "}]}", "Invalid core display model", "geometry without arrays");
+        reject(head + "\"geometry\":{" + good.replace("[0,10,20]", "[]") + "}}]}",
+            "Invalid core display model", "empty column offsets");
+        reject(head + "\"geometry\":{" + good.replace("\"rowStarts\":[0,1,1]", "\"rowStarts\":[0,1]") + "}}]}",
+            "Invalid core display model", "row starts length");
+        reject(head + "\"geometry\":{" + good.replace("\"rowStarts\":[0,1,1]", "\"rowStarts\":[0,1,0]") + "}}]}",
+            "Invalid core display model", "non-monotonic row starts");
+        reject(head + "\"geometry\":{" + good.replace("[0,10,20]", "[0,20,10]") + "}}]}",
+            "Invalid core display model", "non-monotonic offsets");
+        reject(head + "\"geometry\":{" + good.replace("\"mergedCells\":[true]", "\"mergedCells\":[true,false]") + "}}]}",
+            "Invalid core display model", "merge flag length");
+        reject(head + "\"geometry\":{" + good.replace("\"columnVisible\":[0,1]", "\"columnVisible\":[0,2]") + "}}]}",
+            "Invalid core display model", "visible index out of bounds");
+        reject(head + "\"geometry\":{" + good.replace("\"anchor\":0", "\"anchor\":1") + "}}]}",
+            "Invalid core display model", "merge anchor out of bounds");
+        reject(head + "\"geometry\":{" + good.replace("\"anchor\":0", "\"anchor\":-2") + "}}]}",
+            "Invalid core display model", "merge anchor below -1");
+        reject(head + "\"geometry\":{" + good.replace("\"anchor\":0", "\"anchor\":0.5") + "}}]}",
+            "Invalid core display model", "fractional merge anchor");
+        reject(head + "\"geometry\":{" + good.replace("\"endRow\":0", "\"endRow\":2") + "}}]}",
+            "Invalid core display model", "merge rect row out of bounds");
     }
 
     private static void checkSpreadsheetDecodeAndValidation() throws Exception {
