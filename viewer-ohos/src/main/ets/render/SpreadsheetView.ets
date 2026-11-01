@@ -39,7 +39,8 @@ class SheetAxis {
   constructor(arg: number[], visible?: number[]) {
     if (visible !== undefined) {
       this.offsets = arg;
-      this.visible = visible;
+      const limit = Math.max(0, arg.length - 1);
+      this.visible = visible.filter((idx: number) => idx >= 0 && idx < limit);
     } else {
       // 现场计算模式：arg 是 sizes
       const sizes = arg;
@@ -80,13 +81,18 @@ class SheetMergeItem {
   readonly top: number;
   readonly right: number;
   readonly bottom: number;
+  readonly startRow: number;
+  readonly endRow: number;
   readonly anchor: model.Cell | null;
 
-  constructor(left: number, top: number, right: number, bottom: number, anchor: model.Cell | null) {
+  constructor(left: number, top: number, right: number, bottom: number,
+    startRow: number, endRow: number, anchor: model.Cell | null) {
     this.left = left;
     this.top = top;
     this.right = right;
     this.bottom = bottom;
+    this.startRow = startRow;
+    this.endRow = endRow;
     this.anchor = anchor;
   }
 }
@@ -115,7 +121,7 @@ class SheetLayoutData {
   constructor(sheet: model.Sheet) {
     this.sheet = sheet;
     const g = sheet.geometry;
-    if (g && g.columnOffsets && g.rowOffsets && g.rowStarts) {
+    if (g && SheetLayoutData.usable(g, sheet)) {
       // 使用 core 预计算的几何数据
       this.columns = new SheetAxis(g.columnOffsets, g.columnVisible);
       this.rows = new SheetAxis(g.rowOffsets, g.rowVisible);
@@ -130,12 +136,10 @@ class SheetLayoutData {
         }
       }
       this.merges = [];
-      if (g.mergeRects) {
-        for (const r of g.mergeRects) {
-          const anchorIdx = r.anchor < totalCells ? r.anchor : -1;
-          this.merges.push(new SheetMergeItem(r.left, r.top, r.right, r.bottom,
-            anchorIdx >= 0 ? sheet.cells[anchorIdx] : null));
-        }
+      for (const r of g.mergeRects) {
+        const anchorIdx = r.anchor >= 0 && r.anchor < totalCells ? r.anchor : -1;
+        this.merges.push(new SheetMergeItem(r.left, r.top, r.right, r.bottom,
+          r.startRow, r.endRow, anchorIdx >= 0 ? sheet.cells[anchorIdx] : null));
       }
     } else {
       // 回退：旧 core 无 geometry，现场计算
@@ -179,7 +183,7 @@ class SheetLayoutData {
           const top = this.rows.offsets[Math.min(m.startRow, this.rows.offsets.length - 1)] ?? 0;
           const right = this.columns.offsets[Math.min(m.endColumn + 1, this.columns.offsets.length - 1)] ?? 0;
           const bottom = this.rows.offsets[Math.min(m.endRow + 1, this.rows.offsets.length - 1)] ?? 0;
-          this.merges.push(new SheetMergeItem(left, top, right, bottom, anchor));
+          this.merges.push(new SheetMergeItem(left, top, right, bottom, m.startRow, m.endRow, anchor));
         }
       }
     }
@@ -190,14 +194,13 @@ class SheetLayoutData {
     for (let b = 0; b < bucketCount; b++) {
       rawBuckets.push([]);
     }
-    if (sheet.merges) {
-      for (let mIdx = 0; mIdx < this.merges.length; mIdx++) {
-        const m = sheet.merges[mIdx];
-        const startB = Math.max(0, Math.min(bucketCount - 1, Math.floor(m.startRow / SheetLayoutData.BUCKET_ROW_SIZE)));
-        const endB = Math.max(startB, Math.min(bucketCount - 1, Math.floor(m.endRow / SheetLayoutData.BUCKET_ROW_SIZE)));
-        for (let b = startB; b <= endB; b++) {
-          rawBuckets[b].push(mIdx);
-        }
+    // 直接按自身携带的行范围分桶，不依赖 this.merges 与 sheet.merges 的下标一致性
+    for (let mIdx = 0; mIdx < this.merges.length; mIdx++) {
+      const m = this.merges[mIdx];
+      const startB = Math.max(0, Math.min(bucketCount - 1, Math.floor(m.startRow / SheetLayoutData.BUCKET_ROW_SIZE)));
+      const endB = Math.max(startB, Math.min(bucketCount - 1, Math.floor(m.endRow / SheetLayoutData.BUCKET_ROW_SIZE)));
+      for (let b = startB; b <= endB; b++) {
+        rawBuckets[b].push(mIdx);
       }
     }
     this.mergeBuckets = new Array(bucketCount);
@@ -205,6 +208,16 @@ class SheetLayoutData {
       this.mergeBuckets[b] = new Int32Array(rawBuckets[b]);
     }
     this.mergeSeenGen = new Int32Array(this.merges.length);
+  }
+
+  /** 预计算几何是否可直接使用：长度须与行列维度、单元格数量匹配，否则回退现场计算 */
+  private static usable(g: model.SheetGeometry, sheet: model.Sheet): boolean {
+    return Array.isArray(g.columnOffsets) && g.columnOffsets.length === sheet.columnWidths.length + 1
+      && Array.isArray(g.rowOffsets) && g.rowOffsets.length === sheet.rowHeights.length + 1
+      && Array.isArray(g.rowStarts) && g.rowStarts.length === sheet.rowHeights.length + 1
+      && Array.isArray(g.columnVisible) && Array.isArray(g.rowVisible)
+      && (!g.mergedCells || g.mergedCells.length === sheet.cells.length)
+      && Array.isArray(g.mergeRects) && g.mergeRects.length === (sheet.merges ? sheet.merges.length : 0);
   }
 
   // 二分查找：找到指定行中，列号 >= column 的第一个单元格下标

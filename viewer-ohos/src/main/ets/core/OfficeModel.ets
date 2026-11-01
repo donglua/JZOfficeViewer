@@ -137,8 +137,12 @@ export interface MergeRect {
   top: number;
   right: number;
   bottom: number;
-  /** anchor cell 在 cells 数组中的索引，无 anchor 时为 4294967295 */
+  /** anchor cell 在 cells 数组中的索引，无 anchor 时为 -1 */
   anchor: number;
+  /** 合并区域起始行（用于分桶索引） */
+  startRow: number;
+  /** 合并区域结束行 */
+  endRow: number;
 }
 
 export interface OfficeDocument {
