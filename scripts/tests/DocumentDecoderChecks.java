@@ -12,6 +12,7 @@ public final class DocumentDecoderChecks {
         checkGeometryAndPathValidation();
         checkEscapesAndOutOfOrderKeys();
         checkSheetGeometryValidation();
+        checkLargeGeometryArrays();
         System.out.println("PASS DocumentDecoderChecks (" + passed + " assertions)");
     }
 
@@ -60,6 +61,49 @@ public final class DocumentDecoderChecks {
             "Invalid core display model", "fractional merge anchor");
         reject(head + "\"geometry\":{" + good.replace("\"endRow\":0", "\"endRow\":2") + "}}]}",
             "Invalid core display model", "merge rect row out of bounds");
+    }
+
+    private static void checkLargeGeometryArrays() throws Exception {
+        int rows = 300;
+        StringBuilder rowHeights = new StringBuilder("[");
+        StringBuilder rowOffsets = new StringBuilder("[0");
+        StringBuilder rowVisible = new StringBuilder("[");
+        StringBuilder rowStarts = new StringBuilder("[");
+        StringBuilder mergedCells = new StringBuilder("[");
+        StringBuilder cells = new StringBuilder("[");
+        float total = 0;
+        for (int row = 0; row < rows; row++) {
+            String comma = row == 0 ? "" : ",";
+            rowHeights.append(comma).append(20);
+            rowVisible.append(comma).append(row);
+            rowStarts.append(comma).append(row);
+            mergedCells.append(comma).append(row == 0);
+            cells.append(comma)
+                .append("{\"row\":").append(row).append(",\"column\":0,\"text\":\"r\",\"style\":0,\"numeric\":false}");
+            total += 20;
+            rowOffsets.append(',').append(total);
+        }
+        rowHeights.append(']');
+        rowOffsets.append(']');
+        rowVisible.append(']');
+        rowStarts.append(',').append(rows).append(']');
+        mergedCells.append(']');
+        cells.append(']');
+        String json = "{\"schemaVersion\":9,\"kind\":\"XLSX\",\"width\":1,\"warnings\":[],\"blocks\":[],\"pages\":[],"
+            + "\"cellStyles\":[{\"fontSize\":11,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,"
+            + "\"fill\":0,\"alignment\":3,\"verticalAlignment\":\"BOTTOM\",\"wrap\":false,\"borders\":[null,null,null,null]}],"
+            + "\"sheets\":[{\"name\":\"S\",\"rowHeights\":" + rowHeights
+            + ",\"columnWidths\":[10],\"cells\":" + cells + ",\"merges\":[],"
+            + "\"geometry\":{\"columnOffsets\":[0,10],\"rowOffsets\":" + rowOffsets
+            + ",\"columnVisible\":[0],\"rowVisible\":" + rowVisible
+            + ",\"rowStarts\":" + rowStarts + ",\"mergedCells\":" + mergedCells + ",\"mergeRects\":[]}}]}";
+        SpreadsheetDocument.Geometry geometry = DocumentDecoder.decode(json).sheets.get(0).geometry;
+        check(geometry.rowOffsets.length == rows + 1 && geometry.rowOffsets[rows] == total, "large offsets array");
+        check(geometry.rowStarts.length == rows + 1 && geometry.rowStarts[rows] == rows, "large row starts array");
+        check(geometry.mergedCells.length == rows && geometry.mergedCells[0] && !geometry.mergedCells[rows - 1],
+            "large merged flag array");
+        check(geometry.rowVisible.length == rows && geometry.rowVisible[rows - 1] == rows - 1, "large visible index array");
+        check(geometry.columnOffsets.length == 2 && geometry.columnVisible.length == 1, "small arrays stay exact");
     }
 
     private static void checkSpreadsheetDecodeAndValidation() throws Exception {

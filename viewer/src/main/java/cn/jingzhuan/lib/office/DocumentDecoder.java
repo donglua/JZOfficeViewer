@@ -2,11 +2,14 @@ package cn.jingzhuan.lib.office;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 final class DocumentDecoder {
     /** 单个页眉/页脚部件的块数量上限，须与 core 的 MAX_SECTION_BLOCKS 保持一致 */
     private static final int MAX_SECTION_BLOCKS = 500;
+    /** 基本类型数组解码的初始容量，避免大数组场景的装箱分配 */
+    private static final int GROWTH_INITIAL = 64;
 
     static OfficeDocument decode(String json) throws IOException {
         if (json == null) throw new IOException("Invalid core display model");
@@ -307,19 +310,7 @@ final class DocumentDecoder {
                 case "columnVisible": g.columnVisible = ints(c, 256); break;
                 case "rowVisible": g.rowVisible = ints(c, 10000); break;
                 case "rowStarts": g.rowStarts = ints(c, 10001); break;
-                case "mergedCells":
-                    c.beginArray();
-                    {
-                        java.util.List<Boolean> list = new ArrayList<>();
-                        while (c.hasNext()) {
-                            if (list.size() >= 50000) throw new IllegalArgumentException("Too many merged flags");
-                            list.add(c.nextBoolean());
-                        }
-                        g.mergedCells = new boolean[list.size()];
-                        for (int i = 0; i < list.size(); i++) g.mergedCells[i] = list.get(i);
-                    }
-                    c.endArray();
-                    break;
+                case "mergedCells": g.mergedCells = booleans(c, 50000); break;
                 case "mergeRects":
                     c.beginArray();
                     while (c.hasNext()) {
@@ -352,28 +343,46 @@ final class DocumentDecoder {
 
     private static float[] floats(Cursor c, int limit) {
         c.beginArray();
-        java.util.List<Float> list = new ArrayList<>();
+        float[] values = new float[Math.min(limit, GROWTH_INITIAL)];
+        int size = 0;
         while (c.hasNext()) {
-            if (list.size() >= limit) throw new IllegalArgumentException("Array too large");
-            list.add((float) c.nextDouble());
+            if (size >= limit) throw new IllegalArgumentException("Array too large");
+            if (size == values.length) values = Arrays.copyOf(values, grown(size, limit));
+            values[size++] = (float) c.nextDouble();
         }
         c.endArray();
-        float[] result = new float[list.size()];
-        for (int i = 0; i < list.size(); i++) result[i] = list.get(i);
-        return result;
+        return size == values.length ? values : Arrays.copyOf(values, size);
     }
 
     private static int[] ints(Cursor c, int limit) {
         c.beginArray();
-        java.util.List<Integer> list = new ArrayList<>();
+        int[] values = new int[Math.min(limit, GROWTH_INITIAL)];
+        int size = 0;
         while (c.hasNext()) {
-            if (list.size() >= limit) throw new IllegalArgumentException("Array too large");
-            list.add(nonNegativeInt(c.nextDouble(), "index"));
+            if (size >= limit) throw new IllegalArgumentException("Array too large");
+            if (size == values.length) values = Arrays.copyOf(values, grown(size, limit));
+            values[size++] = nonNegativeInt(c.nextDouble(), "index");
         }
         c.endArray();
-        int[] result = new int[list.size()];
-        for (int i = 0; i < list.size(); i++) result[i] = list.get(i);
-        return result;
+        return size == values.length ? values : Arrays.copyOf(values, size);
+    }
+
+    private static boolean[] booleans(Cursor c, int limit) {
+        c.beginArray();
+        boolean[] values = new boolean[Math.min(limit, GROWTH_INITIAL)];
+        int size = 0;
+        while (c.hasNext()) {
+            if (size >= limit) throw new IllegalArgumentException("Too many merged flags");
+            if (size == values.length) values = Arrays.copyOf(values, grown(size, limit));
+            values[size++] = c.nextBoolean();
+        }
+        c.endArray();
+        return size == values.length ? values : Arrays.copyOf(values, size);
+    }
+
+    /** 扩容后的新容量：倍增且不超过 limit，保证成长进度避免死循环 */
+    private static int grown(int size, int limit) {
+        return Math.min(limit, Math.max(GROWTH_INITIAL, size * 2));
     }
 
     private static SpreadsheetDocument.Sheet validateSheet(RawSheet raw, int styleCount) {
