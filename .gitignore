@@ -14,6 +14,8 @@ viewer-ohos/libs/
 **/BuildProfile.ets
 /VERIFICATION.md
 .openbitfun/
+.superpowers/
+docs/superpowers/
 build-profile.json5.local
 __pycache__/
 *.pyc
