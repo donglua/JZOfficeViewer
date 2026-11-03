@@ -2,6 +2,21 @@
 
 All notable changes to `@jzdy/office` will be documented in this file.
 
+## [0.9.0] - 2026-11-03
+
+### Added
+
+- Support for PPTX vertical clustered column charts (`<c:barChart>`), zero-baseline snapping, and rectangular legend color swatches.
+- Support for DOCX header and footer blocks rendered seamlessly within the streaming document flow, including part relationships and section inheritance.
+- Automatic incremental Rust native library compilation in hvigor via `BuildRustNative` task before `PreBuild`.
+- Precomputed spreadsheet geometry (`SheetGeometry`) passed directly from Rust core to avoid redundant ArkTS layout calculations.
+
+### Changed
+
+- Updated `sample.pptx` chart chapter with a clustered column chart showcase page.
+- Optimized spreadsheet merged cells spatial indexing buckets using self row ranges.
+- Aligned DOCX content margins and header/footer spacing with page margin definitions.
+
 ## [0.8.0] - 2026-10-26
 
 ### Added

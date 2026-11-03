@@ -1,5 +1,29 @@
 # 更新日志
 
+## 0.9.0
+
+发布页面：[v0.9.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.9.0)。
+
+本版本主要更新 PPTX 垂直簇状柱状图渲染、DOCX 随内容滚动页眉页脚、XLSX 表格几何预计算下沉至 Rust Core、鸿蒙原生自动化构建及双端排版与无障碍细节修复。
+
+### 特性与排版
+
+- **PPTX 垂直簇状柱状图**：DrawingML 图表管线新增支持垂直柱状图（`<c:barChart>`，`barDir="col"`，簇状并列 `grouping="clustered"`），数值轴自动吸附 0 基准线（支持正负值双向延伸），槽位等宽划分并绘制柱体与色块图例；内置演示样例 `sample.pptx` 图表章节同步更新为柱状图演示页。
+- **DOCX 页眉页脚支持**：解析 `sectPr` 节属性中的 `headerReference` / `footerReference` 与 `pgMar` 页边距，Android 与 HarmonyOS NEXT 双端将页眉置于文档流首部、页脚追加至尾部随内容平滑滚动，并支持页眉页脚内独立图片 relationships 映射与多节文档继承逻辑。
+- **鸿蒙 hvigor 自动化增量构建**：`viewer-ohos/hvigorfile.ts` 注册 `BuildRustNative` 增量任务，在 DevEco Studio 编译或运行 HAR 前自动增量编译 Rust 原生库并同步 `.so` 与 `index.d.ts`。
+
+### 架构与性能
+
+- **XLSX 几何计算下沉至 Rust Core**：表格的列宽偏移、行高偏移、可见索引、起始行与合并单元格矩形（`SheetGeometry`）在 Rust core 中一次性预计算，双端直接消费预计算数据，消除平台层 250+ 行重复计算逻辑，保证双端排版绝对一致。
+- **Android geometry 解码消除装箱**：Java 端 geometry 数组解码改用基本类型数组（`float[]` / `int[]`），消除大表格几何反序列化时的对象装箱开销与 GC 压力。
+- **鸿蒙端合并单元格空间分桶优化**：合并单元格改用自身行范围注册到分桶索引，降低密集大表格滚动遍历开销。
+
+### 修复
+
+- **DOCX 正文可用宽度与间距对齐**：正文可用宽度按 `pgMar` 边距精算，对齐双端页眉页脚与正文的内容边距。
+- **XLSX 几何边界校验**：严格校验 core 下发的 `sheet.geometry` 数组边界与长度，拦截异常损坏文件。
+- **Android 视口滚动与无障碍体验**：无障碍滚动步进驱动优化，修复极端缩放时视口滚动边界裁剪溢出。
+
 ## 0.8.0
 
 发布页面：[v0.8.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.8.0)。
