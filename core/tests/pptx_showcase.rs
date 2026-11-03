@@ -35,7 +35,7 @@ fn showcase_preserves_all_source_slide_content_in_chapter_order() -> TestResult 
     for (parts, count, annotated) in [
         (pptx::parts(), 2, true),
         (pptx_compat::parts(), 1, true),
-        (pptx_charts::parts(), 2, true),
+        (pptx_charts::showcase_parts(), 2, true),
         (pptx_colors::showcase_parts(), 2, true),
         (pptx_typography::parts(), 2, true),
         (pptx_wrapping_showcase::parts()?, 3, false),
@@ -159,9 +159,16 @@ fn showcase_retains_cached_chart_series_and_categories() -> TestResult {
         for label in labels {
             assert!(text.contains(label), "Missing chart label {label}");
         }
-        let red = pptx_charts::data_segments(&document.pages[index], pptx_charts::RED);
-        assert_eq!(red.len(), 3);
     }
+    let red_bars = document.pages[4]
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == pptx_charts::RED)
+        .count();
+    assert_eq!(red_bars, 5);
+
+    let red_lines = pptx_charts::data_segments(&document.pages[5], pptx_charts::RED);
+    assert_eq!(red_lines.len(), 3);
     Ok(())
 }
 

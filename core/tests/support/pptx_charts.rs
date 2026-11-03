@@ -52,6 +52,39 @@ pub fn parts() -> Parts {
     parts
 }
 
+pub fn column_chart() -> String {
+    category_chart()
+        .replace(
+            "<c:lineChart><c:grouping val=\"standard\"/>",
+            "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>",
+        )
+        .replace("</c:lineChart>", "</c:barChart>")
+}
+
+pub fn showcase_parts() -> Parts {
+    let mut parts = pptx::parts();
+    for (name, bytes) in &mut parts {
+        let replacement = match *name {
+            "[Content_Types].xml" => {
+                String::from_utf8_lossy(bytes).replace("</Types>", CHART_TYPES)
+            }
+            "ppt/slides/slide2.xml" => slide("Category cache", "rChart"),
+            "ppt/slides/slide1.xml" => slide("Date cache", "rChart"),
+            "ppt/slides/_rels/slide2.xml.rels" => slide_relationships("../charts/chart1.xml"),
+            "ppt/slides/_rels/slide1.xml.rels" => slide_relationships("../charts/chart2.xml"),
+            _ => continue,
+        };
+        *bytes = replacement.into_bytes();
+    }
+    parts.extend([
+        xml(FIRST_CHART, &column_chart()),
+        xml("ppt/charts/chart2.xml", &date_chart()),
+        xml("ppt/charts/_rels/chart1.xml.rels", EXTERNAL),
+        xml("ppt/charts/_rels/chart2.xml.rels", EXTERNAL),
+    ]);
+    parts
+}
+
 pub fn category_chart() -> String {
     let literal = r#"<c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="4"/>
 <c:pt idx="3"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt>

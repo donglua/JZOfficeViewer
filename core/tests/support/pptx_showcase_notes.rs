@@ -19,9 +19,9 @@ pub fn annotate(source: &str, chapter: &str, path: &str) -> TestResult<String> {
             "绿块拉宽，橙条转竖\n中间段落的续行缩进\n底部字号不随坐标放大",
         ),
         ("charts", "ppt/slides/slide2.xml") => (
-            "折线图 · 分类缓存",
+            "柱状图 · 分类缓存",
             "外部数据不可用\n文件保存 Q1–Q4 分类\n包含 Alpha、Beta 两组",
-            "两条线各有 4 个点\n横轴按 Q1 到 Q4 排序\n图例颜色与线条一致",
+            "每组并列 2 根柱体\n横轴按 Q1 到 Q4 排序\n图例色块与柱体一致",
         ),
         ("charts", "ppt/slides/slide1.xml") => (
             "折线图 · 日期缓存",

@@ -30,7 +30,11 @@ pub fn parts() -> TestResult<OwnedParts> {
             "组合变换：缩放、旋转与段落排版",
             pptx_compat::parts(),
         ),
-        ("charts", "折线图：分类缓存与日期缓存", pptx_charts::parts()),
+        (
+            "charts",
+            "图表：折线图与柱状图",
+            pptx_charts::showcase_parts(),
+        ),
         (
             "colors",
             "文字填色：渐变输入与纯色参照",
