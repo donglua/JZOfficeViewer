@@ -80,7 +80,7 @@ fn date_chart() -> String {
     )
 }
 
-fn series((index, name, color): (usize, &str, &str), categories: &str, values: &str) -> String {
+pub fn series((index, name, color): (usize, &str, &str), categories: &str, values: &str) -> String {
     format!(
         r#"<c:ser><c:idx val="{index}"/><c:order val="{index}"/><c:tx><c:v>{name}</c:v></c:tx>
 <c:spPr><a:ln w="25400"><a:solidFill><a:srgbClr val="{color}"/></a:solidFill></a:ln></c:spPr>

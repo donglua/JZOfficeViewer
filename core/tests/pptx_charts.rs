@@ -159,6 +159,18 @@ fn unsupported_bar_and_stacked_charts_warn_without_data_lines() -> TestResult {
     for chart in [
         fixture::category_chart().replace("lineChart", "barChart"),
         fixture::category_chart()
+            .replace(
+                "<c:lineChart><c:grouping val=\"standard\"/>",
+                "<c:barChart><c:barDir val=\"bar\"/><c:grouping val=\"clustered\"/>",
+            )
+            .replace("</c:lineChart>", "</c:barChart>"),
+        fixture::category_chart()
+            .replace(
+                "<c:lineChart><c:grouping val=\"standard\"/>",
+                "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"stacked\"/>",
+            )
+            .replace("</c:lineChart>", "</c:barChart>"),
+        fixture::category_chart()
             .replace(r#"grouping val="standard""#, r#"grouping val="stacked""#),
         fixture::category_chart().replace(
             r#"grouping val="standard""#,
@@ -229,6 +241,110 @@ fn caches_over_point_or_series_budgets_warn_without_partial_charts() -> TestResu
     for counts in [&[2049][..], &[2048, 2048, 2], &[2; 9]] {
         assert_omitted(&fixture::oversized_chart(counts))?;
     }
+    Ok(())
+}
+
+#[test]
+fn column_chart_renders_rectangles_for_each_series_bar() -> TestResult {
+    let chart_xml = fixture::category_chart()
+        .replace(
+            "<c:lineChart><c:grouping val=\"standard\"/>",
+            "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>",
+        )
+        .replace("</c:lineChart>", "</c:barChart>");
+
+    let document = document(&chart_xml)?;
+    let page = &document.pages[0];
+
+    // Verify warning mentions column charts
+    assert!(
+        document
+            .warnings
+            .iter()
+            .any(|w| w.contains("column charts")),
+        "Expected column chart warning, got: {:?}",
+        document.warnings
+    );
+
+    // Filter bars: filled RECTs with RED or BLUE fill
+    let red_bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == RED)
+        .collect();
+    let blue_bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == BLUE)
+        .collect();
+
+    // 4 categories each with 1 red bar and 1 blue bar (plus legend swatches)
+    assert_eq!(
+        red_bars.len(),
+        5,
+        "Expected 4 data bars + 1 legend swatch for RED"
+    );
+    assert_eq!(
+        blue_bars.len(),
+        5,
+        "Expected 4 data bars + 1 legend swatch for BLUE"
+    );
+
+    // All categories present
+    let labels = texts(page);
+    for cat in ["Q1", "Q2", "Q3", "Q4", "Alpha", "Beta"] {
+        assert!(labels.contains(&cat.to_owned()), "Missing label {cat}");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn column_chart_renders_negative_values_from_zero_baseline() -> TestResult {
+    let negative_values = r#"<c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="2"/>
+<c:pt idx="0"><c:v>-15</c:v></c:pt>
+<c:pt idx="1"><c:v>25</c:v></c:pt></c:numLit></c:val>"#;
+    let single_series = format!(
+        r#"<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>{}<c:axId val="100"/><c:axId val="200"/></c:barChart>"#,
+        fixture::series(
+            (0, "Delta", "C03050"),
+            r#"<c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>Down</c:v></c:pt><c:pt idx="1"><c:v>Up</c:v></c:pt></c:strLit></c:cat>"#,
+            negative_values
+        )
+    );
+    let chart_xml = fixture::category_chart()
+        .replace(
+            "<c:lineChart><c:grouping val=\"standard\"/>",
+            &single_series,
+        )
+        .replace("</c:lineChart>", "");
+
+    let document = document(&chart_xml)?;
+    let page = &document.pages[0];
+
+    let bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == RED)
+        .collect();
+    // 2 data bars + 1 legend swatch = 3
+    assert_eq!(bars.len(), 3, "Expected 2 data bars + 1 legend swatch");
+
+    let down_bar = bars
+        .iter()
+        .find(|b| b.width > 12.0 && b.x < 300.0)
+        .ok_or("Missing down bar")?;
+    let up_bar = bars
+        .iter()
+        .find(|b| b.width > 12.0 && b.x > 300.0)
+        .ok_or("Missing up bar")?;
+
+    // Negative bar starts at zero baseline and goes down (so its top is baseline)
+    // Positive bar starts below and reaches zero baseline at its bottom (so its bottom is baseline)
+    checks::near(down_bar.y, up_bar.y + up_bar.height);
+    assert!(down_bar.height > 0.0);
+    assert!(up_bar.height > 0.0);
+
     Ok(())
 }
 

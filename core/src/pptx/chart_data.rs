@@ -8,6 +8,12 @@ pub(super) struct Series<'a> {
     pub name: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChartType {
+    Line,
+    Column,
+}
+
 pub(super) struct Chart<'a> {
     pub node: &'a Node,
     pub plot: &'a Node,
@@ -19,6 +25,7 @@ pub(super) struct Chart<'a> {
     pub y_step: f64,
     pub blanks: &'a str,
     pub date1904: bool,
+    pub chart_type: ChartType,
 }
 
 pub(super) fn value<'a>(node: &'a Node, name: &str) -> &'a str {
@@ -86,13 +93,28 @@ impl<'a> Chart<'a> {
             .iter()
             .filter(|n| n.name.ends_with("Chart"))
             .collect();
-        if charts.len() != 1 || charts[0].name != "lineChart" {
+        if charts.len() != 1 {
             return None;
         }
-        let lines = charts[0];
-        if !matches!(value(lines, "grouping"), "" | "standard") {
-            return None;
-        }
+        let chart_node = charts[0];
+        let chart_type = match chart_node.name.as_str() {
+            "lineChart" => {
+                if !matches!(value(chart_node, "grouping"), "" | "standard") {
+                    return None;
+                }
+                ChartType::Line
+            }
+            "barChart" => {
+                if value(chart_node, "barDir") != "col" {
+                    return None;
+                }
+                if !matches!(value(chart_node, "grouping"), "" | "clustered" | "standard") {
+                    return None;
+                }
+                ChartType::Column
+            }
+            _ => return None,
+        };
         let axes: Vec<_> = plot
             .children
             .iter()
@@ -107,7 +129,7 @@ impl<'a> Chart<'a> {
         let y_axis = *axes.iter().find(|n| n.name == "valAx")?;
         for axis in &axes {
             let id = value(axis, "axId");
-            if id.is_empty() || !lines.named("axId").any(|n| n.attr("val") == id) {
+            if id.is_empty() || !chart_node.named("axId").any(|n| n.attr("val") == id) {
                 return None;
             }
             if axis
@@ -126,7 +148,7 @@ impl<'a> Chart<'a> {
         };
         let mut series = Vec::new();
         let mut total = 0;
-        for source in lines.named("ser") {
+        for source in chart_node.named("ser") {
             if series.len() >= 8 {
                 return None;
             }
@@ -191,6 +213,9 @@ impl<'a> Chart<'a> {
                 }
             }
         }
+        if chart_type == ChartType::Column && !ys.is_empty() && ys.iter().all(|&y| y >= 0.0) {
+            ys.push(0.0);
+        }
         let (x_range, _) = range(&xs, x_axis, false)?;
         let (y_range, y_step) = range(&ys, y_axis, true)?;
         Some(Self {
@@ -204,6 +229,7 @@ impl<'a> Chart<'a> {
             y_step,
             blanks,
             date1904: super::flag(value(root, "date1904"), false),
+            chart_type,
         })
     }
 }

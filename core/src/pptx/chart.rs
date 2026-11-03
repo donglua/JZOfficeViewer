@@ -1,4 +1,4 @@
-use super::chart_data::{self, value, Chart};
+use super::chart_data::{self, value, Chart, ChartType};
 use super::geometry::{points, Bounds};
 use super::parts::Part;
 use super::render::Render;
@@ -20,8 +20,9 @@ impl Render<'_> {
         };
         let root = self.pkg.xml(path)?;
         let Some(chart) = Chart::parse(&root) else {
-            self.doc
-                .warn("PPTX charts without supported cached standard line data were omitted.");
+            self.doc.warn(
+                "PPTX charts without supported cached standard line or column data were omitted.",
+            );
             return Ok(Vec::new());
         };
         let frame = bounds.element(ElementType::RECT);
@@ -36,9 +37,18 @@ impl Render<'_> {
                 .warn("PPTX charts with insufficient drawing space were omitted.");
             return Ok(Vec::new());
         }
-        painter.render.doc.warn(
-            "PPTX line charts use cached values; layout, markers and styling are simplified.",
-        );
+        match chart.chart_type {
+            ChartType::Line => {
+                painter.render.doc.warn(
+                    "PPTX line charts use cached values; layout, markers and styling are simplified.",
+                );
+            }
+            ChartType::Column => {
+                painter.render.doc.warn(
+                    "PPTX column charts use cached values; layout, bars and styling are simplified.",
+                );
+            }
+        }
         for element in &mut painter.elements {
             for paragraph in &element.paragraphs {
                 for run in &paragraph.runs {
@@ -128,39 +138,87 @@ impl ChartPaint<'_, '_> {
             );
         }
         self.axes(chart, plot, xs, ys);
-        for (index, series) in chart.series.iter().enumerate() {
-            let (color, width) = self.stroke(series.node, self.render.theme.accent(index), 1.5);
-            let mut previous = None;
-            for (i, value) in series.values.iter().enumerate() {
-                let point = series
-                    .x(i)
-                    .zip(value.or((chart.blanks == "zero").then_some(0.0)))
-                    .map(|(x, y)| {
-                        (
-                            fraction(x, chart.x_range, chart.x_axis),
-                            1.0 - fraction(y, chart.y_range, chart.y_axis),
-                        )
-                    });
-                if let Some(point) = point {
-                    if let Some(prior) = previous {
-                        if let Some((a, b)) = clip(prior, point) {
-                            self.line(
+        match chart.chart_type {
+            ChartType::Line => {
+                for (index, series) in chart.series.iter().enumerate() {
+                    let (color, width) =
+                        self.stroke(series.node, self.render.theme.accent(index), 1.5);
+                    let mut previous = None;
+                    for (i, value) in series.values.iter().enumerate() {
+                        let point = series
+                            .x(i)
+                            .zip(value.or((chart.blanks == "zero").then_some(0.0)))
+                            .map(|(x, y)| {
                                 (
-                                    plot.x + a.0 as f32 * plot.width,
-                                    plot.y + a.1 as f32 * plot.height,
-                                ),
-                                (
-                                    plot.x + b.0 as f32 * plot.width,
-                                    plot.y + b.1 as f32 * plot.height,
-                                ),
-                                color,
-                                width,
-                            );
+                                    fraction(x, chart.x_range, chart.x_axis),
+                                    1.0 - fraction(y, chart.y_range, chart.y_axis),
+                                )
+                            });
+                        if let Some(point) = point {
+                            if let Some(prior) = previous {
+                                if let Some((a, b)) = clip(prior, point) {
+                                    self.line(
+                                        (
+                                            plot.x + a.0 as f32 * plot.width,
+                                            plot.y + a.1 as f32 * plot.height,
+                                        ),
+                                        (
+                                            plot.x + b.0 as f32 * plot.width,
+                                            plot.y + b.1 as f32 * plot.height,
+                                        ),
+                                        color,
+                                        width,
+                                    );
+                                }
+                            }
+                            previous = Some(point);
+                        } else if chart.blanks != "span" {
+                            previous = None;
                         }
                     }
-                    previous = Some(point);
-                } else if chart.blanks != "span" {
-                    previous = None;
+                }
+            }
+            ChartType::Column => {
+                let category_count = chart.series.first().map_or(0, |s| s.values.len());
+                if category_count > 0 {
+                    let slot_width = plot.width / category_count as f32;
+                    let series_count = chart.series.len().max(1) as f32;
+                    let group_width = slot_width * 0.7;
+                    let bar_width = group_width / series_count;
+                    let group_offset = (slot_width - group_width) / 2.0;
+                    let zero_frac = fraction(0.0, chart.y_range, chart.y_axis);
+                    let zero_y = plot.y + (1.0 - zero_frac) as f32 * plot.height;
+                    let baseline_y = zero_y.clamp(plot.y, plot.y + plot.height);
+
+                    for (s_idx, series) in chart.series.iter().enumerate() {
+                        let fill = self.series_fill(series.node, s_idx);
+                        for (i, value) in series.values.iter().enumerate() {
+                            let y_val = value.or((chart.blanks == "zero").then_some(0.0));
+                            if let Some(y) = y_val {
+                                let y_frac = fraction(y, chart.y_range, chart.y_axis);
+                                let val_y = plot.y + (1.0 - y_frac) as f32 * plot.height;
+                                let bar_top =
+                                    val_y.min(baseline_y).clamp(plot.y, plot.y + plot.height);
+                                let bar_bottom =
+                                    val_y.max(baseline_y).clamp(plot.y, plot.y + plot.height);
+                                let bar_h = (bar_bottom - bar_top).max(0.5);
+                                let bar_x = plot.x
+                                    + i as f32 * slot_width
+                                    + group_offset
+                                    + s_idx as f32 * bar_width;
+
+                                self.elements.push(Element {
+                                    kind: ElementType::RECT,
+                                    x: bar_x,
+                                    y: bar_top,
+                                    width: bar_width,
+                                    height: bar_h,
+                                    fill,
+                                    ..Element::default()
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -173,12 +231,28 @@ impl ChartPaint<'_, '_> {
                     .unwrap_or(0);
                 let (color, width) = self.stroke(series.node, self.render.theme.accent(index), 1.5);
                 let y = frame.height - legend_height + row as f32 * legend_style.size * 1.7;
-                self.line(
-                    (plot.x, y + legend_style.size * 0.6),
-                    (plot.x + 14.0, y + legend_style.size * 0.6),
-                    color,
-                    width,
-                );
+                match chart.chart_type {
+                    ChartType::Line => {
+                        self.line(
+                            (plot.x, y + legend_style.size * 0.6),
+                            (plot.x + 14.0, y + legend_style.size * 0.6),
+                            color,
+                            width,
+                        );
+                    }
+                    ChartType::Column => {
+                        let fill = self.series_fill(series.node, index);
+                        self.elements.push(Element {
+                            kind: ElementType::RECT,
+                            x: plot.x,
+                            y: y + legend_style.size * 0.2,
+                            width: 12.0,
+                            height: legend_style.size * 0.8,
+                            fill,
+                            ..Element::default()
+                        });
+                    }
+                }
                 self.label(
                     series.name.clone(),
                     legend_style.clone(),
@@ -244,12 +318,19 @@ impl ChartPaint<'_, '_> {
                     offset
                 };
                 let Some(value) = first.x(i) else { continue };
-                let fraction = fraction(value, chart.x_range, chart.x_axis);
-                if !(0.0..=1.0).contains(&fraction) {
-                    continue;
-                }
-                let x = (plot.x + fraction as f32 * plot.width - label_width / 2.0)
-                    .clamp(0.0, plot.x + plot.width + 12.0 - label_width);
+                let x = if chart.chart_type == ChartType::Column && first.dates.is_none() {
+                    let slot_width = plot.width / first.values.len().max(1) as f32;
+                    let center_x = plot.x + (i as f32 + 0.5) * slot_width;
+                    (center_x - label_width / 2.0)
+                        .clamp(0.0, plot.x + plot.width + 12.0 - label_width)
+                } else {
+                    let fraction = fraction(value, chart.x_range, chart.x_axis);
+                    if !(0.0..=1.0).contains(&fraction) {
+                        continue;
+                    }
+                    (plot.x + fraction as f32 * plot.width - label_width / 2.0)
+                        .clamp(0.0, plot.x + plot.width + 12.0 - label_width)
+                };
                 if x < last_right {
                     continue;
                 }
@@ -347,6 +428,21 @@ impl ChartPaint<'_, '_> {
             ),
             None => (fallback, width),
         }
+    }
+
+    fn series_fill(&mut self, node: &Node, index: usize) -> u32 {
+        let fallback = self.render.theme.accent(index);
+        let Some(sp_pr) = node.child("spPr") else {
+            return fallback;
+        };
+        let fill = self.render.theme.fill(sp_pr, 0, self.render.doc);
+        if fill != 0 {
+            return fill;
+        }
+        if let Some(line) = sp_pr.child("ln") {
+            return self.render.theme.fill(line, fallback, self.render.doc);
+        }
+        fallback
     }
 
     fn background(&mut self, node: &Node, bounds: Plot) {
