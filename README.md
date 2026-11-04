@@ -34,7 +34,7 @@ Demo 内置综合样例的真机预览效果（点击可查看大图）：
   </tr>
   <tr>
     <td><a href="docs/images/preview-docx.png"><img src="docs/images/preview-docx.png" width="260" alt="DOCX 预览：文字样式、图片与表格"></a></td>
-    <td><a href="docs/images/preview-pptx.png"><img src="docs/images/preview-pptx.png" width="260" alt="PPTX 预览：组合图形与折线图"></a></td>
+    <td><a href="docs/images/preview-pptx.png"><img src="docs/images/preview-pptx.png" width="260" alt="PPTX 预览：组合图形与图表"></a></td>
     <td><a href="docs/images/preview-xlsx.png"><img src="docs/images/preview-xlsx.png" width="260" alt="XLSX 预览：单元格样式、数字格式与工作表标签"></a></td>
   </tr>
 </table>
@@ -237,7 +237,7 @@ struct PreviewPage {
 | 输入文件 / 整包解压预算 | 单文件最大 **128 MiB**；ZIP 累计解压预算最大 **256 MiB**，最多 **4096** 个条目 |
 | XML 解析限制 | 单个 XML 最大 **4 MiB**、最多 **60,000** 个节点、最大嵌套深度 **64** 层；拒绝 DTD 与路径穿越 |
 | DOCX 内容限制 | 累计文本最大 **8 MiB**，表格最多 **5,000** 个单元格 |
-| PPTX 内容限制 | 最多 **100** 页，累计最多 **5,000** 个元素/节点/单元格；单折线图最多 **8** 系列、**4,096** 数据点 |
+| PPTX 内容限制 | 最多 **100** 页，累计最多 **5,000** 个元素/节点/单元格；单图表（折线图/柱状图）最多 **8** 系列、**4,096** 数据点 |
 | XLSX 内容限制 | 最多 **32** 张工作表，单表最大 **10,000 行 × 256 列**，全表最多 **50,000** 个存储单元格、**8 MiB** 文本；单元格预览上限 **4,096** 个 UTF-16 码元（超出自动截断并提示） |
 | 图片解码与缓存 | 单个图片部件压缩数据最大 **16 MiB**，最长边上限 **4,096 px**；内存缓存采用 LRU 淘汰（Android 端像素预算约 800 万像素 / 30.5 MiB） |
 
