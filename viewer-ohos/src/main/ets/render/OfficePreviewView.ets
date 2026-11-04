@@ -398,6 +398,7 @@ struct DocxFlowView {
 
   private pinchStartZoom: number = 1.0;
   private pinchStartOffsetX: number = 0;
+  private pinchFocusX: number = 0;
   private panStartX: number = 0;
   private viewportWidth: number = 0;
   private viewportHeight: number = 0;
@@ -428,7 +429,7 @@ struct DocxFlowView {
   private setZoom(value: number, focusX: number, focusY?: number): void {
     if (isNaN(value) || !isFinite(value)) return;
     const oldZoom = this.zoom;
-    const newZoom = Math.max(1.0, Math.min(4.0, value));
+    const newZoom = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, value));
 
     const cX = this.viewportWidth / 2;
     const dx = focusX - cX;
@@ -498,7 +499,7 @@ struct DocxFlowView {
         .height('100%')
         .scale({ x: this.zoom, y: this.zoom })
         .translate({ x: this.offsetX, y: this.offsetY })
-        .animation({ duration: this.isGesturing ? 0 : 150, curve: Curve.EaseOut })
+        .animation({ duration: this.isGesturing ? 0 : RenderUtils.ZOOM_ANIMATION_MS, curve: Curve.EaseOut })
       }
       .width('100%')
       .height('100%')
@@ -529,36 +530,58 @@ struct DocxFlowView {
           PinchGesture({ fingers: 2 })
             .onActionStart(() => {
               this.isGesturing = true;
-              this.pinchStartZoom = this.zoom;
+              this.pinchStartZoom = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
               this.pinchStartOffsetX = this.offsetX;
             })
             .onActionUpdate((event: GestureEvent) => {
               const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
-              const newZoom = Math.max(1.0, Math.min(4.0, this.pinchStartZoom * event.scale));
-              if (newZoom <= 1.05) {
-                this.zoom = 1.0;
-                this.offsetX = 0;
-                this.offsetY = 0;
-              } else {
+              this.pinchFocusX = focusX;
+              const raw = this.pinchStartZoom * event.scale;
+              const settled = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, raw));
+              // 顶到边界后继续捏合按抵抗曲线让步，松手再收回，避免硬停带来的「手势丢了」错觉
+              const excess = raw - settled;
+              const display = settled + RenderUtils.rubberBandZoom(
+                excess, excess > 0 ? RenderUtils.ZOOM_OVERFLOW_ABOVE : RenderUtils.ZOOM_OVERFLOW_BELOW);
+              if (settled > 1.05) {
                 const dx = focusX - this.viewportWidth / 2;
                 const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
-                this.offsetX = dx - worldX * newZoom;
-                this.offsetY = 0;
-                this.zoom = newZoom;
-                this.clampOffsets();
+                this.offsetX = dx - worldX * display;
+              } else {
+                this.offsetX = 0;
               }
+              this.offsetY = 0;
+              this.zoom = display;
+              this.clampOffsets();
             })
             .onActionEnd(() => {
               this.isGesturing = false;
-              if (this.zoom <= 1.05) {
-                this.zoom = 1.0;
+              const settled = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
+              if (settled > 1.05 && this.pinchStartZoom > 0) {
+                const focusX = this.pinchFocusX > 0 ? this.pinchFocusX : (this.viewportWidth / 2);
+                const dx = focusX - this.viewportWidth / 2;
+                const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
+                this.offsetX = dx - worldX * settled;
+              } else {
                 this.offsetX = 0;
-                this.offsetY = 0;
               }
+              // 回到已夹的缩放值；isGesturing 已置 false，外层 .animation 会把越界量平滑收回
+              this.zoom = settled;
+              this.clampOffsets();
               this.syncSettledZoomPad();
             })
             .onActionCancel(() => {
               this.isGesturing = false;
+              const settled = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
+              if (settled > 1.05 && this.pinchStartZoom > 0) {
+                const focusX = this.pinchFocusX > 0 ? this.pinchFocusX : (this.viewportWidth / 2);
+                const dx = focusX - this.viewportWidth / 2;
+                const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
+                this.offsetX = dx - worldX * settled;
+              } else {
+                this.offsetX = 0;
+              }
+              this.zoom = settled;
+              this.clampOffsets();
               this.syncSettledZoomPad();
             }),
           PanGesture({ direction: PanDirection.Horizontal })
@@ -1031,6 +1054,7 @@ struct PptxSlidesView {
 
   private pinchStartZoom: number = 1.0;
   private pinchStartOffsetX: number = 0;
+  private pinchFocusX: number = 0;
   private panStartX: number = 0;
   private viewportWidth: number = 0;
   private viewportHeight: number = 0;
@@ -1087,7 +1111,7 @@ struct PptxSlidesView {
   private setZoom(value: number, focusX: number, focusY?: number): void {
     if (isNaN(value) || !isFinite(value)) return;
     const oldZoom = this.zoom;
-    const newZoom = Math.max(1.0, Math.min(4.0, value));
+    const newZoom = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, value));
 
     const cX = this.viewportWidth / 2;
     const dx = focusX - cX;
@@ -1164,7 +1188,7 @@ struct PptxSlidesView {
         .height('100%')
         .scale({ x: this.zoom, y: this.zoom })
         .translate({ x: this.offsetX, y: this.offsetY })
-        .animation({ duration: this.isGesturing ? 0 : 150, curve: Curve.EaseOut })
+        .animation({ duration: this.isGesturing ? 0 : RenderUtils.ZOOM_ANIMATION_MS, curve: Curve.EaseOut })
       }
       .width('100%')
       .height('100%')
@@ -1195,36 +1219,58 @@ struct PptxSlidesView {
           PinchGesture({ fingers: 2 })
             .onActionStart(() => {
               this.isGesturing = true;
-              this.pinchStartZoom = this.zoom;
+              this.pinchStartZoom = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
               this.pinchStartOffsetX = this.offsetX;
             })
             .onActionUpdate((event: GestureEvent) => {
               const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
-              const newZoom = Math.max(1.0, Math.min(4.0, this.pinchStartZoom * event.scale));
-              if (newZoom <= 1.05) {
-                this.zoom = 1.0;
-                this.offsetX = 0;
-                this.offsetY = 0;
-              } else {
+              this.pinchFocusX = focusX;
+              const raw = this.pinchStartZoom * event.scale;
+              const settled = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, raw));
+              // 顶到边界后继续捏合按抵抗曲线让步，松手再收回，避免硬停带来的「手势丢了」错觉
+              const excess = raw - settled;
+              const display = settled + RenderUtils.rubberBandZoom(
+                excess, excess > 0 ? RenderUtils.ZOOM_OVERFLOW_ABOVE : RenderUtils.ZOOM_OVERFLOW_BELOW);
+              if (settled > 1.05) {
                 const dx = focusX - this.viewportWidth / 2;
                 const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
-                this.offsetX = dx - worldX * newZoom;
-                this.offsetY = 0;
-                this.zoom = newZoom;
-                this.clampOffsets();
+                this.offsetX = dx - worldX * display;
+              } else {
+                this.offsetX = 0;
               }
+              this.offsetY = 0;
+              this.zoom = display;
+              this.clampOffsets();
             })
             .onActionEnd(() => {
               this.isGesturing = false;
-              if (this.zoom <= 1.05) {
-                this.zoom = 1.0;
+              const settled = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
+              if (settled > 1.05 && this.pinchStartZoom > 0) {
+                const focusX = this.pinchFocusX > 0 ? this.pinchFocusX : (this.viewportWidth / 2);
+                const dx = focusX - this.viewportWidth / 2;
+                const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
+                this.offsetX = dx - worldX * settled;
+              } else {
                 this.offsetX = 0;
-                this.offsetY = 0;
               }
+              // 回到已夹的缩放值；isGesturing 已置 false，外层 .animation 会把越界量平滑收回
+              this.zoom = settled;
+              this.clampOffsets();
               this.syncSettledZoomPad();
             })
             .onActionCancel(() => {
               this.isGesturing = false;
+              const settled = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
+              if (settled > 1.05 && this.pinchStartZoom > 0) {
+                const focusX = this.pinchFocusX > 0 ? this.pinchFocusX : (this.viewportWidth / 2);
+                const dx = focusX - this.viewportWidth / 2;
+                const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
+                this.offsetX = dx - worldX * settled;
+              } else {
+                this.offsetX = 0;
+              }
+              this.zoom = settled;
+              this.clampOffsets();
               this.syncSettledZoomPad();
             }),
           PanGesture({ direction: PanDirection.Horizontal })

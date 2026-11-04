@@ -7,6 +7,10 @@ const HEADER_HEIGHT = 22;
 const GRID_COLOR = '#dce1e5';
 const HEADER_BG = '#f3f5f7';
 const HEADER_TEXT = '#52606d';
+/** 缩放补间与越界回弹时长，与 Android OfficePreviewView 的 ZOOM_ANIMATION_MS 保持一致 */
+const ZOOM_TWEEN_MS = RenderUtils.ZOOM_ANIMATION_MS;
+/** 表格缩放下限，与 Android 电子表格分支一致 */
+const MIN_SCALE = 0.5;
 
 /**
  * 预计算 0..255 列标字母，彻底消除表头绘制时的高频字符串循环拼接
@@ -276,6 +280,8 @@ export struct SpreadsheetView {
   private pinchStartScale: number = 1.0;
   private pinchStartOffsetX: number = 0;
   private pinchStartOffsetY: number = 0;
+  private pinchFocusX: number = 0;
+  private pinchFocusY: number = 0;
 
   // 惯性滑动 (Fling) 物理仿真状态与硬件 VSync
   private flingTimer: number = -1;
@@ -286,6 +292,16 @@ export struct SpreadsheetView {
   private vsync: displaySync.DisplaySync | null = null;
   private flingRunning: boolean = false;
   private lastVsyncTimestamp: number = 0;
+
+  // 缩放补间状态：Canvas 直接绘制，缩放动画需要自建补间驱动重绘
+  private zoomTweenTimer: number = -1;
+  private zoomTweenFrom: number = 1.0;
+  private zoomTweenTo: number = 1.0;
+  private zoomTweenDuration: number = 0;
+  private zoomTweenStart: number = 0;
+  private zoomTweenFocusX: number = 0;
+  private zoomTweenFocusY: number = 0;
+  private zoomTweenResetOffsets: boolean = false;
 
   // 单元格折行排版 WeakMap 缓存，避免平移滑动时重复进行 measureText 二分折行排版
   private readonly cellWrapCache: WeakMap<model.Cell, CachedCellWrap> = new WeakMap();
@@ -328,22 +344,10 @@ export struct SpreadsheetView {
         (value: number): void => {
           if (isNaN(value) || !isFinite(value)) return;
           this.stopFling();
-          const newScale = Math.min(4.0, Math.max(0.5, value));
-          if (Math.abs(newScale - 1.0) <= 0.05) {
-            this.scaleVal = 1.0;
-            this.offsetX = 0;
-            this.offsetY = 0;
-          } else {
-            const focusX = this.canvasWidth / 2;
-            const focusY = this.canvasHeight / 2;
-            const worldX = (focusX - HEADER_WIDTH - this.offsetX) / this.scaleVal;
-            const worldY = (focusY - HEADER_HEIGHT - this.offsetY) / this.scaleVal;
-            this.offsetX = focusX - HEADER_WIDTH - worldX * newScale;
-            this.offsetY = focusY - HEADER_HEIGHT - worldY * newScale;
-            this.scaleVal = newScale;
-            this.clampOffsets();
-          }
-          this.redraw();
+          const reset = Math.abs(this.clampScale(value) - 1.0) <= 0.05;
+          // 外部按钮缩放走同一套补间，避免放大缩小两步之间出现瞬跳
+          this.startZoomTween(reset ? 1.0 : value, this.canvasWidth / 2, this.canvasHeight / 2,
+            ZOOM_TWEEN_MS, reset);
         }
       );
     }
@@ -402,6 +406,7 @@ export struct SpreadsheetView {
     }
     this.flingVx = 0;
     this.flingVy = 0;
+    this.stopZoomTween();
   }
 
   private startFling(vx: number, vy: number): void {
@@ -513,6 +518,85 @@ export struct SpreadsheetView {
     const minOy = Math.min(0, this.canvasHeight - HEADER_HEIGHT - totalGridHeight);
     this.offsetX = Math.min(0, Math.max(minOx, this.offsetX));
     this.offsetY = Math.min(0, Math.max(minOy, this.offsetY));
+  }
+
+  private clampScale(value: number): number {
+    return Math.min(RenderUtils.ZOOM_MAX, Math.max(MIN_SCALE, value));
+  }
+
+  /** 以焦点为锚点套用一次缩放，供捏合与补间共用；逻辑值由调用方决定是否越界 */
+  private applyScaleAt(newScale: number, focusX: number, focusY: number): void {
+    const oldScale = this.scaleVal;
+    if (oldScale > 0) {
+      const worldX = (focusX - HEADER_WIDTH - this.offsetX) / oldScale;
+      const worldY = (focusY - HEADER_HEIGHT - this.offsetY) / oldScale;
+      this.offsetX = focusX - HEADER_WIDTH - worldX * newScale;
+      this.offsetY = focusY - HEADER_HEIGHT - worldY * newScale;
+    }
+    this.scaleVal = newScale;
+    this.clampOffsets();
+  }
+
+  /**
+   * 缩放补间：捏合松手的越界回弹、双击与外部按钮缩放共用。
+   * 用三次减速曲线逐帧重绘，duration 为 0 时直接落位。
+   */
+  private startZoomTween(target: number, focusX: number, focusY: number, duration: number,
+    resetOffsets: boolean = false): void {
+    this.stopZoomTween();
+    const from = this.scaleVal;
+    const to = this.clampScale(target);
+    if (duration <= 0 || Math.abs(to - from) < 0.002) {
+      if (resetOffsets) {
+        this.offsetX = 0;
+        this.offsetY = 0;
+      }
+      this.applyScaleAt(to, focusX, focusY);
+      this.redraw();
+      return;
+    }
+    this.zoomTweenFrom = from;
+    this.zoomTweenTo = to;
+    this.zoomTweenFocusX = focusX;
+    this.zoomTweenFocusY = focusY;
+    this.zoomTweenDuration = duration;
+    this.zoomTweenResetOffsets = resetOffsets;
+    this.zoomTweenStart = Date.now();
+    this.stepZoomTween();
+  }
+
+  private stepZoomTween = (): void => {
+    this.zoomTweenTimer = -1;
+    const elapsed = Date.now() - this.zoomTweenStart;
+    const progress = this.zoomTweenDuration > 0 ? Math.min(1, elapsed / this.zoomTweenDuration) : 1;
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const scale = this.zoomTweenFrom + (this.zoomTweenTo - this.zoomTweenFrom) * eased;
+    this.applyScaleAt(scale, this.zoomTweenFocusX, this.zoomTweenFocusY);
+    // 缩放先落位再回正偏移，避免最后一步的锚点换算把清零覆盖成近似值
+    if (progress >= 1 && this.zoomTweenResetOffsets) {
+      this.offsetX = 0;
+      this.offsetY = 0;
+    }
+    this.redraw();
+    if (progress < 1) {
+      this.zoomTweenTimer = setTimeout(this.stepZoomTween, 16);
+    }
+  };
+
+  private stopZoomTween(): void {
+    if (this.zoomTweenTimer >= 0) {
+      clearTimeout(this.zoomTweenTimer);
+      this.zoomTweenTimer = -1;
+    }
+  }
+
+  /** 捏合松手：越界量用一段减速动画弹回已夹的缩放值，未越界时保持原样 */
+  private settlePinchScale(): void {
+    const settled = this.clampScale(this.scaleVal);
+    if (Math.abs(settled - this.scaleVal) <= 0.002) return;
+    const focusX = this.pinchFocusX > 0 ? this.pinchFocusX : (this.canvasWidth / 2);
+    const focusY = this.pinchFocusY > 0 ? this.pinchFocusY : (this.canvasHeight / 2);
+    this.startZoomTween(settled, focusX, focusY, ZOOM_TWEEN_MS);
   }
 
   private redraw(): void {
@@ -1042,47 +1126,49 @@ export struct SpreadsheetView {
             TapGesture({ count: 2 })
               .onAction((event: GestureEvent) => {
                 this.stopFling();
-                if (this.scaleVal > 1.1) {
-                  this.scaleVal = 1.0;
-                  this.offsetX = 0;
-                  this.offsetY = 0;
-                } else {
-                  const focusX = event.fingerList && event.fingerList.length > 0
-                    ? event.fingerList[0].localX
-                    : (this.canvasWidth / 2);
-                  const focusY = event.fingerList && event.fingerList.length > 0
-                    ? event.fingerList[0].localY
-                    : (this.canvasHeight / 2);
-                  const oldS = this.scaleVal;
-                  const newS = 2.0;
-                  const worldX = (focusX - HEADER_WIDTH - this.offsetX) / oldS;
-                  const worldY = (focusY - HEADER_HEIGHT - this.offsetY) / oldS;
-                  this.offsetX = focusX - HEADER_WIDTH - worldX * newS;
-                  this.offsetY = focusY - HEADER_HEIGHT - worldY * newS;
-                  this.scaleVal = newS;
-                }
-                this.clampOffsets();
-                this.redraw();
+                const focusX = event.fingerList && event.fingerList.length > 0
+                  ? event.fingerList[0].localX
+                  : (this.canvasWidth / 2);
+                const focusY = event.fingerList && event.fingerList.length > 0
+                  ? event.fingerList[0].localY
+                  : (this.canvasHeight / 2);
+                const reset = this.scaleVal > 1.1;
+                // 复位到 1.0x 时表头回正，与改动前的落点一致
+                this.startZoomTween(reset ? 1.0 : 2.0, focusX, focusY, ZOOM_TWEEN_MS, reset);
               }),
             // 双指缩放：以双指中心点为锚点动态补偿对齐，平滑不漂移
             PinchGesture({ fingers: 2 })
               .onActionStart((event: GestureEvent) => {
                 this.stopFling();
-                this.pinchStartScale = this.scaleVal;
+                this.stopZoomTween();
+                this.pinchStartScale = this.clampScale(this.scaleVal);
                 this.pinchStartOffsetX = this.offsetX;
                 this.pinchStartOffsetY = this.offsetY;
               })
               .onActionUpdate((event: GestureEvent) => {
-                const newScale = Math.min(4.0, Math.max(0.5, this.pinchStartScale * event.scale));
                 const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.canvasWidth / 2);
                 const focusY = event.pinchCenterY > 0 ? event.pinchCenterY : (this.canvasHeight / 2);
+                this.pinchFocusX = focusX;
+                this.pinchFocusY = focusY;
+                const raw = this.pinchStartScale * event.scale;
+                const settled = this.clampScale(raw);
+                // 顶到边界后继续捏合按抵抗曲线让步，松手再弹回，避免硬停让手势显得失去响应
+                const excess = raw - settled;
+                const display = settled + RenderUtils.rubberBandZoom(
+                  excess, excess > 0 ? RenderUtils.ZOOM_OVERFLOW_ABOVE : RenderUtils.ZOOM_OVERFLOW_BELOW);
                 const worldX = (focusX - HEADER_WIDTH - this.pinchStartOffsetX) / this.pinchStartScale;
                 const worldY = (focusY - HEADER_HEIGHT - this.pinchStartOffsetY) / this.pinchStartScale;
-                this.offsetX = focusX - HEADER_WIDTH - worldX * newScale;
-                this.offsetY = focusY - HEADER_HEIGHT - worldY * newScale;
-                this.scaleVal = newScale;
+                this.offsetX = focusX - HEADER_WIDTH - worldX * display;
+                this.offsetY = focusY - HEADER_HEIGHT - worldY * display;
+                this.scaleVal = display;
                 this.clampOffsets();
                 this.redraw();
+              })
+              .onActionEnd(() => {
+                this.settlePinchScale();
+              })
+              .onActionCancel(() => {
+                this.settlePinchScale();
               }),
             // 单指拖拽平移表格，松手支持物理惯性平滑滑动 (Fling)
             PanGesture()

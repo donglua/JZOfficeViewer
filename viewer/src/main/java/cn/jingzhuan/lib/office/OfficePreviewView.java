@@ -1,5 +1,8 @@
 package cn.jingzhuan.lib.office;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -18,6 +21,7 @@ import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.OverScroller;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -35,6 +39,15 @@ public final class OfficePreviewView extends View {
     private static final int ACTION_ZOOM_IN = 0x7f110003;
     private static final int ACTION_ZOOM_OUT = 0x7f110004;
     private static final int ACTION_RESET_ZOOM = 0x7f110005;
+
+    /** 缩放上限；下限见 {@link #minZoom()}，读屏动作菜单复用同一组边界 */
+    private static final float MAX_ZOOM = 4f;
+    /** 越界容许幅度：超出上限时最多再多显示 0.4 倍缩放 */
+    private static final float OVERFLOW_ABOVE = 0.4f;
+    /** 越界容许幅度：跌破下限时最多再多缩 0.1 倍，避免页面缩得过小 */
+    private static final float OVERFLOW_BELOW = 0.1f;
+    /** 缩放补间与越界回弹时长；系统关闭动画时长缩放时由框架退化为瞬时 */
+    private static final long ZOOM_ANIMATION_MS = 220;
 
     public interface Listener {
         void onLoaded(Info info);
@@ -84,6 +97,11 @@ public final class OfficePreviewView extends View {
     private final GestureDetector gestures;
     private final ScaleGestureDetector pinch;
     private float zoom = 1, offsetX, offsetY, contentWidth, contentHeight;
+    /** 捏合过程中累积的原始缩放，允许越界；抵抗量由它与已夹值的差算出，避免回缩时出现滞回 */
+    private float rawZoom = 1;
+    /** 仅供绘制的临时越界量，非捏合时为 0；实际缩放是 zoom + zoomOverflow */
+    private float zoomOverflow;
+    private ValueAnimator zoomAnimator;
     private String status = "";
 
     public OfficePreviewView(Context context) { this(context, null); }
@@ -94,7 +112,7 @@ public final class OfficePreviewView extends View {
         setFocusable(true);
         scroller = new OverScroller(context);
         gestures = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
-            @Override public boolean onDown(MotionEvent event) { scroller.forceFinished(true); return true; }
+            @Override public boolean onDown(MotionEvent event) { scroller.forceFinished(true); settleZoom(); return true; }
             @Override public boolean onScroll(MotionEvent first, MotionEvent last, float dx, float dy) {
                 if (!pinch.isInProgress()) {
                     float prevX = offsetX, prevY = offsetY;
@@ -108,7 +126,7 @@ public final class OfficePreviewView extends View {
             }
             @Override public boolean onSingleTapUp(MotionEvent event) { performClick(); return true; }
             @Override public boolean onDoubleTap(MotionEvent event) {
-                setZoom(zoom > 1.1f ? 1 : 2, event.getX(), event.getY()); return true;
+                animateZoomTo(zoom > 1.1f ? 1 : 2, event.getX(), event.getY()); return true;
             }
             @Override public boolean onFling(MotionEvent a, MotionEvent b, float vx, float vy) {
                 scroller.fling((int) offsetX, (int) offsetY, (int) -vx, (int) -vy, 0, maxX(), 0, maxY());
@@ -116,8 +134,26 @@ public final class OfficePreviewView extends View {
             }
         });
         pinch = new ScaleGestureDetector(context, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            /** 捏合从已夹的缩放起算，保证松手回弹与再次捏合都不残留越界量 */
+            @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
+                settleZoom();
+                return true;
+            }
             @Override public boolean onScale(ScaleGestureDetector detector) {
-                setZoom(zoom * detector.getScaleFactor(), detector.getFocusX(), detector.getFocusY()); return true;
+                float factor = detector.getScaleFactor();
+                if (Float.isNaN(factor) || Float.isInfinite(factor)) return true;
+                rawZoom *= factor;
+                float settled = clampZoom(rawZoom);
+                float excess = rawZoom - settled;
+                float overflow = rubberBand(excess, excess > 0 ? OVERFLOW_ABOVE : OVERFLOW_BELOW);
+                applyDisplayZoom(settled, overflow, detector.getFocusX(), detector.getFocusY());
+                finishZoomChange();
+                return true;
+            }
+            /** 松手时若仍在越界区，用一段减速动画弹回已夹的缩放值 */
+            @Override public void onScaleEnd(ScaleGestureDetector detector) {
+                rawZoom = zoom;
+                if (zoomOverflow != 0) animateZoomOverflow(detector.getFocusX(), detector.getFocusY());
             }
         });
     }
@@ -127,7 +163,8 @@ public final class OfficePreviewView extends View {
         if (uri == null || listener == null) throw new IllegalArgumentException("URI and listener are required");
         cancel();
         releaseImages();
-        document = null; renderer.clear(); sheetRenderer.clear(); currentPage = pendingJumpPage = 0; zoom = 1; offsetX = offsetY = 0;
+        document = null; renderer.clear(); sheetRenderer.clear(); currentPage = pendingJumpPage = 0;
+        zoom = 1; rawZoom = 1; zoomOverflow = 0; offsetX = offsetY = 0;
         contentWidth = contentHeight = 0;
         status = "Loading..."; invalidate();
         announceForAccessibility("正在打开文档");
@@ -222,6 +259,7 @@ public final class OfficePreviewView extends View {
     public void selectSheet(int sheetNumber) {
         requireMainThread();
         if (!isSpreadsheet() || sheetNumber < 1 || sheetNumber > document.sheets.size()) throw new IllegalArgumentException("Sheet number is outside the loaded workbook");
+        settleZoom();
         scroller.forceFinished(true);
         if (sheetNumber != currentPage) {
             sheetRenderer.setSheet(document.sheets.get(sheetNumber - 1), document.cellStyles);
@@ -249,6 +287,7 @@ public final class OfficePreviewView extends View {
         requireMainThread();
         if (pageNumber < 1 || pageNumber > getPageCount()) throw new IllegalArgumentException("Page number is outside the loaded document");
         if (isSpreadsheet()) { selectSheet(pageNumber); return; }
+        settleZoom();
         scroller.forceFinished(true);
         currentPage = pageNumber;
         if (getWidth() == 0 || getHeight() == 0) {
@@ -319,8 +358,8 @@ public final class OfficePreviewView extends View {
             if (currentPage > 1) info.addAction(action(ACTION_PREVIOUS, "上一页"));
             if (currentPage < total) info.addAction(action(ACTION_NEXT, "下一页"));
         }
-        if (zoom < 4) info.addAction(action(ACTION_ZOOM_IN, "放大"));
-        if (zoom > (isSpreadsheet() ? 0.5f : 1)) info.addAction(action(ACTION_ZOOM_OUT, "缩小"));
+        if (zoom < MAX_ZOOM) info.addAction(action(ACTION_ZOOM_IN, "放大"));
+        if (zoom > minZoom()) info.addAction(action(ACTION_ZOOM_OUT, "缩小"));
         if (zoom > 1.001f) info.addAction(action(ACTION_RESET_ZOOM, "重置缩放"));
         if (canScrollVertically(1)) info.addAction(action(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD, "向下滚动"));
         if (canScrollVertically(-1)) info.addAction(action(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD, "向上滚动"));
@@ -335,9 +374,9 @@ public final class OfficePreviewView extends View {
             switch (action) {
                 case ACTION_PREVIOUS: jumpToPage(Math.max(1, currentPage - 1)); return true;
                 case ACTION_NEXT: jumpToPage(Math.min(getPageCount(), currentPage + 1)); return true;
-                case ACTION_ZOOM_IN: setZoom(zoom + 1); return true;
-                case ACTION_ZOOM_OUT: setZoom(zoom - 1); return true;
-                case ACTION_RESET_ZOOM: resetZoom(); return true;
+                case ACTION_ZOOM_IN: animateZoomTo(zoom + 1, getWidth() / 2f, getHeight() / 2f); return true;
+                case ACTION_ZOOM_OUT: animateZoomTo(zoom - 1, getWidth() / 2f, getHeight() / 2f); return true;
+                case ACTION_RESET_ZOOM: animateZoomTo(1, getWidth() / 2f, getHeight() / 2f); return true;
                 case AccessibilityNodeInfo.ACTION_SCROLL_FORWARD: scrollViewport(1); return true;
                 case AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD: scrollViewport(-1); return true;
             }
@@ -384,6 +423,7 @@ public final class OfficePreviewView extends View {
         if (pending != null) { pending.cancel(true); pending = null; }
         executor.getQueue().clear();
         if (document == null && "Loading...".equals(status)) { status = ""; invalidate(); }
+        settleZoom();
         scroller.forceFinished(true);
     }
 
@@ -415,23 +455,120 @@ public final class OfficePreviewView extends View {
         if (isSpreadsheet()) return getResources().getDisplayMetrics().density;
         return contentWidth > 0 ? Math.max(1, getWidth() - 24 * getResources().getDisplayMetrics().density) / contentWidth : 1;
     }
-    private float scale() { return baseScale() * zoom; }
+    private float minZoom() { return isSpreadsheet() ? 0.5f : 1; }
+    private float clampZoom(float value) { return Math.max(minZoom(), Math.min(MAX_ZOOM, value)); }
+    /** 实际绘制用的缩放：正常状态下等于 zoom，越界回弹期间临时带一个偏移量 */
+    private float displayZoom() { return zoom + zoomOverflow; }
+    private float scale() { return baseScale() * displayZoom(); }
     private float left() { return isSpreadsheet() ? 0 : Math.max(0, (getWidth() - contentWidth * scale()) / 2); }
     private float top() { return isSpreadsheet() ? 0 : 12 * getResources().getDisplayMetrics().density; }
     private int maxX() { return Math.max(0, Math.round(contentWidth * scale() - getWidth())); }
     private int maxY() { return Math.max(0, Math.round(contentHeight * scale() + 2 * top() - getHeight())); }
     private void clampOffsets() { offsetX = Math.max(0, Math.min(maxX(), offsetX)); offsetY = Math.max(0, Math.min(maxY(), offsetY)); }
+
+    /**
+     * 越界抵抗：把超出边界的原始量压成逐次收敛的显示量，越推越难推，但永不越过 limit。
+     * 负向（跌破下限）与正向（超出上限）各自给一个 limit，缩小时的表现比放大更保守。
+     */
+    private static float rubberBand(float excess, float limit) {
+        if (excess == 0) return 0;
+        return limit * excess / (limit + Math.abs(excess));
+    }
+
+    /** 以焦点位置为锚点套用一次缩放变更，不动逻辑状态以外的任何东西，供手势与动画共用 */
+    private void applyDisplayZoom(float newZoom, float overflow, float focusX, float focusY) {
+        float previousScale = scale();
+        float x = 0, y = 0;
+        if (previousScale > 0) {
+            x = (focusX + offsetX - left()) / previousScale;
+            y = (focusY + offsetY - top()) / previousScale;
+        }
+        zoom = newZoom; zoomOverflow = overflow;
+        if (previousScale > 0) {
+            offsetX = x * scale() - focusX + left();
+            offsetY = y * scale() - focusY + top();
+        }
+        clampOffsets();
+    }
+
+    /** 一次缩放变更的收尾：翻页判定、重绘与读屏动作刷新 */
+    private void finishZoomChange() {
+        updateCurrentPage(); invalidate();
+        refreshAccessibilityActions();
+    }
+
+    /** 立即把缩放设到目标值，取消进行中的动画与越界量 */
     private void setZoom(float value, float focusX, float focusY) {
         if (Float.isNaN(value) || Float.isInfinite(value)) throw new IllegalArgumentException("Zoom must be finite");
+        cancelZoomAnimation();
         scroller.forceFinished(true);
-        float oldScale = scale();
-        float x = (focusX + offsetX - left()) / oldScale;
-        float y = (focusY + offsetY - top()) / oldScale;
-        zoom = Math.max(isSpreadsheet() ? 0.5f : 1, Math.min(4, value));
-        offsetX = x * scale() - focusX + left();
-        offsetY = y * scale() - focusY + top();
-        clampOffsets(); updateCurrentPage(); invalidate();
-        refreshAccessibilityActions();
+        applyDisplayZoom(clampZoom(value), 0, focusX, focusY);
+        rawZoom = zoom;
+        finishZoomChange();
+    }
+
+    /**
+     * 带减速动画的缩放跳转，用于双击与读屏动作。
+     * 逻辑缩放立即落到目标值，只有显示值在动画中追赶，因此 getZoom 与状态保存始终取终态。
+     */
+    private void animateZoomTo(float value, float focusX, float focusY) {
+        if (Float.isNaN(value) || Float.isInfinite(value)) throw new IllegalArgumentException("Zoom must be finite");
+        float target = clampZoom(value);
+        float from = displayZoom();
+        if (Math.abs(target - from) < 0.001f) { setZoom(target, focusX, focusY); return; }
+        cancelZoomAnimation();
+        scroller.forceFinished(true);
+        zoom = target;
+        rawZoom = target;
+        zoomOverflow = from - target;
+        startZoomAnimator(focusX, focusY);
+    }
+
+    /** 捏合松手后的越界回弹：逻辑缩放不变，只把显示缩放平滑收回 */
+    private void animateZoomOverflow(float focusX, float focusY) {
+        cancelZoomAnimation();
+        startZoomAnimator(focusX, focusY);
+    }
+
+    private void startZoomAnimator(float focusX, float focusY) {
+        ValueAnimator animator = ValueAnimator.ofFloat(zoomOverflow, 0);
+        animator.setDuration(ZOOM_ANIMATION_MS);
+        animator.setInterpolator(new DecelerateInterpolator());
+        animator.addUpdateListener(animation -> {
+            applyDisplayZoom(zoom, (Float) animation.getAnimatedValue(), focusX, focusY);
+            invalidate();
+        });
+        animator.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator animation) {
+                // 已被新动画或手势取代时不做收尾，避免覆盖新状态
+                if (zoomAnimator != animation) return;
+                zoomAnimator = null;
+                applyDisplayZoom(zoom, 0, focusX, focusY);
+                finishZoomChange();
+            }
+        });
+        zoomAnimator = animator;
+        animator.start();
+    }
+
+    private void cancelZoomAnimation() {
+        if (zoomAnimator == null) return;
+        ValueAnimator animator = zoomAnimator;
+        zoomAnimator = null;
+        animator.cancel();
+    }
+
+    /** 取消缩放动画并把显示缩放收回逻辑缩放值，供新手势或状态切换接管 */
+    private void settleZoom() {
+        if (zoomAnimator != null || zoomOverflow != 0) {
+            cancelZoomAnimation();
+            zoomOverflow = 0;
+            rawZoom = zoom;
+            applyDisplayZoom(zoom, 0, getWidth() / 2f, getHeight() / 2f);
+            finishZoomChange();
+        } else {
+            rawZoom = zoom;
+        }
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
@@ -469,7 +606,7 @@ public final class OfficePreviewView extends View {
         } else if (restoredPage >= 1 && restoredPage <= renderer.pages.size()) {
             currentPage = restoredPage;
         }
-        zoom = Math.max(isSpreadsheet() ? 0.5f : 1, Math.min(4, restoredZoom));
+        zoom = clampZoom(restoredZoom); rawZoom = zoom; zoomOverflow = 0;
         float s = scale();
         offsetX = restoredDocX * s;
         offsetY = restoredDocY * s;

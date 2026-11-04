@@ -103,7 +103,7 @@ preview.open(uri, object : OfficePreviewView.Listener {
 })
 ```
 
-- **手势与缩放**：支持滚动、双指捏合缩放、双击缩放以及代码调用 `setZoom()` / `resetZoom()`。
+- **手势与缩放**：支持滚动、双指捏合缩放、双击缩放以及代码调用 `setZoom()` / `resetZoom()`。捏合时内容始终 1:1 跟随手指，不使用跟随阻尼；缩放到达 1.0x / 4.0x 边界后继续捏合按抵抗曲线让步（上限外最多 0.4x、下限外最多 0.1x），松手以 220 ms 减速动画回弹到边界值。双击与读屏缩放动作同样以 220 ms 补间过渡，`setZoom()` / `resetZoom()` 保持即时生效，便于外部精确恢复到指定缩放。
 - **页码与跳页**（页码从 1 开始）：
   ```kotlin
   preview.setOnPageChangeListener { pageNumber, pageCount ->
@@ -163,8 +163,8 @@ val task = loader.open(preview, request, object : RemoteOfficeLoader.Listener {
 ## HarmonyOS NEXT 接入
 
 鸿蒙端组件包名为 `@jzdy/office`（API 12+，Stage 模型），与 Android 端共用同一个 Rust 解析核心，支持：
-- **DOCX / PPTX**：流式排版与 Canvas 幻灯片渲染、内嵌图片异步提取与缓存、双指缩放（1.0x~4.0x）、双击缩放（1.0x/2.0x）、缩放态下原生滚动与平移。
-- **XLSX**：多工作表切换、行列固定表头、合并单元格、自动换行、双指/双击缩放与 Fling 物理惯性滚动。
+- **DOCX / PPTX**：流式排版与 Canvas 幻灯片渲染、内嵌图片异步提取与缓存、双指缩放（1.0x~4.0x，越界按抵抗曲线让步并回弹）、双击缩放（1.0x/2.0x，带补间）、缩放态下原生滚动与平移。
+- **XLSX**：多工作表切换、行列固定表头、合并单元格、自动换行、双指/双击缩放（边界回弹与补间）与 Fling 物理惯性滚动。
 
 ### 1. 安装依赖
 

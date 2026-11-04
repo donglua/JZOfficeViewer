@@ -15,6 +15,24 @@ export class RenderUtils {
   private static readonly FONT_CACHE_MAX = 128;
   private static readonly fontCache: Map<string, string> = new Map();
 
+  /** 缩放上限，与 Android OfficePreviewView 的 MAX_ZOOM 保持一致 */
+  public static readonly ZOOM_MAX = 4.0;
+  /** 缩放补间与越界回弹时长，与 Android OfficePreviewView 的 ZOOM_ANIMATION_MS 保持一致 */
+  public static readonly ZOOM_ANIMATION_MS = 220;
+  /** 超出上限时的越界容许幅度 */
+  public static readonly ZOOM_OVERFLOW_ABOVE = 0.4;
+  /** 跌破下限时的越界容许幅度，缩小方向让步更保守 */
+  public static readonly ZOOM_OVERFLOW_BELOW = 0.1;
+
+  /**
+   * 越界抵抗：把超出边界的原始缩放量压成逐次收敛的显示量，越推越难推且不会越过 limit。
+   * excess 取带符号值，正数表示超出上限，负数表示跌破下限。
+   */
+  public static rubberBandZoom(excess: number, limit: number): number {
+    if (excess === 0) return 0;
+    return (limit * excess) / (limit + Math.abs(excess));
+  }
+
   /**
    * 将 Rust 输出的 32 位 ARGB 颜色整数转换为 Canvas / ArkUI 支持的 rgba() 字符串
    * 若 alpha 为 0（透明），返回 null
