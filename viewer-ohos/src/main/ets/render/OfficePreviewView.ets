@@ -1,4 +1,5 @@
 import { image } from '@kit.ImageKit';
+import { displaySync } from '@kit.ArkGraphics2D';
 import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
 import { RenderUtils } from './RenderUtils';
@@ -1032,268 +1033,11 @@ struct DocxTableView {
   }
 }
 
-@Component
-struct PptxSlidesView {
-  document: model.OfficeDocument | null = null;
-  filePath: string = '';
-  onSlideChange?: (pageNumber: number, pageCount: number) => void;
-  registerControls?: (
-    jumpToPage: (pageNumber: number) => void,
-    getZoom: () => number,
-    setZoom: (value: number) => void
-  ) => void;
-  private imageStore: ImageStore = new ImageStore('');
-  private pageSource: ArrayDataSource<model.Page> = new ArrayDataSource([]);
-  private scroller: ListScroller = new ListScroller();
-
-  @State zoom: number = 1.0;
-  @State offsetX: number = 0;
-  @State offsetY: number = 0;
-  @State isGesturing: boolean = false;
-  @State settledZoomPad: number = 0;
-
-  private pinchStartZoom: number = 1.0;
-  private pinchStartOffsetX: number = 0;
-  private pinchFocusX: number = 0;
-  private panStartX: number = 0;
-  private viewportWidth: number = 0;
-  private viewportHeight: number = 0;
-
-  aboutToAppear(): void {
-    this.imageStore = new ImageStore(this.filePath);
-    this.pageSource = new ArrayDataSource(this.document?.pages ?? []);
-    if (this.registerControls) {
-      this.registerControls(
-        (pageNumber: number): void => {
-          const total = this.document?.pages?.length ?? 0;
-          if (pageNumber < 1 || pageNumber > total) return;
-          this.scroller.scrollToIndex(pageNumber - 1);
-          if (this.onSlideChange) {
-            this.onSlideChange(pageNumber, total);
-          }
-        },
-        (): number => this.zoom,
-        (value: number): void => {
-          this.isGesturing = false;
-          this.setZoom(value, this.viewportWidth / 2, this.viewportHeight / 2);
-        }
-      );
-    }
-  }
-
-  aboutToDisappear(): void {
-    this.imageStore.release();
-  }
-
-  private verticalZoomPad(): number {
-    if (this.zoom <= 1.0 || this.viewportHeight <= 0) return 0;
-    return (this.viewportHeight * (this.zoom - 1)) / (2 * this.zoom);
-  }
-
-  private syncSettledZoomPad(): void {
-    const pad = this.verticalZoomPad();
-    if (Math.abs(this.settledZoomPad - pad) > 0.5) {
-      this.settledZoomPad = pad;
-    }
-  }
-
-  private clampOffsets(): void {
-    if (this.zoom <= 1.05) {
-      this.offsetX = 0;
-      this.offsetY = 0;
-      return;
-    }
-    const maxOx = Math.max(0, (this.viewportWidth * (this.zoom - 1)) / 2);
-    this.offsetX = Math.min(maxOx, Math.max(-maxOx, this.offsetX));
-    this.offsetY = 0;
-  }
-
-  private setZoom(value: number, focusX: number, focusY?: number): void {
-    if (isNaN(value) || !isFinite(value)) return;
-    const oldZoom = this.zoom;
-    const newZoom = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, value));
-
-    const cX = this.viewportWidth / 2;
-    const dx = focusX - cX;
-
-    if (newZoom <= 1.05) {
-      this.zoom = 1.0;
-      this.offsetX = 0;
-      this.offsetY = 0;
-    } else {
-      const worldX = (dx - this.offsetX) / oldZoom;
-      this.offsetX = dx - worldX * newZoom;
-      this.offsetY = 0;
-      this.zoom = newZoom;
-      this.clampOffsets();
-    }
-    if (focusY !== undefined && this.viewportHeight > 0 && Math.abs(newZoom - oldZoom) > 0.01) {
-      const cY = this.viewportHeight / 2;
-      const dy = (focusY - cY) * (1 / oldZoom - 1 / newZoom);
-      if (Math.abs(dy) > 0.5) {
-        this.scroller.scrollBy(0, dy);
-      }
-    }
-    this.syncSettledZoomPad();
-  }
-
-  build() {
-    if (this.document) {
-      Stack() {
-        Stack() {
-          List({ space: 16, scroller: this.scroller }) {
-            LazyForEach(
-              this.pageSource,
-              (page: model.Page, index: number) => {
-                ListItem() {
-                  Column({ space: 6 }) {
-                    PptxSlideCanvas({
-                      page: page,
-                      imageStore: this.imageStore,
-                      slideNumber: index + 1,
-                      slideCount: this.document?.pages.length ?? 0
-                    })
-                    Text(`${index + 1} / ${this.document?.pages.length ?? 0}`)
-                      .fontSize(12)
-                      .fontColor('#80868b')
-                  }
-                  .width('100%')
-                  .alignItems(HorizontalAlign.Center)
-                }
-                .reuseId('pptx-slide')
-              },
-              (_page: model.Page, index: number) => `slide-${index}`
-            )
-          }
-          .cachedCount(2)
-          .onScrollIndex((start: number, _end: number, center: number) => {
-            const total = this.document?.pages?.length ?? 0;
-            if (total <= 0) return;
-            const activeIdx = center >= 0 ? center : start;
-            const pageNum = Math.min(total, Math.max(1, activeIdx + 1));
-            if (this.onSlideChange) {
-              this.onSlideChange(pageNum, total);
-            }
-          })
-          .width('100%')
-          .height('100%')
-          .padding({
-            left: 16,
-            right: 16,
-            top: 16 + this.settledZoomPad,
-            bottom: 24 + this.settledZoomPad
-          })
-        }
-        .width('100%')
-        .height('100%')
-        .scale({ x: this.zoom, y: this.zoom })
-        .translate({ x: this.offsetX, y: this.offsetY })
-        .animation({ duration: this.isGesturing ? 0 : RenderUtils.ZOOM_ANIMATION_MS, curve: Curve.EaseOut })
-      }
-      .width('100%')
-      .height('100%')
-      .clip(true)
-      .onAreaChange((_oldArea: Area, newArea: Area) => {
-        const w = Number(newArea.width);
-        const h = Number(newArea.height);
-        if (w > 0) this.viewportWidth = w;
-        if (h > 0) this.viewportHeight = h;
-        this.clampOffsets();
-        this.syncSettledZoomPad();
-      })
-      .gesture(
-        GestureGroup(
-          GestureMode.Parallel,
-          TapGesture({ count: 2 })
-            .onAction((event: GestureEvent) => {
-              this.isGesturing = false;
-              const focusX = event.fingerList && event.fingerList.length > 0
-                ? event.fingerList[0].localX
-                : (this.viewportWidth / 2);
-              const focusY = event.fingerList && event.fingerList.length > 0
-                ? event.fingerList[0].localY
-                : (this.viewportHeight / 2);
-              this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
-              this.syncSettledZoomPad();
-            }),
-          PinchGesture({ fingers: 2 })
-            .onActionStart(() => {
-              this.isGesturing = true;
-              this.pinchStartZoom = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
-              this.pinchStartOffsetX = this.offsetX;
-            })
-            .onActionUpdate((event: GestureEvent) => {
-              const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
-              this.pinchFocusX = focusX;
-              const raw = this.pinchStartZoom * event.scale;
-              const settled = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, raw));
-              // 顶到边界后继续捏合按抵抗曲线让步，松手再收回，避免硬停带来的「手势丢了」错觉
-              const excess = raw - settled;
-              const display = settled + RenderUtils.rubberBandZoom(
-                excess, excess > 0 ? RenderUtils.ZOOM_OVERFLOW_ABOVE : RenderUtils.ZOOM_OVERFLOW_BELOW);
-              if (settled > 1.05) {
-                const dx = focusX - this.viewportWidth / 2;
-                const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
-                this.offsetX = dx - worldX * display;
-              } else {
-                this.offsetX = 0;
-              }
-              this.offsetY = 0;
-              this.zoom = display;
-              this.clampOffsets();
-            })
-            .onActionEnd(() => {
-              this.isGesturing = false;
-              const settled = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
-              if (settled > 1.05 && this.pinchStartZoom > 0) {
-                const focusX = this.pinchFocusX > 0 ? this.pinchFocusX : (this.viewportWidth / 2);
-                const dx = focusX - this.viewportWidth / 2;
-                const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
-                this.offsetX = dx - worldX * settled;
-              } else {
-                this.offsetX = 0;
-              }
-              // 回到已夹的缩放值；isGesturing 已置 false，外层 .animation 会把越界量平滑收回
-              this.zoom = settled;
-              this.clampOffsets();
-              this.syncSettledZoomPad();
-            })
-            .onActionCancel(() => {
-              this.isGesturing = false;
-              const settled = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
-              if (settled > 1.05 && this.pinchStartZoom > 0) {
-                const focusX = this.pinchFocusX > 0 ? this.pinchFocusX : (this.viewportWidth / 2);
-                const dx = focusX - this.viewportWidth / 2;
-                const worldX = (dx - this.pinchStartOffsetX) / this.pinchStartZoom;
-                this.offsetX = dx - worldX * settled;
-              } else {
-                this.offsetX = 0;
-              }
-              this.zoom = settled;
-              this.clampOffsets();
-              this.syncSettledZoomPad();
-            }),
-          PanGesture({ direction: PanDirection.Horizontal })
-            .onActionStart(() => {
-              this.isGesturing = true;
-              this.panStartX = this.offsetX;
-            })
-            .onActionUpdate((event: GestureEvent) => {
-              if (this.zoom > 1.05) {
-                this.offsetX = this.panStartX + event.offsetX;
-                this.clampOffsets();
-              }
-            })
-            .onActionEnd(() => {
-              this.isGesturing = false;
-            })
-            .onActionCancel(() => {
-              this.isGesturing = false;
-            })
-        )
-      )
-    }
-  }
+interface PptxPageLayout {
+  readonly page: model.Page;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
 }
 
 /**
@@ -1322,79 +1066,386 @@ function buildSlideAccessibilityLabel(page: model.Page | null, slideNumber: numb
   return texts.length === 0 ? `${lead}，无文本内容` : `${lead}：${texts.join('')}`;
 }
 
-@Reusable
 @Component
-struct PptxSlideCanvas {
-  page: model.Page | null = null;
-  imageStore: ImageStore = new ImageStore('');
-  slideNumber: number = 1;
-  slideCount: number = 1;
+struct PptxSlidesView {
+  document: model.OfficeDocument | null = null;
+  filePath: string = '';
+  onSlideChange?: (pageNumber: number, pageCount: number) => void;
+  registerControls?: (
+    jumpToPage: (pageNumber: number) => void,
+    getZoom: () => number,
+    setZoom: (value: number) => void
+  ) => void;
 
-  @State private reuseVersion: number = 0;
+  private imageStore: ImageStore = new ImageStore('');
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
   private isReady: boolean = false;
   private isDisappeared: boolean = false;
-  private acquiredParts: string[] = [];
-  private lastDrawnWidth: number = 0;
-  private lastDrawnHeight: number = 0;
+
+  private pageLayouts: PptxPageLayout[] = [];
+  private contentWidth: number = 720;
+  private contentHeight: number = 405;
+
+  private canvasWidth: number = 0;
+  private canvasHeight: number = 0;
+
+  // Viewport transforms (正向世界坐标与偏移，完全对齐 Android 端 OfficePreviewView)
+  private zoom: number = 1.0;
+  private rawZoom: number = 1.0;
+  private offsetX: number = 0;
+  private offsetY: number = 0;
+
+  // Gestures
+  private isPinching: boolean = false;
+  private pinchStartZoom: number = 1.0;
+  private pinchFocusX: number = 0;
+  private pinchFocusY: number = 0;
+  private panStartX: number = 0;
+  private panStartY: number = 0;
+
+  // Momentum Fling (via displaySync 120Hz)
+  private vsync: displaySync.DisplaySync | null = null;
+  private flingRunning: boolean = false;
+  private flingVx: number = 0;
+  private flingVy: number = 0;
+  private lastVsyncTimestamp: number = 0;
+  private lastFlingTime: number = 0;
+  private flingTimer: number = -1;
+
+  // Zoom Tween animation (双击平滑补间与越界回弹)
+  private zoomTweenTimer: number = -1;
+  private zoomTweenStart: number = 0;
+  private zoomTweenFrom: number = 1.0;
+  private zoomTweenTo: number = 1.0;
+  private zoomTweenFocusX: number = 0;
+  private zoomTweenFocusY: number = 0;
+  private zoomTweenDuration: number = 0;
+
+  // Page tracking & Accessibility
+  @State private currentPage: number = 1;
+  private totalPages: number = 0;
+  private notifiedPage: number = 0;
+  private pendingJumpPage: number = 0;
   private redrawTimer: number = -1;
+  private readonly loadingParts: Set<string> = new Set();
   private loadGeneration: number = 0;
 
   aboutToAppear(): void {
     this.isDisappeared = false;
-    this.loadImages();
+    this.imageStore = new ImageStore(this.filePath);
+    this.initLayouts();
+    if (this.registerControls) {
+      this.registerControls(
+        (pageNumber: number): void => {
+          this.jumpToPage(pageNumber);
+        },
+        (): number => this.zoom,
+        (value: number): void => {
+          this.startZoomTween(value, this.canvasWidth / 2, this.canvasHeight / 2, RenderUtils.ZOOM_ANIMATION_MS);
+        }
+      );
+    }
   }
 
   aboutToDisappear(): void {
     this.loadGeneration++;
     this.isDisappeared = true;
     this.isReady = false;
+    this.stopFling();
+    this.stopZoomTween();
+    if (this.vsync) {
+      try {
+        this.vsync.off('frame');
+      } catch (_e) {}
+      this.vsync = null;
+    }
+    if (this.flingTimer !== -1) {
+      clearTimeout(this.flingTimer);
+      this.flingTimer = -1;
+    }
     if (this.redrawTimer !== -1) {
       clearTimeout(this.redrawTimer);
       this.redrawTimer = -1;
     }
-    for (const part of this.acquiredParts) {
-      this.imageStore.releasePart(part);
-    }
-    this.acquiredParts = [];
+    this.imageStore.release();
   }
 
-  aboutToRecycle(): void {
-    this.loadGeneration++;
-    if (this.redrawTimer !== -1) {
-      clearTimeout(this.redrawTimer);
-      this.redrawTimer = -1;
+  private initLayouts(): void {
+    this.pageLayouts = [];
+    let totalH = 0;
+    let maxW = 720;
+    const pages = this.document?.pages ?? [];
+    this.totalPages = pages.length;
+    for (const page of pages) {
+      const pW = page.width && page.width > 0 ? page.width : 720;
+      const pH = page.height && page.height > 0 ? page.height : 405;
+      this.pageLayouts.push({ page, y: totalH, width: pW, height: pH });
+      totalH += pH + 16;
+      if (pW > maxW) maxW = pW;
     }
-    for (const part of this.acquiredParts) {
-      this.imageStore.releasePart(part);
-    }
-    this.acquiredParts = [];
-    this.lastDrawnWidth = 0;
-    this.lastDrawnHeight = 0;
+    this.contentWidth = maxW;
+    this.contentHeight = Math.max(0, totalH - 16);
+    this.currentPage = this.totalPages > 0 ? 1 : 0;
+    this.notifiedPage = this.currentPage;
   }
 
-  aboutToReuse(params: Record<string, Object>): void {
-    this.isDisappeared = false;
-    if (params['page']) {
-      this.page = params['page'] as model.Page;
+  private baseScale(): number {
+    return this.contentWidth > 0 ? Math.max(0.1, (this.canvasWidth - 24) / this.contentWidth) : 1.0;
+  }
+
+  private getScale(): number {
+    return this.baseScale() * this.zoom;
+  }
+
+  private getLeft(): number {
+    const s = this.getScale();
+    return Math.max(0, (this.canvasWidth - this.contentWidth * s) / 2);
+  }
+
+  private getTop(): number {
+    return 12;
+  }
+
+  private maxX(): number {
+    const s = this.getScale();
+    return Math.max(0, Math.round(this.contentWidth * s - this.canvasWidth));
+  }
+
+  private maxY(): number {
+    const s = this.getScale();
+    return Math.max(0, Math.round(this.contentHeight * s + 2 * this.getTop() - this.canvasHeight));
+  }
+
+  private clampOffsets(): void {
+    this.offsetX = Math.max(0, Math.min(this.maxX(), this.offsetX));
+    this.offsetY = Math.max(0, Math.min(this.maxY(), this.offsetY));
+  }
+
+  private clampZoom(val: number): number {
+    return Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, val));
+  }
+
+  private applyZoomAt(newZoom: number, focusX: number, focusY: number): void {
+    const prevScale = this.getScale();
+    let worldX = 0;
+    let worldY = 0;
+    if (prevScale > 0) {
+      worldX = (focusX + this.offsetX - this.getLeft()) / prevScale;
+      worldY = (focusY + this.offsetY - this.getTop()) / prevScale;
     }
-    if (params['imageStore']) {
-      this.imageStore = params['imageStore'] as ImageStore;
+    this.zoom = newZoom;
+    const newScale = this.getScale();
+    if (prevScale > 0 && newScale > 0) {
+      this.offsetX = worldX * newScale - focusX + this.getLeft();
+      this.offsetY = worldY * newScale - focusY + this.getTop();
     }
-    if (params['slideNumber'] !== undefined) {
-      this.slideNumber = params['slideNumber'] as number;
+    this.clampOffsets();
+  }
+
+  private updateCurrentPage(): void {
+    if (this.pageLayouts.length === 0 || this.canvasWidth <= 0 || this.canvasHeight <= 0) return;
+    const s = this.getScale();
+    if (s <= 0) return;
+    const visibleTop = (this.offsetY - this.getTop()) / s;
+    const visibleBottom = visibleTop + this.canvasHeight / s;
+    let bestPage = Math.max(1, this.currentPage);
+    let bestVisible = -1;
+    for (let i = 0; i < this.pageLayouts.length; i++) {
+      const page = this.pageLayouts[i];
+      const visible = Math.max(0, Math.min(visibleBottom, page.y + page.height) - Math.max(visibleTop, page.y));
+      if (visible > bestVisible + 0.01 || (Math.abs(visible - bestVisible) <= 0.01 && i + 1 === this.currentPage)) {
+        bestVisible = visible;
+        bestPage = i + 1;
+      }
     }
-    if (params['slideCount'] !== undefined) {
-      this.slideCount = params['slideCount'] as number;
+    this.currentPage = bestPage;
+    if (this.notifiedPage !== this.currentPage) {
+      this.notifiedPage = this.currentPage;
+      if (this.onSlideChange) {
+        this.onSlideChange(this.currentPage, this.totalPages);
+      }
     }
-    this.reuseVersion++;
-    this.lastDrawnWidth = 0;
-    this.lastDrawnHeight = 0;
-    this.loadImages();
-    if (this.isReady) {
-      this.drawSlide(true);
+  }
+
+  public jumpToPage(pageNumber: number): void {
+    if (pageNumber < 1 || pageNumber > this.pageLayouts.length) return;
+    if (this.canvasWidth <= 0 || this.canvasHeight <= 0) {
+      this.pendingJumpPage = pageNumber;
+      return;
     }
+    this.pendingJumpPage = 0;
+    this.stopFling();
+    this.stopZoomTween();
+    const targetLayout = this.pageLayouts[pageNumber - 1];
+    const s = this.getScale();
+    this.offsetX = 0;
+    this.offsetY = targetLayout.y * s;
+    this.clampOffsets();
+    this.updateCurrentPage();
+    this.redraw();
+  }
+
+  private stopFling(): void {
+    this.flingRunning = false;
+    this.lastVsyncTimestamp = 0;
+    if (this.vsync) {
+      try {
+        this.vsync.stop();
+      } catch (_e) {}
+    }
+    if (this.flingTimer !== -1) {
+      clearTimeout(this.flingTimer);
+      this.flingTimer = -1;
+    }
+    this.flingVx = 0;
+    this.flingVy = 0;
+  }
+
+  private startFling(vx: number, vy: number): void {
+    this.stopFling();
+    const maxVelocity = 4000;
+    const currentV = Math.hypot(vx, vy);
+    if (currentV > maxVelocity) {
+      const ratio = maxVelocity / currentV;
+      vx *= ratio;
+      vy *= ratio;
+    }
+    this.flingVx = vx;
+    this.flingVy = vy;
+    this.flingRunning = true;
+    this.lastVsyncTimestamp = 0;
+    this.lastFlingTime = Date.now();
+
+    if (!this.vsync) {
+      try {
+        this.vsync = displaySync.create();
+        this.vsync.on('frame', (frameInfo: displaySync.IntervalInfo) => {
+          if (!this.flingRunning) return;
+          const ts = frameInfo.timestamp;
+          let dt = 0.016;
+          if (this.lastVsyncTimestamp > 0 && ts > this.lastVsyncTimestamp) {
+            dt = Math.min(0.032, Math.max(0.001, (ts - this.lastVsyncTimestamp) / 1e9));
+          }
+          this.lastVsyncTimestamp = ts;
+          this.stepFlingWithDt(dt);
+        });
+      } catch (_e) {
+        this.vsync = null;
+      }
+    }
+
+    if (this.vsync) {
+      try {
+        this.vsync.start();
+      } catch (_e) {
+        this.vsync = null;
+        this.flingTimer = setTimeout(this.stepFlingFallback, 16);
+      }
+    } else {
+      this.flingTimer = setTimeout(this.stepFlingFallback, 16);
+    }
+  }
+
+  private stepFlingWithDt(dt: number): void {
+    if (!this.flingRunning || (this.flingVx === 0 && this.flingVy === 0)) {
+      this.stopFling();
+      return;
+    }
+
+    const friction = 2.8;
+    const decay = Math.exp(-friction * dt);
+    this.flingVx *= decay;
+    this.flingVy *= decay;
+
+    if (Math.hypot(this.flingVx, this.flingVy) < 25) {
+      this.stopFling();
+      return;
+    }
+
+    const prevX = this.offsetX;
+    const prevY = this.offsetY;
+    this.offsetX += this.flingVx * dt;
+    this.offsetY += this.flingVy * dt;
+    this.clampOffsets();
+
+    if (this.offsetX === prevX) this.flingVx = 0;
+    if (this.offsetY === prevY) this.flingVy = 0;
+
+    this.updateCurrentPage();
+
+    if (this.flingVx === 0 && this.flingVy === 0) {
+      this.stopFling();
+      this.redraw();
+      return;
+    }
+
+    this.redraw();
+  }
+
+  private stepFlingFallback = (): void => {
+    if (!this.flingRunning) return;
+    const now = Date.now();
+    const dt = Math.min(0.032, Math.max(0.001, (now - this.lastFlingTime) / 1000));
+    this.lastFlingTime = now;
+    this.stepFlingWithDt(dt);
+    if (this.flingRunning) {
+      this.flingTimer = setTimeout(this.stepFlingFallback, 16);
+    }
+  };
+
+  private stopZoomTween(): void {
+    if (this.zoomTweenTimer >= 0) {
+      clearTimeout(this.zoomTweenTimer);
+      this.zoomTweenTimer = -1;
+    }
+  }
+
+  private startZoomTween(target: number, focusX: number, focusY: number, duration: number): void {
+    this.stopZoomTween();
+    const from = this.zoom;
+    const to = this.clampZoom(target);
+    if (duration <= 0 || Math.abs(to - from) < 0.002) {
+      this.applyZoomAt(to, focusX, focusY);
+      this.rawZoom = to;
+      this.updateCurrentPage();
+      this.redraw();
+      return;
+    }
+    this.zoomTweenFrom = from;
+    this.zoomTweenTo = to;
+    this.zoomTweenFocusX = focusX;
+    this.zoomTweenFocusY = focusY;
+    this.zoomTweenDuration = duration;
+    this.zoomTweenStart = Date.now();
+    this.stepZoomTween();
+  }
+
+  private stepZoomTween = (): void => {
+    this.zoomTweenTimer = -1;
+    const elapsed = Date.now() - this.zoomTweenStart;
+    const progress = this.zoomTweenDuration > 0 ? Math.min(1, elapsed / this.zoomTweenDuration) : 1;
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const z = this.zoomTweenFrom + (this.zoomTweenTo - this.zoomTweenFrom) * eased;
+    this.applyZoomAt(z, this.zoomTweenFocusX, this.zoomTweenFocusY);
+    this.updateCurrentPage();
+    this.redraw();
+    if (progress < 1) {
+      this.zoomTweenTimer = setTimeout(this.stepZoomTween, 16);
+    } else {
+      this.rawZoom = this.zoom;
+    }
+  };
+
+  private settlePinchZoom(): void {
+    const settled = this.clampZoom(this.zoom);
+    if (Math.abs(settled - this.zoom) <= 0.002) {
+      this.rawZoom = this.zoom;
+      return;
+    }
+    const focusX = this.pinchFocusX > 0 ? this.pinchFocusX : (this.canvasWidth / 2);
+    const focusY = this.pinchFocusY > 0 ? this.pinchFocusY : (this.canvasHeight / 2);
+    this.startZoomTween(settled, focusX, focusY, RenderUtils.ZOOM_ANIMATION_MS);
   }
 
   private scheduleRedraw(): void {
@@ -1402,124 +1453,222 @@ struct PptxSlideCanvas {
     this.redrawTimer = setTimeout(() => {
       this.redrawTimer = -1;
       if (!this.isDisappeared) {
-        this.drawSlide(true);
+        this.drawPptx();
       }
     }, 16);
   }
 
-  private computePartBudget(part: string, count: number): number {
-    let maxAreaPoints = 0;
-    if (this.page?.elements) {
-      for (const el of this.page.elements) {
-        if (el.type === 'IMAGE' && el.image === part) {
-          const w = el.width && el.width > 0 ? el.width : (this.page.width || 720);
-          const h = el.height && el.height > 0 ? el.height : (this.page.height || 405);
-          const area = w * h;
-          if (area > maxAreaPoints) {
-            maxAreaPoints = area;
-          }
-        }
-      }
-    }
-    if (maxAreaPoints <= 0) {
-      maxAreaPoints = (this.page?.width || 720) * (this.page?.height || 405);
-    }
-    const scaledPoints = Math.round(maxAreaPoints * 2.25);
-    const pageBudgetShare = Math.floor(4_000_000 / Math.max(1, count));
-    return Math.max(64_000, Math.min(scaledPoints, pageBudgetShare));
+  private redraw(): void {
+    this.drawPptx();
   }
 
-  /** 收集本页引用的全部图片，异步按预算加载，图片就绪后合并 16ms 节流重绘 */
-  private loadImages(): void {
-    if (!this.page || !this.page.elements) return;
-    const parts: string[] = [];
-    for (const element of this.page.elements) {
-      if (element.type === 'IMAGE' && element.image && parts.indexOf(element.image) < 0) {
-        parts.push(element.image);
-      }
-    }
-    if (this.acquiredParts.length > 0) {
-      for (const part of this.acquiredParts) {
-        this.imageStore.releasePart(part);
-      }
-      this.acquiredParts = [];
-    }
-    if (parts.length === 0) return;
-    this.acquiredParts = parts;
+  private requestVisibleImages(parts: string[]): void {
     for (const part of parts) {
-      this.imageStore.acquire(part);
-    }
-    const currentGen = ++this.loadGeneration;
-    const count = parts.length;
-    parts.forEach(async (part: string) => {
-      const budget = this.computePartBudget(part, count);
-      const updated = await this.imageStore.load(part, budget);
-      if (updated && !this.isDisappeared && this.loadGeneration === currentGen) {
-        this.scheduleRedraw();
+      if (this.imageStore.cache.has(part) || this.loadingParts.has(part)) {
+        continue;
       }
-    });
+      this.loadingParts.add(part);
+      this.imageStore.acquire(part);
+      const gen = this.loadGeneration;
+      this.imageStore.load(part).then((updated: boolean) => {
+        this.loadingParts.delete(part);
+        if (updated && !this.isDisappeared && this.loadGeneration === gen) {
+          this.scheduleRedraw();
+        }
+      });
+    }
   }
 
-  private drawSlide(force: boolean = false): void {
-    if (!this.isReady || !this.page) return;
-    const w = this.ctx.width;
-    const h = this.ctx.height;
-    if (w <= 0 || h <= 0) return;
-    if (!force && Math.abs(w - this.lastDrawnWidth) < 0.5 && Math.abs(h - this.lastDrawnHeight) < 0.5) {
-      return;
-    }
-    this.lastDrawnWidth = w;
-    this.lastDrawnHeight = h;
-
+  private drawPptx(): void {
+    if (!this.isReady || !this.document || this.canvasWidth <= 0 || this.canvasHeight <= 0) return;
     const ctx = this.ctx;
+    const w = this.canvasWidth;
+    const h = this.canvasHeight;
+
     ctx.clearRect(0, 0, w, h);
 
-    const pW = this.page.width || 720;
-    const pH = this.page.height || 405;
-    const scale = Math.min(w / pW, h / pH);
+    // 全局背景底色：对齐 Android 端的 #e9ecef
+    ctx.fillStyle = '#e9ecef';
+    ctx.fillRect(0, 0, w, h);
+
+    const scale = this.getScale();
+    const left = this.getLeft();
+    const top = this.getTop();
+
+    const visibleTop = (this.offsetY - top) / scale;
+    const visibleBottom = visibleTop + h / scale;
 
     ctx.save();
-    const offsetX = (w - pW * scale) / 2;
-    const offsetY = (h - pH * scale) / 2;
-    ctx.translate(offsetX, offsetY);
+    ctx.translate(left - this.offsetX, top - this.offsetY);
     ctx.scale(scale, scale);
 
-    ctx.beginPath();
-    ctx.rect(0, 0, pW, pH);
-    ctx.clip();
+    const neededImageParts: string[] = [];
 
-    const bgCss = RenderUtils.argbToCss(this.page.background) ?? '#ffffff';
-    ctx.fillStyle = bgCss;
-    ctx.fillRect(0, 0, pW, pH);
-
-    if (this.page.elements) {
-      for (const element of this.page.elements) {
-        CanvasElementDrawer.drawElement(ctx, element, this.imageStore.cache);
+    for (let i = 0; i < this.pageLayouts.length; i++) {
+      const layout = this.pageLayouts[i];
+      // 视口裁剪：只绘制可见范围内的幻灯片
+      if (layout.y + layout.height < visibleTop || layout.y > visibleBottom) {
+        continue;
       }
+
+      const slideLeft = (this.contentWidth - layout.width) / 2;
+
+      ctx.save();
+      ctx.translate(slideLeft, layout.y);
+
+      // 1. 幻灯片白色/纯色卡片底色及淡灰色分割边框
+      const bgCss = RenderUtils.argbToCss(layout.page.background) ?? '#ffffff';
+      ctx.fillStyle = bgCss;
+      ctx.fillRect(0, 0, layout.width, layout.height);
+
+      ctx.strokeStyle = '#ced4da';
+      ctx.lineWidth = 0.6;
+      ctx.strokeRect(0, 0, layout.width, layout.height);
+
+      // 2. 局部剪裁至单张 Slide 边界
+      ctx.beginPath();
+      ctx.rect(0, 0, layout.width, layout.height);
+      ctx.clip();
+
+      // 3. 矢量元素与图片绘制
+      if (layout.page.elements) {
+        for (const element of layout.page.elements) {
+          if (element.type === 'IMAGE' && element.image) {
+            neededImageParts.push(element.image);
+          }
+          CanvasElementDrawer.drawElement(ctx, element, this.imageStore.cache);
+        }
+      }
+
+      ctx.restore();
     }
 
     ctx.restore();
+
+    if (neededImageParts.length > 0) {
+      this.requestVisibleImages(neededImageParts);
+    }
+  }
+
+  private currentSlideAccessibilityLabel(): string {
+    const currentIdx = Math.max(0, this.currentPage - 1);
+    const page = this.pageLayouts[currentIdx]?.page ?? null;
+    return buildSlideAccessibilityLabel(page, this.currentPage, this.totalPages);
   }
 
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.Bottom }) {
       Canvas(this.ctx)
-        .width('100%')
-        .aspectRatio(((this.page?.width ?? 720) / (this.page?.height ?? 405)))
-        .shadow({ radius: 8, color: '#20000000', offsetY: 2 })
-        .borderRadius(4)
-        .backgroundColor('#ffffff')
+        .width(this.canvasWidth > 0 ? this.canvasWidth : '100%')
+        .height(this.canvasHeight > 0 ? this.canvasHeight : '100%')
         .onReady(() => {
           this.isReady = true;
-          this.drawSlide(true);
+          this.drawPptx();
         })
-        .onAreaChange(() => {
-          this.drawSlide(false);
+        .onAreaChange((_oldArea: Area, newArea: Area) => {
+          const areaW = Number(newArea.width);
+          const areaH = Number(newArea.height);
+          if (areaW > 0) this.canvasWidth = areaW;
+          if (areaH > 0) this.canvasHeight = areaH;
+          if (this.isReady) {
+            this.clampOffsets();
+            if (this.pendingJumpPage > 0) {
+              this.jumpToPage(this.pendingJumpPage);
+            } else {
+              this.drawPptx();
+            }
+          }
         })
+        .gesture(
+          GestureGroup(
+            GestureMode.Parallel,
+            TapGesture({ count: 2 })
+              .onAction((event: GestureEvent) => {
+                this.stopFling();
+                const focusX = event.fingerList && event.fingerList.length > 0
+                  ? event.fingerList[0].localX
+                  : (this.canvasWidth / 2);
+                const focusY = event.fingerList && event.fingerList.length > 0
+                  ? event.fingerList[0].localY
+                  : (this.canvasHeight / 2);
+                const targetZoom = this.zoom > 1.1 ? 1.0 : 2.0;
+                this.startZoomTween(targetZoom, focusX, focusY, RenderUtils.ZOOM_ANIMATION_MS);
+              }),
+            PinchGesture({ fingers: 2 })
+              .onActionStart(() => {
+                this.stopFling();
+                this.stopZoomTween();
+                this.isPinching = true;
+                this.pinchStartZoom = this.clampZoom(this.zoom);
+              })
+              .onActionUpdate((event: GestureEvent) => {
+                const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.canvasWidth / 2);
+                const focusY = event.pinchCenterY > 0 ? event.pinchCenterY : (this.canvasHeight / 2);
+                this.pinchFocusX = focusX;
+                this.pinchFocusY = focusY;
+                const raw = this.pinchStartZoom * event.scale;
+                const settled = this.clampZoom(raw);
+                const excess = raw - settled;
+                const display = settled + RenderUtils.rubberBandZoom(
+                  excess, excess > 0 ? RenderUtils.ZOOM_OVERFLOW_ABOVE : RenderUtils.ZOOM_OVERFLOW_BELOW);
+                this.applyZoomAt(display, focusX, focusY);
+                this.updateCurrentPage();
+                this.redraw();
+              })
+              .onActionEnd(() => {
+                this.isPinching = false;
+                this.panStartX = this.offsetX;
+                this.panStartY = this.offsetY;
+                this.settlePinchZoom();
+              })
+              .onActionCancel(() => {
+                this.isPinching = false;
+                this.panStartX = this.offsetX;
+                this.panStartY = this.offsetY;
+                this.settlePinchZoom();
+              }),
+            PanGesture()
+              .onActionStart(() => {
+                if (this.isPinching) return;
+                this.stopFling();
+                this.panStartX = this.offsetX;
+                this.panStartY = this.offsetY;
+              })
+              .onActionUpdate((event: GestureEvent) => {
+                if (this.isPinching) return;
+                this.stopFling();
+                this.offsetX = this.panStartX - event.offsetX;
+                this.offsetY = this.panStartY - event.offsetY;
+                this.clampOffsets();
+                this.updateCurrentPage();
+                this.redraw();
+              })
+              .onActionEnd((event: GestureEvent) => {
+                if (this.isPinching) return;
+                const vx = event.velocityX ?? 0;
+                const vy = event.velocityY ?? 0;
+                if (Math.hypot(vx, vy) > 80) {
+                  this.startFling(-vx, -vy);
+                }
+              })
+          )
+        )
+        .accessibilityGroup(true)
+        .accessibilityText(this.currentSlideAccessibilityLabel())
+
+      if (this.totalPages > 1) {
+        Text(`${this.currentPage} / ${this.totalPages}`)
+          .fontSize(12)
+          .fontColor('#ffffff')
+          .backgroundColor('#8a000000')
+          .borderRadius(14)
+          .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+          .margin({ bottom: 20 })
+          .hitTestBehavior(HitTestMode.None)
+      }
     }
-    .id(`slide-canvas-${this.reuseVersion}`)
     .width('100%')
-    .accessibilityText(buildSlideAccessibilityLabel(this.page, this.slideNumber, this.slideCount))
-    .accessibilityGroup(true)
+    .height('100%')
+    .clip(true)
   }
 }
