@@ -18,6 +18,7 @@ import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
 import cn.jingzhuan.lib.office.OfficePreviewView;
+import cn.jingzhuan.lib.office.widget.OfficeSheetTabs;
 import cn.jingzhuan.lib.office.online.RemoteOfficeDownloader;
 import cn.jingzhuan.lib.office.online.RemoteOfficeLoader;
 import cn.jingzhuan.lib.office.online.RemoteOfficeRequest;
@@ -27,7 +28,7 @@ public final class MainActivity extends Activity {
     private OfficePreviewView preview;
     private TextView title, status;
     private ImageButton previous, next;
-    private SheetTabs sheets;
+    private OfficeSheetTabs sheets;
     private OfficePreviewView.Info loadedInfo;
     private RemoteOfficeLoader remoteLoader;
     private RemoteOfficeLoader.Task remoteTask;
@@ -55,7 +56,7 @@ public final class MainActivity extends Activity {
         status = new TextView(this); status.setTextSize(12); status.setTextColor(0xff58616b); status.setPadding(dp(16), dp(4), dp(16), dp(8));
         status.setText("DOCX / PPTX / XLSX"); root.addView(status);
         preview = new OfficePreviewView(this); preview.setId(android.R.id.primary); root.addView(preview, new LinearLayout.LayoutParams(-1, 0, 1));
-        sheets = new SheetTabs(this); root.addView(sheets, new LinearLayout.LayoutParams(-1, -2));
+        sheets = new OfficeSheetTabs(this); sheets.attachTo(preview); root.addView(sheets, new LinearLayout.LayoutParams(-1, -2));
         remoteLoader = new RemoteOfficeLoader(this);
         preview.setOnPageChangeListener((page, count) -> updatePageState());
         setContentView(root);
@@ -134,7 +135,7 @@ public final class MainActivity extends Activity {
                 case 3: openRemote(currentRemoteUrl); break;
                 case 4:
                     cancelRemote(); preview.clear(); loadedInfo = null; current = null; currentRemoteUrl = null;
-                    sheets.bind(java.util.Collections.emptyList(), preview); updatePageState();
+                    updatePageState();
                     title.setText("JZ Office"); status.setText("DOCX / PPTX / XLSX"); status.setOnClickListener(null);
                     break;
                 case 5:
@@ -166,7 +167,6 @@ public final class MainActivity extends Activity {
     private void open(Uri uri) {
         cancelRemote();
         loadedInfo = null; updatePageState();
-        sheets.bind(java.util.Collections.emptyList(), preview);
         current = uri; currentRemoteUrl = null; status.setText("Loading..."); status.setOnClickListener(null);
         title.setText("Document");
         new Thread(() -> {
@@ -179,7 +179,7 @@ public final class MainActivity extends Activity {
         }, "document-name").start();
         preview.open(uri, new OfficePreviewView.Listener() {
             @Override public void onLoaded(OfficePreviewView.Info info) {
-                loadedInfo = info; sheets.bind(info.sheetNames, preview); updatePageState();
+                loadedInfo = info; updatePageState();
                 if (!info.warnings.isEmpty()) status.setOnClickListener(v -> new AlertDialog.Builder(MainActivity.this).setTitle("Preview notices").setMessage(android.text.TextUtils.join("\n\n", info.warnings)).setPositiveButton(android.R.string.ok, null).show());
             }
             @Override public void onError(Exception error) { status.setText(error.getMessage()); }
@@ -193,7 +193,6 @@ public final class MainActivity extends Activity {
         catch (IllegalArgumentException error) { status.setText(error.getMessage()); return; }
         cancelRemote();
         loadedInfo = null; updatePageState();
-        sheets.bind(java.util.Collections.emptyList(), preview);
         current = null; currentRemoteUrl = url; status.setText("Downloading..."); status.setOnClickListener(null);
         title.setText(remoteTitle(url));
         remoteTask = remoteLoader.open(preview, request, new RemoteOfficeLoader.Listener() {
@@ -209,7 +208,7 @@ public final class MainActivity extends Activity {
 
             @Override public void onLoaded(OfficePreviewView.Info info) {
                 if (!url.equals(currentRemoteUrl)) return;
-                loadedInfo = info; sheets.bind(info.sheetNames, preview); updatePageState();
+                loadedInfo = info; updatePageState();
                 if (!info.warnings.isEmpty()) status.setOnClickListener(v -> new AlertDialog.Builder(MainActivity.this).setTitle("Preview notices").setMessage(android.text.TextUtils.join("\n\n", info.warnings)).setPositiveButton(android.R.string.ok, null).show());
             }
 
@@ -225,7 +224,6 @@ public final class MainActivity extends Activity {
         next.setVisibility(slides ? View.VISIBLE : View.GONE);
         if (loadedInfo == null) return;
         int page = preview.getCurrentPage();
-        sheets.select(page);
         previous.setEnabled(page > 1);
         next.setEnabled(page > 0 && page < preview.getPageCount());
         boolean workbook = loadedInfo.format.equals("XLSX");

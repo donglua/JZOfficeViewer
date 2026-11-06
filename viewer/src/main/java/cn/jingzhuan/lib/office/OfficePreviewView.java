@@ -88,6 +88,7 @@ public final class OfficePreviewView extends View {
     private final SheetRenderer sheetRenderer = new SheetRenderer();
     private final RectF sheetViewport = new RectF();
     private OnPageChangeListener pageListener;
+    private final List<OnPageChangeListener> pageListeners = new ArrayList<>();
     private int currentPage, notifiedPage, notifiedCount, pendingJumpPage, announcedPage;
     private boolean hasRestoredState;
     private int restoredPage;
@@ -283,6 +284,19 @@ public final class OfficePreviewView extends View {
         if (listener != null) listener.onPageChanged(currentPage, getPageCount());
     }
 
+    public void addOnPageChangeListener(OnPageChangeListener listener) {
+        requireMainThread();
+        if (listener != null && !pageListeners.contains(listener)) {
+            pageListeners.add(listener);
+            listener.onPageChanged(currentPage, getPageCount());
+        }
+    }
+
+    public void removeOnPageChangeListener(OnPageChangeListener listener) {
+        requireMainThread();
+        pageListeners.remove(listener);
+    }
+
     public void jumpToPage(int pageNumber) {
         requireMainThread();
         if (pageNumber < 1 || pageNumber > getPageCount()) throw new IllegalArgumentException("Page number is outside the loaded document");
@@ -330,6 +344,12 @@ public final class OfficePreviewView extends View {
         if (notifiedPage == currentPage && notifiedCount == count) return;
         notifiedPage = currentPage; notifiedCount = count;
         if (pageListener != null) pageListener.onPageChanged(currentPage, count);
+        if (!pageListeners.isEmpty()) {
+            List<OnPageChangeListener> copy = new ArrayList<>(pageListeners);
+            for (int i = 0; i < copy.size(); i++) {
+                copy.get(i).onPageChanged(currentPage, count);
+            }
+        }
         announcePageIfSettled();
     }
 
