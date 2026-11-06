@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { OfficePreviewController, OfficePreviewInfo, OfficePreviewView } from '@jzdy/office';
+import { OfficePreviewController, OfficePreviewInfo, OfficePreviewView, OfficeSheetTabs } from '@jzdy/office';
 
 interface SampleItem {
   title: string;
@@ -23,6 +23,7 @@ struct Index {
   @State statusText: string = 'DOCX / PPTX / XLSX';
   @State currentPage: number = 0;
   @State pageCount: number = 0;
+  @State sheetNames: string[] = [];
   private currentFormat: string = 'DOCX';
   private noticeCount: number = 0;
 
@@ -41,6 +42,7 @@ struct Index {
   private async selectSample(index: number): Promise<void> {
     this.selectedIndex = index;
     this.prepareError = '';
+    this.sheetNames = [];
     const sample = this.samples[index];
     try {
       const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
@@ -163,6 +165,7 @@ struct Index {
               this.noticeCount = info.warnings.length;
               this.pageCount = info.pageCount;
               this.currentPage = info.pageCount > 0 ? 1 : 0;
+              this.sheetNames = info.sheetNames || [];
               this.updateStatusText();
             },
             onPageChange: (pageNumber: number, pageCount: number) => {
@@ -179,6 +182,14 @@ struct Index {
       }
       .width('100%')
       .layoutWeight(1)
+
+      if (this.sheetNames.length > 0) {
+        OfficeSheetTabs({
+          sheetNames: this.sheetNames,
+          currentSheet: this.currentPage,
+          controller: this.controller
+        })
+      }
     }
     .width('100%')
     .height('100%')
