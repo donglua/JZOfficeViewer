@@ -113,6 +113,8 @@ public final class OfficeInstrumentation extends Instrumentation {
             if (!layoutOnly && !imagesOnly && !imageCacheOnly && !xlsxOnly && !xlsxTextOnly && !pptxOnly && !pptxLayoutOnly && !compatibilityOnly && !accessibilityOnly) {
                 results.append(PackageOpeningChecks.run(getTargetContext()));
                 results.append(PackageLimitChecks.run(getTargetContext()));
+                results.append(OfficeMetadataChecks.run(getTargetContext()));
+                results.append(OfficeThumbnailChecks.run(getTargetContext()));
             }
             if (limitsOnly) {
                 output.putString("stream", "\n" + results + "ALL LIMIT CHECKS PASSED\n");
