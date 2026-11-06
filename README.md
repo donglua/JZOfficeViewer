@@ -111,10 +111,38 @@ preview.open(uri, object : OfficePreviewView.Listener {
   }
   preview.jumpToPage(2)
   ```
-- **XLSX 工作表切换**（表序号从 1 开始）：
+- **XLSX 工作表切换与标准化标签栏组件**：
+  可以直接调用 `preview.selectSheet(2)` 切换工作表（表序号从 1 开始），或直接接入标准组件 `OfficeSheetTabs`（自动与预览视图双向联动绑定，非 XLSX 时自动隐藏）：
   ```kotlin
-  val names = preview.sheetNames
-  preview.selectSheet(2)
+  import cn.jingzhuan.lib.office.widget.OfficeSheetTabs
+
+  val sheetTabs = OfficeSheetTabs(context)
+  sheetTabs.attachTo(preview)
+  container.addView(sheetTabs)
+  ```
+- **无头元数据读取（`OfficeMetadata`）**：
+  无需初始化 View 即可在后台离线读取文档格式、页数、尺寸（点单位）及工作表名称列表：
+  ```kotlin
+  import cn.jingzhuan.lib.office.OfficeMetadata
+
+  OfficeMetadata.readAsync(context, uri, object : OfficeMetadata.Callback {
+      override fun onSuccess(meta: OfficeMetadata) {
+          Log.i("Office", "Format: ${meta.format}, pages: ${meta.pageCount}, sheets: ${meta.sheetNames}")
+      }
+      override fun onError(error: Exception) { }
+  })
+  ```
+- **离屏封面/缩略图生成（`OfficeThumbnail`）**：
+  脱离 UI 视图直接在后台工作线程渲染文档首页（DOCX / PPTX / XLSX）为指定最大边界的 Bitmap（自动按原比例缩放）：
+  ```kotlin
+  import cn.jingzhuan.lib.office.OfficeThumbnail
+
+  OfficeThumbnail.load(context, uri, 300, 300, object : OfficeThumbnail.Callback {
+      override fun onSuccess(bitmap: Bitmap) {
+          coverImageView.setImageBitmap(bitmap)
+      }
+      override fun onError(error: Exception) { }
+  })
   ```
 - **生命周期清理**：在 `Activity.onDestroy()` 或 `Fragment.onDestroyView()` 中调用 `preview.clear()`，及时释放图片缓存并清理私有暂存文件。
 
@@ -226,7 +254,25 @@ struct PreviewPage {
 }
 ```
 
-如需直接获取解析后的结构化文档模型（`OfficeDocument`），可调用异步接口 `NativeCore.parseDocumentAsync(filePath)`。完整用法可参考 `demo-ohos` 模块。
+如需直接获取解析后的结构化文档模型（`OfficeDocument`），可调用异步接口 `NativeCore.parseDocumentAsync(filePath)`。
+
+如需在鸿蒙端无头速读文档元数据，可使用 `readOfficeMetadata(filePath)`；如需多工作表切换栏，可直接引入 `OfficeSheetTabs` 组件：
+
+```typescript
+import { readOfficeMetadata, OfficeSheetTabs, OfficePreviewInfo } from '@jzdy/office';
+
+// 1. 无头元数据速读
+const info: OfficePreviewInfo = await readOfficeMetadata(filePath);
+
+// 2. 多工作表切换标签栏
+OfficeSheetTabs({
+  sheetNames: this.sheetNames,
+  currentSheet: this.currentPage,
+  controller: this.previewController
+})
+```
+
+完整用法可参考 `demo-ohos` 模块。
 
 ## 资源与安全限制
 
