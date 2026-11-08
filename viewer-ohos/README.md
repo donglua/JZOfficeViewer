@@ -18,7 +18,7 @@
 | --- | --- | --- | --- |
 | Android | `viewer-0.10.0.aar` | **约 837 KiB** | DOCX / PPTX / XLSX 核心预览，含 `arm64-v8a` 与 `armeabi-v7a` |
 | Android | `viewer-online-0.10.0.aar` | **约 21.1 KiB** | 可选的在线下载与缓存模块，配合 `viewer` 使用，零额外网络库依赖 |
-| HarmonyOS | `jzdy-office-0.10.0.har` | **约 1035 KiB** | 鸿蒙 NEXT 核心预览 HAR（`@jzdy/office`），含 `arm64-v8a` 与 `x86_64` |
+| HarmonyOS | `jzdy-office-0.10.0.har` | **约 1057 KiB** | 鸿蒙 NEXT 核心预览 HAR（`@jzdy/office`），含 `arm64-v8a` 与 `x86_64` |
 
 产物均不打包字体或演示样例。实际接入后的应用体积增量受 ABI 过滤、R8/混淆及打包配置影响。
 
