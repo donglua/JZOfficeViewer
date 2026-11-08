@@ -8,6 +8,8 @@ import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.LinearLayout;
+import cn.jingzhuan.lib.office.widget.OfficeSheetTabs;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.lang.reflect.Field;
@@ -35,9 +37,14 @@ final class SpreadsheetChecks {
     private String run() throws Exception {
         List<String> pages = new ArrayList<>();
         int[] originalSize = new int[2];
+        AtomicReference<OfficeSheetTabs> tabsRef = new AtomicReference<>();
         onMain(() -> {
             originalSize[0] = view.getLayoutParams().width; originalSize[1] = view.getLayoutParams().height;
             view.clear(); view.setOnPageChangeListener((page, count) -> pages.add(page + "/" + count));
+            OfficeSheetTabs sheetTabs = new OfficeSheetTabs(view.getContext());
+            sheetTabs.attachTo(view);
+            check(sheetTabs.getVisibility() == View.GONE, "OfficeSheetTabs hidden when preview is empty");
+            tabsRef.set(sheetTabs);
         });
         try {
             OfficePreviewView.Info info = load("sample.xlsx", "XLSX");
@@ -45,6 +52,10 @@ final class SpreadsheetChecks {
             onMain(() -> {
                 check(view.getPageCount() == 2 && view.getCurrentPage() == 1, "Initial sheet page API");
                 check(view.getSheetNames().equals(info.sheetNames), "Public sheet names");
+                OfficeSheetTabs sheetTabs = tabsRef.get();
+                LinearLayout tabsContainer = (LinearLayout) sheetTabs.getChildAt(0);
+                check(sheetTabs.getVisibility() == View.VISIBLE && tabsContainer.getChildCount() == 2, "OfficeSheetTabs auto-populates on XLSX load");
+                check(tabsContainer.getChildAt(0).isSelected() && !tabsContainer.getChildAt(1).isSelected(), "OfficeSheetTabs selects first tab initially");
             });
             capture("spreadsheet-portrait", 1080, 1600);
             capture("spreadsheet-landscape", 1800, 1000);
@@ -67,6 +78,8 @@ final class SpreadsheetChecks {
                 check(pages.size() == eventCount, "Current-sheet jump does not repeat page callback");
                 view.selectSheet(2);
                 check(view.getCurrentPage() == 2 && view.getZoom() == 2, "Switch sheet preserves zoom");
+                LinearLayout tabsContainer = (LinearLayout) tabsRef.get().getChildAt(0);
+                check(!tabsContainer.getChildAt(0).isSelected() && tabsContainer.getChildAt(1).isSelected(), "OfficeSheetTabs syncs active tab on selectSheet");
                 check(!view.canScrollHorizontally(-1) && !view.canScrollVertically(-1), "Switch sheet resets pan");
                 view.resetZoom();
                 check(pages.contains("2/2"), "Sheet change callback");
@@ -97,6 +110,8 @@ final class SpreadsheetChecks {
             check(done.await(20, TimeUnit.SECONDS) && "DOCX".equals(format.get()) && stale.get() == 0, "XLSX replacement suppresses stale callbacks");
             onMain(() -> {
                 check(view.getSheetNames().isEmpty(), "DOCX clears sheet list");
+                check(tabsRef.get().getVisibility() == View.GONE, "OfficeSheetTabs hides automatically on DOCX load");
+                tabsRef.get().detach();
                 view.clear();
                 check(view.getPageCount() == 0 && view.getCurrentPage() == 0 && view.getSheetNames().isEmpty(), "Clear resets workbook state");
             });

@@ -43,7 +43,20 @@ final class OfficeMetadataChecks {
                 throw new AssertionError("Expected positive width");
             }
 
-            // 2. 异步读取测试
+            // 2. PPTX & XLSX 格式元数据读取测试
+            Uri pptxUri = Uri.parse("content://" + context.getPackageName() + ".fixtures/sample.pptx");
+            OfficeMetadata pptxMeta = OfficeMetadata.read(context, pptxUri);
+            if (!"PPTX".equals(pptxMeta.format) || pptxMeta.pageCount < 1 || pptxMeta.width <= 0 || pptxMeta.height <= 0) {
+                throw new AssertionError("Unexpected PPTX metadata: format=" + pptxMeta.format + ", pages=" + pptxMeta.pageCount);
+            }
+
+            Uri xlsxUri = Uri.parse("content://" + context.getPackageName() + ".fixtures/sample.xlsx");
+            OfficeMetadata xlsxMeta = OfficeMetadata.read(context, xlsxUri);
+            if (!"XLSX".equals(xlsxMeta.format) || xlsxMeta.pageCount < 1 || xlsxMeta.sheetNames.isEmpty()) {
+                throw new AssertionError("Unexpected XLSX metadata: format=" + xlsxMeta.format + ", sheets=" + xlsxMeta.sheetNames);
+            }
+
+            // 3. 异步读取测试
             CountDownLatch latch = new CountDownLatch(1);
             AtomicReference<OfficeMetadata> asyncMeta = new AtomicReference<>();
             AtomicReference<Exception> asyncError = new AtomicReference<>();

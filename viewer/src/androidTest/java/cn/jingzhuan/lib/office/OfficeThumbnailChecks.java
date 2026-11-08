@@ -30,7 +30,7 @@ final class OfficeThumbnailChecks {
 
             Uri uri = Uri.fromFile(file);
 
-            // 1. 同步解码测试
+            // 1. 同步解码测试 (DOCX / PPTX / XLSX 三大格式全覆盖)
             Bitmap thumbnail = OfficeThumbnail.decode(context, uri, 200, 200);
             if (thumbnail == null) {
                 throw new AssertionError("OfficeThumbnail.decode returned null");
@@ -42,6 +42,22 @@ final class OfficeThumbnailChecks {
                 throw new AssertionError("Thumbnail exceeded maximum boundary: " + thumbnail.getWidth() + "x" + thumbnail.getHeight());
             }
             thumbnail.recycle();
+
+            Uri pptxUri = Uri.parse("content://" + context.getPackageName() + ".fixtures/sample.pptx");
+            Bitmap pptxThumb = OfficeThumbnail.decode(context, pptxUri, 240, 180);
+            if (pptxThumb == null || pptxThumb.getWidth() <= 0 || pptxThumb.getHeight() <= 0
+                || pptxThumb.getWidth() > 240 || pptxThumb.getHeight() > 180) {
+                throw new AssertionError("Invalid PPTX thumbnail");
+            }
+            pptxThumb.recycle();
+
+            Uri xlsxUri = Uri.parse("content://" + context.getPackageName() + ".fixtures/sample.xlsx");
+            Bitmap xlsxThumb = OfficeThumbnail.decode(context, xlsxUri, 240, 180);
+            if (xlsxThumb == null || xlsxThumb.getWidth() <= 0 || xlsxThumb.getHeight() <= 0
+                || xlsxThumb.getWidth() > 240 || xlsxThumb.getHeight() > 180) {
+                throw new AssertionError("Invalid XLSX thumbnail");
+            }
+            xlsxThumb.recycle();
 
             // 2. 异步加载测试
             CountDownLatch latch = new CountDownLatch(1);
