@@ -1,5 +1,7 @@
 # JZOfficeViewer
 
+[English](README.en.md) | **简体中文**
+
 轻量级 Office 文档离线预览库，支持 **Android** 与 **HarmonyOS NEXT**，提供 DOCX、PPTX 和 XLSX 的本地只读预览。
 
 底层共用 Rust 解析核心 `jz-office-core`，平台层使用原生组件与 Canvas 排版绘制，不依赖服务端转换、WebView、外部 Office 应用或内置字体。Android 端另提供可选的 `viewer-online` 模块，支持在线文档下载与缓存管理。

@@ -168,7 +168,7 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 3. `demo/build.gradle`：递增 `versionCode`
 4. `AppScope/app.json5`：更新 `versionName` 与 `versionCode`（如 `0.5.0` 对应 `500`）
 5. `oh-package.json5`、`viewer-ohos/oh-package.json5`、`demo-ohos/oh-package.json5`、`viewer-ohos/src/main/cpp/types/libjz_office_ohos/oh-package.json5` 及其对应的 `oh-package-lock.json5`
-6. `README.md`、`viewer-ohos/README.md`、`CHANGELOG.md`、`viewer-ohos/CHANGELOG.md`
+6. `README.md`、`README.en.md`（中英文内容需同步）、`viewer-ohos/README.md`、`CHANGELOG.md`、`viewer-ohos/CHANGELOG.md`
 
 ### 5.2 自动化发布（GitHub Actions）
 
