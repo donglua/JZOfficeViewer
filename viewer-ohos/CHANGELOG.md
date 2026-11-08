@@ -1,6 +1,15 @@
 # 更新日志
 
-## Unreleased
+## 0.10.0
+
+发布页面：[v0.10.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.10.0)。
+
+本版本主要新增 `OfficeMetadata`、`OfficeThumbnail`、`OfficeSheetTabs` 三个标准组件，并升级双端手势缩放越界回弹与鸿蒙 PPTX 统一矢量视口。
+
+### 手势与视口
+
+- **缩放越界抵抗与回弹**：双端引入橡胶带（rubber-band）阻尼，双指捏合越界后按抵抗曲线让步，松手以 220 ms 减速动画回弹到边界（1.0x/4.0x，表格为 0.5x/4.0x）；双击与读屏无障碍缩放动作同样采用该补间。
+- **鸿蒙 PPTX 统一 2D 矢量视口**：改用单层全屏 Canvas，支持全向拖拽、`displaySync` 驱动的惯性抛掷、焦点双指缩放与双击补间缩放，缩放直接作用于绘图矩阵保持矢量清晰，并加入视口裁剪与页码胶囊。
 
 ### 组件化与标准包装
 
