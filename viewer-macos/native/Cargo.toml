@@ -1,0 +1,16 @@
+[package]
+name = "jz-office-macos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "jz_office_macos"
+crate-type = ["staticlib", "cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+jz-office-core = { path = "../../core" }
+
+[lints]
+workspace = true

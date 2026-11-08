@@ -1,6 +1,8 @@
 # JZOfficeViewer
 
-轻量级 Office 文档离线预览库，支持 **Android** 与 **HarmonyOS NEXT**，提供 DOCX、PPTX 和 XLSX 的本地只读预览。
+[English](README.en.md) | **简体中文**
+
+轻量级 Office 文档离线预览库，支持 **Android**、**HarmonyOS NEXT** 与 **macOS**，提供 DOCX、PPTX 和 XLSX 的本地只读预览。
 
 底层共用 Rust 解析核心 `jz-office-core`，平台层使用原生组件与 Canvas 排版绘制，不依赖服务端转换、WebView、外部 Office 应用或内置字体。Android 端另提供可选的 `viewer-online` 模块，支持在线文档下载与缓存管理。
 
@@ -280,6 +282,60 @@ OfficeSheetTabs({
 
 完整用法可参考 `demo-ohos` 模块。
 
+## macOS 原生接入（Swift Package）
+
+macOS 端模块位于 `viewer-macos`（最低支持 **macOS 14.0 Sonoma**），通过 C-ABI（`jz-office-macos`）直接调用 Rust 解析核心 `jz-office-core`，渲染层基于 Apple 原生 `CoreGraphics` + `CoreText` + `ImageIO` + `SwiftUI` / `AppKit` 实现，与 Android、HarmonyOS NEXT 保持对称的标准化组件接口。
+
+### 1. 构建原生静态库与运行测试
+
+```shell
+./scripts/build-macos.sh
+```
+
+脚本会自动编译 `libjz_office_macos.a` 至 `viewer-macos/libs/`，并执行 `viewer-macos` 的 Swift Package 构建与单元/离屏渲染测试。也可直接运行内置 macOS 演示应用：
+
+```shell
+cd viewer-macos && swift run JZOfficeMacDemo
+```
+
+### 2. 使用预览组件与标准化接口
+
+```swift
+import SwiftUI
+import JZOffice
+
+struct DocumentPreviewScreen: View {
+    let fileURL: URL
+    @StateObject private var controller = OfficePreviewController()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            OfficePreviewView(
+                fileURL: fileURL,
+                controller: controller,
+                onLoaded: { info in
+                    print("Loaded \(info.format), pages: \(info.pageCount)")
+                },
+                onError: { error in
+                    print("Preview error: \(error.localizedDescription)")
+                }
+            )
+            // 多工作表标签栏（自动订阅 controller，非 XLSX 文档自动隐藏）
+            OfficeSheetTabs(controller: controller)
+        }
+    }
+}
+
+// 无头元数据速读（支持同步 read 与异步 readAsync）
+let meta = try await OfficeMetadata.readAsync(from: fileURL)
+
+// 离屏封面/缩略图生成（支持 DOCX / PPTX / XLSX，返回 NSImage 或 CGImage）
+let thumbnail: NSImage = try await OfficeThumbnail.renderAsync(
+    from: fileURL,
+    maxSize: CGSize(width: 240, height: 320)
+)
+```
+
 ## 资源与安全限制
 
 为防止恶意构造文档（如 Zip 炸弹或超长文本）引发内存溢出或主线程卡顿，库内实施了严格的边界控制：
@@ -303,6 +359,7 @@ OfficeSheetTabs({
 | `demo/` | Android 演示应用（内置综合样例、文件选择与在线预览） |
 | `viewer-ohos/` | HarmonyOS NEXT 预览库（`@jzdy/office` HAR）与 N-API 桥接（`viewer-ohos/native/`） |
 | `demo-ohos/` | HarmonyOS NEXT 演示应用 |
+| `viewer-macos/` | macOS 原生预览库（Swift Package `JZOffice`）、C-ABI 桥接（`viewer-macos/native/`）与 macOS 演示应用（`JZOfficeMacDemo`） |
 | `scripts/` | 跨平台原生构建脚本与 JVM 测试用例 |
 
 ### 构建命令
@@ -318,6 +375,10 @@ OfficeSheetTabs({
 - **HarmonyOS NEXT 构建**（需 DevEco Studio 与 `ohrs`）：
   ```sh
   ./scripts/build-ohos.sh
+  ```
+- **macOS 原生构建与测试**（需 Xcode / Command Line Tools 与 Rust）：
+  ```sh
+  ./scripts/build-macos.sh
   ```
 
 更多关于架构约束、专项测试套件、样例生成器和 Maven Central / OHPM 发布流程的说明，请参阅 [AGENT.md](AGENT.md)。

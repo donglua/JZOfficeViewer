@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "viewer/native", "viewer-ohos/native"]
+members = ["core", "viewer/native", "viewer-ohos/native", "viewer-macos/native"]
 resolver = "2"
 
 [workspace.package]

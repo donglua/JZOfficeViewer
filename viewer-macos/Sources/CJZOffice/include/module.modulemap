@@ -1,0 +1,4 @@
+module CJZOffice {
+    header "jz_office.h"
+    export *
+}

@@ -1,0 +1,138 @@
+import Testing
+import Foundation
+import CoreGraphics
+@testable import JZOffice
+
+struct JZOfficeTests {
+
+    private func samplePath(_ name: String) -> URL {
+        // viewer-macos/Tests/JZOfficeTests/JZOfficeTests.swift -> repo root -> demo/src/main/assets/samples/<name>
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return repoRoot.appendingPathComponent("demo/src/main/assets/samples/\(name)")
+    }
+
+    @Test("OfficeMetadata 读取 DOCX / PPTX / XLSX")
+    func metadataAllFormats() throws {
+        let docxURL = samplePath("sample.docx")
+        let pptxURL = samplePath("sample.pptx")
+        let xlsxURL = samplePath("sample.xlsx")
+
+        guard FileManager.default.fileExists(atPath: docxURL.path) else {
+            return
+        }
+
+        let docxMeta = try OfficeMetadata.read(from: docxURL)
+        #expect(docxMeta.format == .docx)
+        #expect(docxMeta.pageCount == 1)
+        #expect(docxMeta.widthPt > 0)
+        #expect(docxMeta.heightPt == 0)
+        #expect(docxMeta.sheetNames.isEmpty)
+
+        let pptxMeta = try OfficeMetadata.read(from: pptxURL)
+        #expect(pptxMeta.format == .pptx)
+        #expect(pptxMeta.pageCount >= 1)
+        #expect(pptxMeta.widthPt > 0)
+        #expect(pptxMeta.heightPt > 0)
+        #expect(pptxMeta.sheetNames.isEmpty)
+
+        let xlsxMeta = try OfficeMetadata.read(from: xlsxURL)
+        #expect(xlsxMeta.format == .xlsx)
+        #expect(xlsxMeta.pageCount == xlsxMeta.sheetNames.count)
+        #expect(!xlsxMeta.sheetNames.isEmpty)
+        #expect(xlsxMeta.widthPt >= 0)
+        #expect(xlsxMeta.heightPt == 0)
+    }
+
+    @Test("OfficeThumbnail 离屏渲染 DOCX / PPTX / XLSX 非空白且遵守边界约束")
+    func thumbnailAllFormats() throws {
+        for name in ["sample.docx", "sample.pptx", "sample.xlsx"] {
+            let url = samplePath(name)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            let cgImg = try OfficeThumbnail.renderCGImage(from: url, maxSize: CGSize(width: 240, height: 240))
+            #expect(cgImg.width > 0)
+            #expect(cgImg.height > 0)
+            #expect(cgImg.width <= 240)
+            #expect(cgImg.height <= 240)
+            #expect(hasNonWhitePixel(cgImg), "Thumbnail for \(name) should contain non-white content")
+        }
+    }
+
+    @Test("OfficePreviewController 页码与工作表状态同步")
+    @MainActor
+    func previewControllerAndSheetSync() {
+        let controller = OfficePreviewController()
+        var callbackCount = 0
+        var lastPage = -1
+        var lastTotal = -1
+        let id = controller.addOnPageChangeListener { page, count in
+            callbackCount += 1
+            lastPage = page
+            lastTotal = count
+        }
+        #expect(callbackCount == 1)
+        #expect(lastPage == 0)
+
+        controller.updateDocumentState(page: 1, count: 3, sheets: ["概览", "明细", "汇总"])
+        #expect(lastPage == 1)
+        #expect(lastTotal == 3)
+
+        controller.selectSheet(2)
+        #expect(controller.currentPage == 2)
+        #expect(lastPage == 2)
+
+        controller.removeOnPageChangeListener(id)
+    }
+
+    @Test("ImageStore 从 ZIP 包内解码图片并驱逐缓存")
+    func imageStoreDecodeAndCacheEviction() throws {
+        let pptxURL = samplePath("sample.pptx")
+        guard FileManager.default.fileExists(atPath: pptxURL.path) else { return }
+        let doc = try NativeCore.parseDocument(at: pptxURL.path)
+        let store = ImageStore(filePath: pptxURL.path)
+        defer { store.release() }
+
+        var decodedCount = 0
+        for page in doc.pages {
+            for el in page.elements where el.type == .image {
+                if let part = el.image, store.loadSync(part: part, maxPixelBudget: 1_000_000) != nil {
+                    decodedCount += 1
+                }
+            }
+        }
+        #expect(decodedCount >= 1)
+    }
+
+    private func hasNonWhitePixel(_ image: CGImage) -> Bool {
+        let w = image.width
+        let h = image.height
+        guard w > 0, h > 0 else { return false }
+        var bytes = [UInt8](repeating: 255, count: w * h * 4)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: &bytes,
+            width: w,
+            height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: w * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return false
+        }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        for i in stride(from: 0, to: bytes.count, by: 16) {
+            let r = bytes[i]
+            let g = bytes[i + 1]
+            let b = bytes[i + 2]
+            if r < 248 || g < 248 || b < 248 {
+                return true
+            }
+        }
+        return false
+    }
+}

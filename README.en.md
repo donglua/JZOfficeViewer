@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.md)
 
-A lightweight offline Office document preview library for **Android** and **HarmonyOS NEXT**, providing local read-only preview of DOCX, PPTX and XLSX files.
+A lightweight offline Office document preview library for **Android**, **HarmonyOS NEXT** and **macOS**, providing local read-only preview of DOCX, PPTX and XLSX files.
 
 Both platforms share the Rust parsing core `jz-office-core`; the platform layers use native components and Canvas for layout and drawing. There is no server-side conversion, no WebView, no external Office app and no bundled fonts. Android also offers an optional `viewer-online` module for online document download and cache management.
 
@@ -282,6 +282,60 @@ OfficeSheetTabs({
 
 See the `demo-ohos` module for complete usage.
 
+## macOS Native Integration (Swift Package)
+
+The macOS module is located at `viewer-macos` (minimum supported version: **macOS 14.0 Sonoma**). It links directly to the Rust parsing core `jz-office-core` via a C-ABI bridge (`jz-office-macos`). The rendering pipeline is implemented natively on Apple's `CoreGraphics` + `CoreText` + `ImageIO` + `SwiftUI` / `AppKit`, providing symmetrical standardized component interfaces with Android and HarmonyOS NEXT.
+
+### 1. Build Native Static Library and Run Tests
+
+```shell
+./scripts/build-macos.sh
+```
+
+The script automatically compiles `libjz_office_macos.a` into `viewer-macos/libs/`, and runs Swift Package builds along with unit and offscreen rendering tests. You can also run the built-in macOS demo application directly:
+
+```shell
+cd viewer-macos && swift run JZOfficeMacDemo
+```
+
+### 2. Standardized Preview Component and APIs
+
+```swift
+import SwiftUI
+import JZOffice
+
+struct DocumentPreviewScreen: View {
+    let fileURL: URL
+    @StateObject private var controller = OfficePreviewController()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            OfficePreviewView(
+                fileURL: fileURL,
+                controller: controller,
+                onLoaded: { info in
+                    print("Loaded \(info.format), pages: \(info.pageCount)")
+                },
+                onError: { error in
+                    print("Preview error: \(error.localizedDescription)")
+                }
+            )
+            // Multi-sheet tab bar (automatically linked to controller; hidden for non-XLSX documents)
+            OfficeSheetTabs(controller: controller)
+        }
+    }
+}
+
+// Headless metadata reading (supports sync read and async readAsync)
+let meta = try await OfficeMetadata.readAsync(from: fileURL)
+
+// Offscreen cover / thumbnail generation (DOCX / PPTX / XLSX; returns NSImage or CGImage)
+let thumbnail: NSImage = try await OfficeThumbnail.renderAsync(
+    from: fileURL,
+    maxSize: CGSize(width: 240, height: 320)
+)
+```
+
 ## Resource and Security Limits
 
 To prevent maliciously crafted documents (such as zip bombs or extremely long text) from causing out-of-memory errors or main-thread stalls, the library enforces strict bounds:
@@ -305,6 +359,7 @@ To prevent maliciously crafted documents (such as zip bombs or extremely long te
 | `demo/` | Android demo app (built-in samples, file picker and online preview) |
 | `viewer-ohos/` | HarmonyOS NEXT preview library (`@jzdy/office` HAR) and N-API bridge (`viewer-ohos/native/`) |
 | `demo-ohos/` | HarmonyOS NEXT demo app |
+| `viewer-macos/` | macOS native preview library (Swift Package `JZOffice`), C-ABI bridge (`viewer-macos/native/`) and macOS demo app (`JZOfficeMacDemo`) |
 | `scripts/` | Cross-platform native build scripts and JVM test cases |
 
 ### Build Commands
@@ -320,6 +375,10 @@ To prevent maliciously crafted documents (such as zip bombs or extremely long te
 - **HarmonyOS NEXT build** (DevEco Studio and `ohrs`):
   ```sh
   ./scripts/build-ohos.sh
+  ```
+- **macOS native build and tests** (Xcode / Command Line Tools and Rust):
+  ```sh
+  ./scripts/build-macos.sh
   ```
 
 For architecture constraints, dedicated test suites, sample generators and the Maven Central / OHPM release process, see [AGENT.md](AGENT.md) (Chinese).

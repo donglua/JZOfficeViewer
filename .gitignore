@@ -9,7 +9,12 @@ local.properties
 .cargo/
 **/oh_modules/
 *.so
+*.dylib
+*.a
 viewer-ohos/libs/
+viewer-macos/.build/
+viewer-macos/.swiftpm/
+viewer-macos/libs/
 .hvigor/
 **/BuildProfile.ets
 /VERIFICATION.md

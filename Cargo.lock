@@ -300,6 +300,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "jz-office-macos"
+version = "0.10.0"
+dependencies = [
+ "jz-office-core",
+]
+
+[[package]]
 name = "jz-office-ohos"
 version = "0.10.0"
 dependencies = [

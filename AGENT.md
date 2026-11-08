@@ -4,7 +4,7 @@
 
 ## 1. 项目概览
 
-JZOfficeViewer：轻量、离线、只读的 DOCX / PPTX / XLSX 预览库。Rust 核心负责解析与安全边界校验，平台层（Android 与 HarmonyOS NEXT）负责排版、绘制与手势交互。
+JZOfficeViewer：轻量、离线、只读的 DOCX / PPTX / XLSX 预览库。Rust 核心负责解析与安全边界校验，平台层（Android、HarmonyOS NEXT 与 macOS）负责排版、绘制与手势交互。
 
 | 目录 | 语言 | 职责 |
 | --- | --- | --- |
@@ -16,9 +16,11 @@ JZOfficeViewer：轻量、离线、只读的 DOCX / PPTX / XLSX 预览库。Rust
 | `viewer-ohos/` | ArkTS | HarmonyOS NEXT HAR（`@jzdy/office`）：流式 DOCX、PPTX Canvas、XLSX 表格视图及手势控制 |
 | `viewer-ohos/native/` | Rust | `jz-office-ohos`：`napi-ohos` 桥接，生成 `libjz_office_ohos.so` |
 | `demo-ohos/` | ArkTS | 鸿蒙演示应用，样例位于 `demo-ohos/src/main/resources/rawfile/` |
-| `scripts/` | Shell/Python/Java | `build-native.sh`、`build-ohos.sh`、`publish-ohpm.py` 及纯 JVM 检查用例（`scripts/tests/`） |
+| `viewer-macos/` | Swift | macOS Swift Package（`JZOffice` / `JZOfficeMacDemo`）：基于 CoreGraphics / CoreText / ImageIO / SwiftUI 的原生预览与标准组件 |
+| `viewer-macos/native/` | Rust | `jz-office-macos`：C-ABI 桥接，生成 `libjz_office_macos.a` / `.dylib` |
+| `scripts/` | Shell/Python/Java | `build-native.sh`、`build-ohos.sh`、`build-macos.sh`、`publish-ohpm.py` 及纯 JVM 检查用例（`scripts/tests/`） |
 
-Cargo workspace 成员：`core`、`viewer/native`、`viewer-ohos/native`（根 `Cargo.toml`）。Gradle 管理 `:viewer`、`:viewer-online`、`:demo`；鸿蒙工程由根目录的 DevEco/hvigor 配置（`build-profile.json5`、`AppScope/`、`hvigor/`）管理。
+Cargo workspace 成员：`core`、`viewer/native`、`viewer-ohos/native`、`viewer-macos/native`（根 `Cargo.toml`）。Gradle 管理 `:viewer`、`:viewer-online`、`:demo`；鸿蒙工程由根目录的 DevEco/hvigor 配置（`build-profile.json5`、`AppScope/`、`hvigor/`）管理；macOS 工程由 `viewer-macos/Package.swift` 管理。
 
 ## 2. 架构与实现约束
 
@@ -157,6 +159,16 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 ```
 
 脚本自动完成：`ohrs build --release` -> 拷贝 `.so` 到 `viewer-ohos/libs/` -> 同步 `index.d.ts` -> 生成 `demo-ohos` 的 `rawfile` 综合样例 -> 调用 `hvigorw assembleHar` 生成 HAR 包。
+
+### 4.5 macOS 原生构建与测试
+
+需要 Xcode 或 Command Line Tools（Swift 6.0+，macOS 14.0+ SDK）与 Rust：
+
+```sh
+./scripts/build-macos.sh
+```
+
+脚本自动完成：`cargo build --release -p jz-office-macos` -> 拷贝 `libjz_office_macos.a` 到 `viewer-macos/libs/` -> 确保综合样例存在 -> 运行 `swift test` 与 `swift build`。
 
 ## 5. 发布流程与版本管理
 
