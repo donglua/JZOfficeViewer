@@ -24,6 +24,7 @@ public final class OfficePreviewController: ObservableObject {
     @Published public internal(set) var pageCount: Int = 0
     @Published public internal(set) var sheetNames: [String] = []
     @Published public internal(set) var zoom: CGFloat = 1.0
+    @Published public internal(set) var metadata: OfficeMetadata?
 
     @Published internal var document: OfficeDocument?
     @Published internal var imageCache: [String: CGImage] = [:]
@@ -129,18 +130,41 @@ public struct OfficePreviewView: View {
                         .padding(.horizontal, 24)
                 }
             } else if let doc = controller.document {
-                ScrollView([.horizontal, .vertical], showsIndicators: true) {
-                    OfficeCanvasRepresentable(
-                        document: doc,
-                        images: controller.imageCache,
-                        currentPage: controller.currentPage,
-                        zoom: controller.zoom
-                    )
-                    .frame(
-                        width: canvasContentSize(for: doc).width * controller.zoom,
-                        height: canvasContentSize(for: doc).height * controller.zoom
-                    )
-                    .padding(16)
+                ScrollViewReader { scrollProxy in
+                    ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                        ZStack(alignment: .topLeading) {
+                            OfficeCanvasRepresentable(
+                                document: doc,
+                                images: controller.imageCache,
+                                currentPage: controller.currentPage,
+                                zoom: controller.zoom
+                            )
+                            .frame(
+                                width: canvasContentSize(for: doc).width * controller.zoom,
+                                height: canvasContentSize(for: doc).height * controller.zoom
+                            )
+
+                            if doc.kind == .pptx {
+                                VStack(spacing: 16 * controller.zoom) {
+                                    ForEach(Array(doc.pages.enumerated()), id: \.offset) { index, page in
+                                        let pH = page.height > 0 ? page.height : 405
+                                        Color.clear
+                                            .frame(width: 1, height: pH * controller.zoom)
+                                            .id("slide-\(index + 1)")
+                                    }
+                                }
+                                .allowsHitTesting(false)
+                            }
+                        }
+                        .padding(16)
+                    }
+                    .onChange(of: controller.currentPage) { _, newPage in
+                        if doc.kind == .pptx, newPage >= 1 {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                scrollProxy.scrollTo("slide-\(newPage)", anchor: .top)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -190,6 +214,7 @@ public struct OfficePreviewView: View {
         controller.isLoading = true
         controller.errorMessage = nil
         controller.document = nil
+        controller.metadata = nil
         controller.imageCache = [:]
         controller.updateDocumentState(page: 0, count: 0, sheets: [])
 
@@ -219,6 +244,7 @@ public struct OfficePreviewView: View {
             controller.isLoading = false
 
             let meta = OfficeMetadata.fromDocument(parsed)
+            controller.metadata = meta
             let initialPage = meta.pageCount > 0 ? 1 : 0
             controller.updateDocumentState(page: initialPage, count: meta.pageCount, sheets: meta.sheetNames)
             let info = OfficePreviewInfo(

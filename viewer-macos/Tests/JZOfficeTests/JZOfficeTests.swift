@@ -107,6 +107,44 @@ struct JZOfficeTests {
         #expect(decodedCount >= 1)
     }
 
+    @Test("按页缩略图与 PDF / PNG 矢量导出校验")
+    func perPageThumbnailAndExporters() throws {
+        let pptxURL = samplePath("sample.pptx")
+        guard FileManager.default.fileExists(atPath: pptxURL.path) else { return }
+
+        let slide2 = try OfficeThumbnail.renderPageCGImage(
+            from: pptxURL,
+            pageNumber: 2,
+            maxSize: CGSize(width: 240, height: 240)
+        )
+        #expect(slide2.width > 0)
+        #expect(hasNonWhitePixel(slide2))
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("jz-office-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        for name in ["sample.docx", "sample.pptx", "sample.xlsx"] {
+            let src = samplePath(name)
+            guard FileManager.default.fileExists(atPath: src.path) else { continue }
+            let pdfOut = tempDir.appendingPathComponent("\(name).pdf")
+            try OfficeExporter.exportPDF(from: src, to: pdfOut)
+            let pdfData = try Data(contentsOf: pdfOut)
+            #expect(pdfData.count > 256)
+        }
+
+        let pngOut = tempDir.appendingPathComponent("slide1.png")
+        try OfficeExporter.exportPNG(
+            from: pptxURL,
+            pageNumber: 1,
+            maxSize: CGSize(width: 480, height: 480),
+            to: pngOut
+        )
+        let pngData = try Data(contentsOf: pngOut)
+        #expect(pngData.count > 256)
+    }
+
     private func hasNonWhitePixel(_ image: CGImage) -> Bool {
         let w = image.width
         let h = image.height

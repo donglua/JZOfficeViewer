@@ -7,37 +7,55 @@ public enum OfficeThumbnail {
 
     /// 同步解码并离屏渲染本地文档首页/首张幻灯片/首个工作表为指定最大尺寸的 `NSImage`（保持宽高比）
     public static func render(from url: URL, maxSize: CGSize) throws -> NSImage {
-        let cgImage = try renderCGImage(from: url, maxSize: maxSize)
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        try renderPage(from: url, pageNumber: 1, maxSize: maxSize)
     }
 
     /// 异步离屏渲染本地文档封面缩略图
     public static func renderAsync(from url: URL, maxSize: CGSize) async throws -> NSImage {
+        try await renderPageAsync(from: url, pageNumber: 1, maxSize: maxSize)
+    }
+
+    /// 同步离屏渲染本地文档指定页（从 1 开始）为 `NSImage`
+    public static func renderPage(from url: URL, pageNumber: Int, maxSize: CGSize) throws -> NSImage {
+        let cgImage = try renderPageCGImage(from: url, pageNumber: pageNumber, maxSize: maxSize)
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    /// 异步离屏渲染本地文档指定页（从 1 开始）为 `NSImage`
+    public static func renderPageAsync(from url: URL, pageNumber: Int, maxSize: CGSize) async throws -> NSImage {
         let cgImage = try await Task.detached(priority: .userInitiated) {
-            try renderCGImage(from: url, maxSize: maxSize)
+            try renderPageCGImage(from: url, pageNumber: pageNumber, maxSize: maxSize)
         }.value
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
     /// 同步离屏渲染本地文档首页为 `CGImage`
     public static func renderCGImage(from url: URL, maxSize: CGSize) throws -> CGImage {
+        try renderPageCGImage(from: url, pageNumber: 1, maxSize: maxSize)
+    }
+
+    /// 同步离屏渲染本地文档指定页（从 1 开始）为 `CGImage`
+    public static func renderPageCGImage(from url: URL, pageNumber: Int, maxSize: CGSize) throws -> CGImage {
         guard maxSize.width > 0 && maxSize.height > 0 else {
             throw OfficeError.invalidArguments("Target maxSize must be positive, got \(maxSize.width)x\(maxSize.height)")
+        }
+        guard pageNumber >= 1 else {
+            throw OfficeError.invalidArguments("pageNumber must be >= 1, got \(pageNumber)")
         }
         let path = url.path
         let doc = try NativeCore.parseDocument(at: path)
         switch doc.kind {
         case .pptx:
-            return try renderPptxThumbnail(filePath: path, doc: doc, maxSize: maxSize)
+            return try renderPptxThumbnail(filePath: path, doc: doc, pageIndex: pageNumber - 1, maxSize: maxSize)
         case .docx:
             return try renderDocxThumbnail(filePath: path, doc: doc, maxSize: maxSize)
         case .xlsx:
             defer { NativeCore.evictCache(at: path) }
-            return try renderXlsxThumbnail(doc: doc, maxSize: maxSize)
+            return try renderXlsxThumbnail(doc: doc, sheetIndex: pageNumber - 1, maxSize: maxSize)
         }
     }
 
-    private static func makeTopDownContext(width: Int, height: Int, scale: CGFloat) throws -> CGContext {
+    internal static func makeTopDownContext(width: Int, height: Int, scale: CGFloat) throws -> CGContext {
         guard let space = CGColorSpace(name: CGColorSpace.sRGB),
               let ctx = CGContext(
                   data: nil,
@@ -58,14 +76,17 @@ public enum OfficeThumbnail {
     private static func renderPptxThumbnail(
         filePath: String,
         doc: OfficeDocument,
+        pageIndex: Int,
         maxSize: CGSize
     ) throws -> CGImage {
-        guard let firstPage = doc.pages.first else {
+        guard !doc.pages.isEmpty else {
             NativeCore.evictCache(at: filePath)
             throw OfficeError.renderFailed("Presentation has no slides")
         }
-        let slideW = firstPage.width > 0 ? firstPage.width : 720
-        let slideH = firstPage.height > 0 ? firstPage.height : 405
+        let clampedIndex = max(0, min(doc.pages.count - 1, pageIndex))
+        let page = doc.pages[clampedIndex]
+        let slideW = page.width > 0 ? page.width : 720
+        let slideH = page.height > 0 ? page.height : 405
         let scale = min(maxSize.width / slideW, maxSize.height / slideH)
         let outW = max(1, Int(round(slideW * scale)))
         let outH = max(1, Int(round(slideH * scale)))
@@ -74,19 +95,19 @@ public enum OfficeThumbnail {
         defer { imageStore.release() }
 
         let budget = max(100_000, min(2_000_000, outW * outH * 2))
-        for el in firstPage.elements where el.type == .image {
+        for el in page.elements where el.type == .image {
             if let part = el.image {
                 imageStore.loadSync(part: part, maxPixelBudget: budget)
             }
         }
 
         let ctx = try makeTopDownContext(width: outW, height: outH, scale: scale)
-        let bg = CGElementDrawer.argbToCGColor(firstPage.background) ?? CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+        let bg = CGElementDrawer.argbToCGColor(page.background) ?? CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
         ctx.setFillColor(bg)
         ctx.fill(CGRect(x: 0, y: 0, width: slideW, height: slideH))
 
         let cache = imageStore.snapshot
-        for el in firstPage.elements {
+        for el in page.elements {
             CGElementDrawer.drawElement(in: ctx, element: el, images: cache)
         }
         guard let cgImage = ctx.makeImage() else {
@@ -161,12 +182,15 @@ public enum OfficeThumbnail {
 
     private static func renderXlsxThumbnail(
         doc: OfficeDocument,
+        sheetIndex: Int,
         maxSize: CGSize
     ) throws -> CGImage {
-        guard let firstSheet = doc.sheets.first else {
+        guard !doc.sheets.isEmpty else {
             throw OfficeError.renderFailed("Spreadsheet has no sheets")
         }
-        let (_, _, totalW, totalH) = CGElementDrawer.computeSheetExtents(firstSheet)
+        let clampedIndex = max(0, min(doc.sheets.count - 1, sheetIndex))
+        let sheet = doc.sheets[clampedIndex]
+        let (_, _, totalW, totalH) = CGElementDrawer.computeSheetExtents(sheet)
         let previewW = max(200, min(totalW > CGElementDrawer.sheetHeaderWidth ? totalW : 400, 800))
         let previewH = max(150, min(totalH > CGElementDrawer.sheetHeaderHeight ? totalH : 300, 600))
         let scale = min(maxSize.width / previewW, maxSize.height / previewH)
@@ -176,7 +200,7 @@ public enum OfficeThumbnail {
         let ctx = try makeTopDownContext(width: outW, height: outH, scale: scale)
         CGElementDrawer.drawSpreadsheet(
             in: ctx,
-            sheet: firstSheet,
+            sheet: sheet,
             styles: doc.cellStyles,
             viewport: CGRect(x: 0, y: 0, width: previewW, height: previewH)
         )
