@@ -4,12 +4,12 @@
 
 ### 组件化与标准包装
 
-- **无头元数据读取（`OfficeMetadata`）**：Android 与 HarmonyOS NEXT 双端提供无头文档元数据快速读取接口（`OfficeMetadata.read` / `readAsync` 与 `readOfficeMetadata`），支持在不初始化 UI 视图的情况下快速获取文档格式（DOCX / PPTX / XLSX）、页数、工作表名称列表及告警信息。
-- **离屏封面/缩略图生成（`OfficeThumbnail`）**：Android 端提供 `OfficeThumbnail.decode` 与 `load` API，支持在后台线程离屏渲染文档首页面（PPTX 幻灯片、DOCX 首屏、XLSX 工作表）为指定最大边界的 Bitmap，带严格的内存预算与资源自动释放机制。
+- **无头元数据读取（`OfficeMetadata`）**：Android 与 HarmonyOS NEXT 双端提供无头文档元数据快速读取接口（`OfficeMetadata.read` / `readAsync` 与 `readOfficeMetadata`），支持在不初始化 UI 视图的情况下快速获取文档格式（DOCX / PPTX / XLSX）、页数、宽高尺寸、工作表名称列表及告警信息。
+- **离屏封面/缩略图生成（`OfficeThumbnail`）**：Android 端提供 `OfficeThumbnail.decode` / `load` API，鸿蒙端提供 `renderOfficeThumbnail(filePath, maxWidth, maxHeight)`，支持双端脱离 UI 视图离屏渲染文档首页面（PPTX 幻灯片、DOCX 首屏、XLSX 工作表）为指定最大边界的 `Bitmap` / `PixelMap`，带严格的内存预算与资源自动释放机制。
 - **多工作表切换标准组件（`OfficeSheetTabs`）**：
-  - Android 沉淀 `cn.jingzhuan.lib.office.widget.OfficeSheetTabs` 组件，支持 `attachTo(OfficePreviewView)` 自动联动绑定，Demo 模块已完成解耦接入并移除旧私有类。
-  - 鸿蒙端导出声明式 `@Component OfficeSheetTabs`，并接入 `demo-ohos` 演示工程。
-- **`OfficePreviewView` 多监听器扩展**：新增 `addOnPageChangeListener` 与 `removeOnPageChangeListener`，支持与外部扩展组件解耦联动。
+  - Android 沉淀 `cn.jingzhuan.lib.office.widget.OfficeSheetTabs` 组件，支持 `attachTo(OfficePreviewView)` 自动联动绑定及窗口重挂载恢复，Demo 模块已完成解耦接入并移除旧私有类。
+  - 鸿蒙端导出声明式 `@Component OfficeSheetTabs`，支持仅传入 `controller` 自动订阅工作表列表与激活页码联动（非 XLSX 自动隐藏），并接入 `demo-ohos` 演示工程。
+- **双端多监听器扩展**：Android `OfficePreviewView` 与鸿蒙 `OfficePreviewController` 均新增 `addOnPageChangeListener` 与 `removeOnPageChangeListener`，支持与外部扩展组件解耦联动。
 
 ## 0.9.0
 

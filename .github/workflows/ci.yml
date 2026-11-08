@@ -104,6 +104,18 @@ jobs:
 
       - name: Build Android libraries and demo
         run: |
+          classes="$RUNNER_TEMP/metadata-checks"
+          mkdir -p "$classes"
+          javac --release 11 -Xlint:all -Werror -cp "$ANDROID_HOME/platforms/android-35/android.jar" -d "$classes" \
+            viewer/src/main/java/cn/jingzhuan/lib/office/OfficeDocument.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/SpreadsheetDocument.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/DocumentDecoder.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/OfficeCache.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/NativeCore.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/OfficePackage.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/OfficeMetadata.java \
+            scripts/tests/OfficeMetadataChecks.java
+          java -cp "$classes:$ANDROID_HOME/platforms/android-35/android.jar" cn.jingzhuan.lib.office.OfficeMetadataChecks
           ./gradlew --no-daemon --stacktrace :viewer:assembleRelease :viewer-online:assembleRelease :demo:assembleDebug :viewer-online:lintRelease
 
   android-accessibility:

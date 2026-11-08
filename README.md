@@ -256,18 +256,24 @@ struct PreviewPage {
 
 如需直接获取解析后的结构化文档模型（`OfficeDocument`），可调用异步接口 `NativeCore.parseDocumentAsync(filePath)`。
 
-如需在鸿蒙端无头速读文档元数据，可使用 `readOfficeMetadata(filePath)`；如需多工作表切换栏，可直接引入 `OfficeSheetTabs` 组件：
+如需在鸿蒙端无头速读文档元数据、离屏生成文档封面缩略图，或接入多工作表切换栏，可直接使用标准开箱即用接口：
 
 ```typescript
-import { readOfficeMetadata, OfficeSheetTabs, OfficePreviewInfo } from '@jzdy/office';
+import {
+  readOfficeMetadata,
+  renderOfficeThumbnail,
+  OfficeSheetTabs,
+  OfficeMetadataInfo
+} from '@jzdy/office';
 
 // 1. 无头元数据速读
-const info: OfficePreviewInfo = await readOfficeMetadata(filePath);
+const info: OfficeMetadataInfo = await readOfficeMetadata(filePath);
 
-// 2. 多工作表切换标签栏
+// 2. 离屏封面/缩略图生成（支持 DOCX / PPTX / XLSX，使用完毕后调用 pixelMap.release()）
+const pixelMap = await renderOfficeThumbnail(filePath, 240, 320);
+
+// 3. 多工作表切换标签栏（仅需传入 controller 即可自动订阅联动，非 XLSX 文档自动隐藏）
 OfficeSheetTabs({
-  sheetNames: this.sheetNames,
-  currentSheet: this.currentPage,
   controller: this.previewController
 })
 ```

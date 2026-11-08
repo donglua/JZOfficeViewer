@@ -78,16 +78,33 @@ javac --release 11 -d /tmp/jz-office-online-checks \
 java -cp /tmp/jz-office-online-checks cn.jingzhuan.lib.office.OfficeCacheChecks
 java -cp /tmp/jz-office-online-checks RemoteDownloaderChecks
 
-# 2. XLSX 表格布局与合并单元格检查及基准测试
+# 2. XLSX 表格布局、解码器与元数据检查及基准测试
 mkdir -p viewer/build/sheet-layout-checks
 javac --release 11 -Xlint:all -Werror -d viewer/build/sheet-layout-checks \
     viewer/src/main/java/cn/jingzhuan/lib/office/OfficeDocument.java \
     viewer/src/main/java/cn/jingzhuan/lib/office/SpreadsheetDocument.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/DocumentDecoder.java \
     viewer/src/main/java/cn/jingzhuan/lib/office/SheetLayout.java \
     viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutChecks.java \
-    viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutBenchmark.java
+    viewer/src/androidTest/java/cn/jingzhuan/lib/office/SheetLayoutBenchmark.java \
+    scripts/tests/DocumentDecoderChecks.java
 java -cp viewer/build/sheet-layout-checks cn.jingzhuan.lib.office.SheetLayoutChecks
 java -cp viewer/build/sheet-layout-checks cn.jingzhuan.lib.office.SheetLayoutBenchmark
+java -cp viewer/build/sheet-layout-checks cn.jingzhuan.lib.office.DocumentDecoderChecks
+
+# 3. OfficeMetadata 模型映射检查（配合 android-35 SDK stub）
+javac --release 11 -Xlint:all -Werror -cp "$ANDROID_HOME/platforms/android-35/android.jar" \
+    -d viewer/build/sheet-layout-checks \
+    viewer/src/main/java/cn/jingzhuan/lib/office/OfficeDocument.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/SpreadsheetDocument.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/DocumentDecoder.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/OfficeCache.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/NativeCore.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/OfficePackage.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/OfficeMetadata.java \
+    scripts/tests/OfficeMetadataChecks.java
+java -cp "viewer/build/sheet-layout-checks:$ANDROID_HOME/platforms/android-35/android.jar" \
+    cn.jingzhuan.lib.office.OfficeMetadataChecks
 ```
 
 ### 4.3 Android 构建与设备 Instrumentation 测试
