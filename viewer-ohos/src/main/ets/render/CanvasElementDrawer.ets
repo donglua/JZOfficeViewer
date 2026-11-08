@@ -24,13 +24,15 @@ interface CachedParagraphEntry {
   readonly lines: WrappedLine[];
 }
 
+export type OfficeCanvasContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
 export class CanvasElementDrawer {
   // 缓存已构建的 Path2D，避免滑动时每帧重复解析成百上千条矢量指令
   private static readonly pathCache: WeakMap<model.Path, Path2D> = new WeakMap();
   private static readonly paragraphCache: WeakMap<model.Paragraph, CachedParagraphEntry[]> = new WeakMap();
 
   public static drawElement(
-    ctx: CanvasRenderingContext2D,
+    ctx: OfficeCanvasContext,
     element: model.Element,
     imageCache?: Map<string, image.PixelMap>
   ): void {
@@ -138,7 +140,7 @@ export class CanvasElementDrawer {
   }
 
   private static resolveFillStyle(
-    ctx: CanvasRenderingContext2D,
+    ctx: OfficeCanvasContext,
     e: model.Element
   ): string | CanvasGradient | null {
     if (e.fillGradient && e.fillGradient.colors && e.fillGradient.colors.length >= 2) {
@@ -168,7 +170,7 @@ export class CanvasElementDrawer {
     return RenderUtils.argbToCss(e.fill);
   }
 
-  private static drawTable(ctx: CanvasRenderingContext2D, element: model.Element): void {
+  private static drawTable(ctx: OfficeCanvasContext, element: model.Element): void {
     const rows = element.rows ?? [];
     let cols = 0;
     for (const r of rows) {
@@ -263,7 +265,7 @@ export class CanvasElementDrawer {
     }
   }
 
-  private static drawParagraphs(ctx: CanvasRenderingContext2D, element: model.Element): void {
+  private static drawParagraphs(ctx: OfficeCanvasContext, element: model.Element): void {
     const paragraphs = element.paragraphs ?? [];
     if (paragraphs.length === 0) return;
     const padding = Math.max(0, element.padding ?? 4);
@@ -309,7 +311,7 @@ export class CanvasElementDrawer {
   }
 
   public static measureParagraphsHeight(
-    ctx: CanvasRenderingContext2D,
+    ctx: OfficeCanvasContext,
     paragraphs: model.Paragraph[],
     availableWidth: number,
     wrap: boolean
@@ -327,7 +329,7 @@ export class CanvasElementDrawer {
   }
 
   private static drawParagraphLines(
-    ctx: CanvasRenderingContext2D,
+    ctx: OfficeCanvasContext,
     para: model.Paragraph,
     lines: WrappedLine[],
     startX: number,
@@ -380,7 +382,7 @@ export class CanvasElementDrawer {
    * 高性能段落折行：带 WeakMap 缓存，避免重复渲染或图片异步加载重绘时反复进行 measureText 排版
    */
   private static layoutParagraph(
-    ctx: CanvasRenderingContext2D,
+    ctx: OfficeCanvasContext,
     para: model.Paragraph,
     maxWidth: number,
     wrap: boolean
@@ -409,7 +411,7 @@ export class CanvasElementDrawer {
    * 高性能段落折行内部实现：整段测量优先，仅在超出宽度时按需切分，使用 vp 字号单位对齐画布坐标系
    */
   private static layoutParagraphInternal(
-    ctx: CanvasRenderingContext2D,
+    ctx: OfficeCanvasContext,
     para: model.Paragraph,
     availableWidth: number,
     wrap: boolean

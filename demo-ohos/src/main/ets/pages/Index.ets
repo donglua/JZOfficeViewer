@@ -183,13 +183,9 @@ struct Index {
       .width('100%')
       .layoutWeight(1)
 
-      if (this.sheetNames.length > 0) {
-        OfficeSheetTabs({
-          sheetNames: this.sheetNames,
-          currentSheet: this.currentPage,
-          controller: this.controller
-        })
-      }
+      OfficeSheetTabs({
+        controller: this.controller
+      })
     }
     .width('100%')
     .height('100%')

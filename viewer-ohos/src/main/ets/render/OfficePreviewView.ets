@@ -55,12 +55,37 @@ export interface OfficePreviewActions {
 
 /**
  * JZOffice 鸿蒙端预览控制器（对齐 Android 端 OfficePreviewView 控制方法）
+ * 支持通过 addOnPageChangeListener 订阅页码/工作表状态变更，实现与 OfficeSheetTabs 等外围组件的自动联动
  */
 export class OfficePreviewController {
   private actions: OfficePreviewActions | null = null;
+  private readonly pageListeners: Set<(pageNumber: number, pageCount: number) => void> = new Set();
 
   bind(actions: OfficePreviewActions | null): void {
     this.actions = actions;
+    if (actions) {
+      this.notifyPageListeners(actions.getCurrentPage(), actions.getPageCount());
+    } else {
+      this.notifyPageListeners(0, 0);
+    }
+  }
+
+  public addOnPageChangeListener(listener: (pageNumber: number, pageCount: number) => void): void {
+    if (!listener) return;
+    this.pageListeners.add(listener);
+    listener(this.getCurrentPage(), this.getPageCount());
+  }
+
+  public removeOnPageChangeListener(listener: (pageNumber: number, pageCount: number) => void): void {
+    if (!listener) return;
+    this.pageListeners.delete(listener);
+  }
+
+  public notifyPageListeners(pageNumber: number, pageCount: number): void {
+    const snapshot: Array<(pageNumber: number, pageCount: number) => void> = Array.from(this.pageListeners);
+    for (const listener of snapshot) {
+      listener(pageNumber, pageCount);
+    }
   }
 
   public getPageCount(): number {
@@ -178,6 +203,7 @@ export struct OfficePreviewView {
     if (this.onPageChange) {
       this.onPageChange(pageNumber, pageCount);
     }
+    this.controller?.notifyPageListeners(pageNumber, pageCount);
   }
 
   private publishLoadedDocument(doc: model.OfficeDocument): void {
