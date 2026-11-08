@@ -168,7 +168,7 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 ./scripts/build-macos.sh
 ```
 
-脚本自动完成：`cargo build --release -p jz-office-macos` -> 拷贝 `libjz_office_macos.a` 到 `viewer-macos/libs/` -> 确保综合样例存在 -> 运行 `swift test` 与 `swift build`。
+脚本自动完成：`cargo build --release -p jz-office-macos`（`--universal` 编译 `arm64` + `x86_64` 并通过 `ld -r -S -x` 裁剪未导出符号） -> 组装 `viewer-macos/libs/CJZOffice.xcframework` 与 `viewer-macos/build/CJZOffice.xcframework.zip` -> 确保综合样例存在 -> 运行 `swift test` 与 `swift build`。
 
 ## 5. 发布流程与版本管理
 
@@ -194,6 +194,7 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
    - **[CI](.github/workflows/ci.yml)** 的 `Android Accessibility Device Tests` 任务：在 x86_64 模拟器（API 34，AOSP 镜像）上构建测试 APK 并运行 `accessibility` 套件。该任务以 `OFFICE_ALLOW_SKIP=1` 容忍播报探针 SKIP（模拟器不保证绑定探针服务），其余断言失败仍让任务红；日志作为构建产物上传。
    - **[Publish HAR to OHPM](.github/workflows/publish-ohpm.yml)**：交叉编译鸿蒙原生库，打包 `jzdy-office-<version>.har`，通过 `scripts/publish-ohpm.py` 发布至 OpenHarmony 三方库中心仓，并将 HAR 上传至 GitHub Release Assets。
      - 依赖 Secrets：`OHPM_PUBLISH_ID`、`OHPM_KEY`（及可选 `OHPM_PASSPHRASE`）。
+   - **[Publish macOS XCFramework](.github/workflows/publish-macos.yml)**：在 `macos-latest` 上编译 `arm64` + `x86_64` 通用静态库，打包 `CJZOffice-<version>.xcframework.zip` 及其 `.sha256` 校验文件，并上传至 GitHub Release Assets。
    - 若 CI 因网络波动失败，修复后可在 GitHub Actions 页面通过 `workflow_dispatch` 手动填入版本号重试。
 
 ## 6. 其他注意事项

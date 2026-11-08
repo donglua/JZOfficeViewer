@@ -21,6 +21,7 @@ Actual sizes of the `0.10.0` release artifacts (1 KiB = 1024 bytes):
 | Android | `viewer-0.10.0.aar` | **~837 KiB** | Core DOCX / PPTX / XLSX preview, includes `arm64-v8a` and `armeabi-v7a` |
 | Android | `viewer-online-0.10.0.aar` | **~21.1 KiB** | Optional online download and cache module used with `viewer`, no extra networking dependency |
 | HarmonyOS | `jzdy-office-0.10.0.har` | **~1057 KiB** | Core preview HAR for HarmonyOS NEXT (`@jzdy/office`), includes `arm64-v8a` and `x86_64` |
+| macOS | `CJZOffice-0.10.0.xcframework.zip` | **~1.7 MiB** | macOS native core XCFramework, includes universal `arm64` (Apple Silicon) and `x86_64` (Intel) static library |
 
 No artifact bundles fonts or demo samples. The actual size increase in your app depends on ABI filters, R8/obfuscation and packaging settings.
 
@@ -286,13 +287,13 @@ See the `demo-ohos` module for complete usage.
 
 The macOS module is located at `viewer-macos` (minimum supported version: **macOS 14.0 Sonoma**). It links directly to the Rust parsing core `jz-office-core` via a C-ABI bridge (`jz-office-macos`). The rendering pipeline is implemented natively on Apple's `CoreGraphics` + `CoreText` + `ImageIO` + `SwiftUI` / `AppKit`, providing symmetrical standardized component interfaces with Android and HarmonyOS NEXT.
 
-### 1. Build Native Static Library and Run Tests
+### 1. Build XCFramework and Run Tests
 
 ```shell
 ./scripts/build-macos.sh
 ```
 
-The script automatically compiles `libjz_office_macos.a` into `viewer-macos/libs/`, and runs Swift Package builds along with unit and offscreen rendering tests. You can also run the built-in macOS demo application directly:
+The script automatically compiles `libjz_office_macos.a` (universal `arm64` + `x86_64` binary when both targets are installed or `--universal` is passed), packages `viewer-macos/libs/CJZOffice.xcframework` and `viewer-macos/build/CJZOffice.xcframework.zip`, and runs Swift Package builds along with unit and offscreen rendering tests. You can also run the built-in macOS demo application directly:
 
 ```shell
 cd viewer-macos && swift run JZOfficeMacDemo

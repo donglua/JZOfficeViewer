@@ -17,19 +17,20 @@ let package = Package(
         )
     ],
     targets: [
-        .target(
+        .binaryTarget(
             name: "CJZOffice",
-            path: "Sources/CJZOffice",
-            publicHeadersPath: "include",
-            linkerSettings: [
-                .unsafeFlags(["-L", "libs"]),
-                .linkedLibrary("jz_office_macos")
-            ]
+            path: "libs/CJZOffice.xcframework"
         ),
         .target(
             name: "JZOffice",
             dependencies: ["CJZOffice"],
-            path: "Sources/JZOffice"
+            path: "Sources/JZOffice",
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("CoreText"),
+                .linkedFramework("ImageIO")
+            ]
         ),
         .executableTarget(
             name: "JZOfficeMacDemo",

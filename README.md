@@ -21,6 +21,7 @@
 | Android | `viewer-0.10.0.aar` | **约 837 KiB** | DOCX / PPTX / XLSX 核心预览，含 `arm64-v8a` 与 `armeabi-v7a` |
 | Android | `viewer-online-0.10.0.aar` | **约 21.1 KiB** | 可选的在线下载与缓存模块，配合 `viewer` 使用，零额外网络库依赖 |
 | HarmonyOS | `jzdy-office-0.10.0.har` | **约 1057 KiB** | 鸿蒙 NEXT 核心预览 HAR（`@jzdy/office`），含 `arm64-v8a` 与 `x86_64` |
+| macOS | `CJZOffice-0.10.0.xcframework.zip` | **约 1.7 MiB** | macOS 原生核心 XCFramework，含 `arm64`（Apple Silicon）与 `x86_64`（Intel）双架构静态库 |
 
 产物均不打包字体或演示样例。实际接入后的应用体积增量受 ABI 过滤、R8/混淆及打包配置影响。
 
@@ -286,13 +287,13 @@ OfficeSheetTabs({
 
 macOS 端模块位于 `viewer-macos`（最低支持 **macOS 14.0 Sonoma**），通过 C-ABI（`jz-office-macos`）直接调用 Rust 解析核心 `jz-office-core`，渲染层基于 Apple 原生 `CoreGraphics` + `CoreText` + `ImageIO` + `SwiftUI` / `AppKit` 实现，与 Android、HarmonyOS NEXT 保持对称的标准化组件接口。
 
-### 1. 构建原生静态库与运行测试
+### 1. 构建 XCFramework 与运行测试
 
 ```shell
 ./scripts/build-macos.sh
 ```
 
-脚本会自动编译 `libjz_office_macos.a` 至 `viewer-macos/libs/`，并执行 `viewer-macos` 的 Swift Package 构建与单元/离屏渲染测试。也可直接运行内置 macOS 演示应用：
+脚本会自动编译 `libjz_office_macos.a`（默认或传入 `--universal` 时包含 `arm64` + `x86_64` 通用二进制），打包出 `viewer-macos/libs/CJZOffice.xcframework` 与归档包 `viewer-macos/build/CJZOffice.xcframework.zip`，并执行 `viewer-macos` 的 Swift Package 构建与单元/离屏渲染测试。也可直接运行内置 macOS 演示应用：
 
 ```shell
 cd viewer-macos && swift run JZOfficeMacDemo

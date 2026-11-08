@@ -1,0 +1,87 @@
+name: Publish macOS XCFramework
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing v-prefixed release tag version to publish (e.g. 0.10.0)
+        required: true
+        default: 0.10.0
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-publish
+  cancel-in-progress: false
+
+jobs:
+  publish-xcframework:
+    name: Build and attach macOS XCFramework to Release
+    permissions:
+      contents: write
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'release' && !github.event.release.draft && !github.event.release.prerelease)
+    runs-on: macos-latest
+
+    steps:
+      - name: Resolve release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          MANUAL_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == release ]]; then
+            version="${RELEASE_TAG#v}"
+          else
+            version="${MANUAL_VERSION#v}"
+          fi
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo '::error::Expected a stable version such as 1.0.0 or v1.0.0.'
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'release' && github.ref || format('refs/tags/v{0}', steps.version.outputs.version) }}
+
+      - name: Validate package version
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: python3 scripts/check-versions.py --version "$EXPECTED_VERSION"
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build Universal macOS XCFramework and run tests
+        run: |
+          chmod +x scripts/build-macos.sh
+          ./scripts/build-macos.sh --universal
+
+      - name: Attach XCFramework to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || format('v{0}', steps.version.outputs.version) }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ZIP_PATH="viewer-macos/build/CJZOffice.xcframework.zip"
+          if [[ ! -f "$ZIP_PATH" ]]; then
+            echo "::error::XCFramework archive not found at $ZIP_PATH"
+            exit 1
+          fi
+          VERSIONED_ZIP="CJZOffice-${RELEASE_VERSION}.xcframework.zip"
+          CHECKSUM_FILE="${VERSIONED_ZIP}.sha256"
+          cp -f "$ZIP_PATH" "$VERSIONED_ZIP"
+          shasum -a 256 "$VERSIONED_ZIP" > "$CHECKSUM_FILE"
+          gh release upload "$RELEASE_TAG" "$VERSIONED_ZIP" "$CHECKSUM_FILE" --clobber

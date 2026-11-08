@@ -218,3 +218,21 @@ jobs:
         run: |
           chmod +x scripts/build-ohos.sh
           ./scripts/build-ohos.sh
+
+  macos:
+    name: macOS Build & Tests
+    runs-on: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build macOS XCFramework and run Swift tests
+        run: |
+          chmod +x scripts/build-macos.sh
+          ./scripts/build-macos.sh --universal

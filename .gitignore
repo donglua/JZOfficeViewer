@@ -11,6 +11,8 @@ local.properties
 *.so
 *.dylib
 *.a
+*.xcframework
+*.xcframework.zip
 viewer-ohos/libs/
 viewer-macos/.build/
 viewer-macos/.swiftpm/
