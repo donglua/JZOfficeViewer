@@ -61,11 +61,11 @@ public final class MainActivity extends Activity {
         status = new TextView(this); status.setTextSize(12); status.setTextColor(0xff58616b); status.setPadding(dp(16), dp(4), dp(16), dp(8));
         status.setText("DOCX / PPTX / XLSX"); root.addView(status);
         searchBar = new OfficeSearchBar(this);
-        searchBar.attachTo(preview);
         LinearLayout.LayoutParams sbLp = new LinearLayout.LayoutParams(-1, -2);
         sbLp.setMargins(dp(12), 0, dp(12), dp(8));
         root.addView(searchBar, sbLp);
         preview = new OfficePreviewView(this); preview.setId(android.R.id.primary); root.addView(preview, new LinearLayout.LayoutParams(-1, 0, 1));
+        searchBar.attachTo(preview);
         sheets = new OfficeSheetTabs(this); sheets.attachTo(preview); root.addView(sheets, new LinearLayout.LayoutParams(-1, -2));
         remoteLoader = new RemoteOfficeLoader(this);
         preview.setOnPageChangeListener((page, count) -> updatePageState());
@@ -253,6 +253,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         cancelRemote();
         remoteLoader.close();
+        if (searchBar != null) searchBar.detach();
         preview.clear();
         super.onDestroy();
     }
