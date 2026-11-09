@@ -32,10 +32,18 @@ impl ThemeFonts {
                 if let Some(ea) = font_node.child("ea") {
                     let mut tf = ea.attr("typeface");
                     if tf.is_empty() {
-                        for font in font_node.named("font") {
-                            if matches!(font.attr("script"), "Hans" | "Hant" | "Jpan" | "Kore") {
-                                tf = font.attr("typeface");
-                                break;
+                        const EAST_ASIA_SCRIPTS: &[&[&str]] =
+                            &[&["Hans"], &["Hant"], &["Jpan"], &["Kore", "Hang"]];
+                        for candidate in EAST_ASIA_SCRIPTS {
+                            if let Some(font) = font_node
+                                .named("font")
+                                .find(|f| candidate.contains(&f.attr("script")))
+                            {
+                                let candidate_tf = font.attr("typeface");
+                                if !candidate_tf.is_empty() {
+                                    tf = candidate_tf;
+                                    break;
+                                }
                             }
                         }
                     }

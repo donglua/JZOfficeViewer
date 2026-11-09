@@ -308,6 +308,53 @@ fn resolves_theme_font_when_theme_xml_is_present() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn prefers_chinese_theme_font_when_japanese_precedes_it_in_font_scheme() -> TestResult {
+    let mut parts = docx::parts();
+    package::replace(
+        &mut parts,
+        "word/document.xml",
+        r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:r><w:rPr><w:rFonts w:eastAsiaTheme="minorEastAsia"/></w:rPr><w:t>中文</w:t></w:r></w:p>
+</w:body></w:document>"#,
+    );
+    let theme_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">
+  <a:themeElements>
+    <a:fontScheme name="Office">
+      <a:majorFont>
+        <a:latin typeface="Calibri Light"/>
+        <a:ea typeface=""/>
+        <a:cs typeface=""/>
+        <a:font script="Jpan" typeface="Yu Gothic Light"/>
+        <a:font script="Hans" typeface="DengXian Light"/>
+      </a:majorFont>
+      <a:minorFont>
+        <a:latin typeface="Calibri"/>
+        <a:ea typeface=""/>
+        <a:cs typeface=""/>
+        <a:font script="Jpan" typeface="Yu Gothic"/>
+        <a:font script="Hans" typeface="DengXian"/>
+        <a:font script="Hant" typeface="Microsoft JhengHei"/>
+      </a:minorFont>
+    </a:fontScheme>
+  </a:themeElements>
+</a:theme>"#;
+    parts.push(package::xml("word/theme/theme1.xml", theme_xml));
+    package::replace(
+        &mut parts,
+        "word/_rels/document.xml.rels",
+        &package::relationships(&[
+            ("rStyles", "styles", "styles.xml"),
+            ("rTheme", "theme", "theme/theme1.xml"),
+        ]),
+    );
+    let doc = parse_reader(Cursor::new(package::archive(&parts)?))?;
+    let run = &doc.blocks[0].paragraphs[0].runs[0];
+    assert_eq!(run.font_face, "DengXian");
+    Ok(())
+}
+
 fn families(face: &str) -> String {
     format!(r#"<w:rFonts w:ascii="{face}" w:hAnsi="{face}" w:eastAsia="{face}" w:cs="{face}"/>"#)
 }
