@@ -30,6 +30,7 @@ impl Parser<'_> {
             let after = grid_count(properties, "gridAfter", 0)?;
             let mut cells = Vec::new();
             self.pad(&mut cells, before)?;
+            let mut continued_in_row = Vec::new();
             for cell in row.named("tc") {
                 let properties = cell.child("tcPr");
                 let span = grid_count(properties, "gridSpan", 1)?;
@@ -60,36 +61,42 @@ impl Parser<'_> {
                 let v_merge = properties.and_then(|p| p.child("vMerge"));
                 match v_merge {
                     Some(vm) if vm.attr("val") == "restart" => {
-                        if let Some((s_row, s_col, e_col)) =
-                            active_v_merges.remove(&(start_col as usize))
-                        {
-                            if s_row < row_num.saturating_sub(1) || e_col > s_col {
-                                table.merges.push(CellRange {
-                                    start_row: s_row,
-                                    start_column: s_col,
-                                    end_row: row_num.saturating_sub(1),
-                                    end_column: e_col,
-                                });
+                        for c in start_col..=end_col {
+                            if let Some((s_row, s_col, e_col)) =
+                                active_v_merges.remove(&(c as usize))
+                            {
+                                if s_row < row_num.saturating_sub(1) || e_col > s_col {
+                                    table.merges.push(CellRange {
+                                        start_row: s_row,
+                                        start_column: s_col,
+                                        end_row: row_num.saturating_sub(1),
+                                        end_column: e_col,
+                                    });
+                                }
                             }
                         }
                         active_v_merges.insert(start_col as usize, (row_num, start_col, end_col));
+                        continued_in_row.push(start_col as usize);
                     }
                     Some(_) => {
                         active_v_merges
                             .entry(start_col as usize)
                             .or_insert((row_num, start_col, end_col));
+                        continued_in_row.push(start_col as usize);
                     }
                     None => {
-                        if let Some((s_row, s_col, e_col)) =
-                            active_v_merges.remove(&(start_col as usize))
-                        {
-                            if s_row < row_num.saturating_sub(1) || e_col > s_col {
-                                table.merges.push(CellRange {
-                                    start_row: s_row,
-                                    start_column: s_col,
-                                    end_row: row_num.saturating_sub(1),
-                                    end_column: e_col,
-                                });
+                        for c in start_col..=end_col {
+                            if let Some((s_row, s_col, e_col)) =
+                                active_v_merges.remove(&(c as usize))
+                            {
+                                if s_row < row_num.saturating_sub(1) || e_col > s_col {
+                                    table.merges.push(CellRange {
+                                        start_row: s_row,
+                                        start_column: s_col,
+                                        end_row: row_num.saturating_sub(1),
+                                        end_column: e_col,
+                                    });
+                                }
                             }
                         }
                         if span > 1 {
@@ -100,6 +107,24 @@ impl Parser<'_> {
                                 end_column: end_col,
                             });
                         }
+                    }
+                }
+            }
+            let mut uncontinued = Vec::new();
+            for (&c, _) in &active_v_merges {
+                if !continued_in_row.contains(&c) {
+                    uncontinued.push(c);
+                }
+            }
+            for c in uncontinued {
+                if let Some((s_row, s_col, e_col)) = active_v_merges.remove(&c) {
+                    if s_row < row_num.saturating_sub(1) || e_col > s_col {
+                        table.merges.push(CellRange {
+                            start_row: s_row,
+                            start_column: s_col,
+                            end_row: row_num.saturating_sub(1),
+                            end_column: e_col,
+                        });
                     }
                 }
             }
