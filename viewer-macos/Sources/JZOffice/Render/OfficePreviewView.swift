@@ -359,18 +359,17 @@ public struct OfficePreviewView: View {
                 let doc = try NativeCore.parseDocument(at: path)
                 let store = ImageStore(filePath: path)
                 defer { store.release() }
+                // 整篇文档一次性渲染，工作集必须整体驻留，交由 preload 按预算等比降采样
+                var parts: [String] = []
                 for page in doc.pages {
                     for el in page.elements where el.type == .image {
-                        if let part = el.image {
-                            store.loadSync(part: part, maxPixelBudget: 2_000_000)
-                        }
+                        if let part = el.image { parts.append(part) }
                     }
                 }
                 for block in (doc.headerBlocks + doc.blocks + doc.footerBlocks) where block.type == .image {
-                    if let part = block.image {
-                        store.loadSync(part: part, maxPixelBudget: 2_000_000)
-                    }
+                    if let part = block.image { parts.append(part) }
                 }
+                store.preload(parts: parts)
                 return (doc, store.snapshot)
             }.value
 
