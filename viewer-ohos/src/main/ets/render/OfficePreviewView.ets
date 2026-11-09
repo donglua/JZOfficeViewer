@@ -610,7 +610,7 @@ struct DocxFlowView {
   document: model.OfficeDocument | null = null;
   filePath: string = '';
   // 检索结果与当前命中必须可观察，否则 LazyForEach 复用后子组件拿不到新值
-  @Prop searchMatches: model.SearchMatch[] = [];
+  @Prop @Watch('onSearchChanged') searchMatches: model.SearchMatch[] = [];
   @Prop @Watch('onCurrentMatchChanged') currentMatchIndex: number = -1;
   @State private reuseVersion: number = 0;
   registerControls?: (
@@ -634,6 +634,10 @@ struct DocxFlowView {
   private sectionGap: number = 10;
 
   onCurrentMatchChanged(): void {
+    this.reuseVersion++;
+  }
+
+  onSearchChanged(): void {
     this.reuseVersion++;
   }
 
@@ -1203,11 +1207,29 @@ function buildHighlightedSpans(
   paraMatches: model.SearchMatch[] | undefined,
   currentMatchKey: string
 ): TextSpanItem[] {
-  if (!para.runs || para.runs.length === 0) {
+  const allRuns: model.Run[] = [];
+  if (para.bullet && para.bullet.length > 0) {
+    const firstRun = para.runs && para.runs.length > 0 ? para.runs[0] : null;
+    const bulletRun: model.Run = {
+      text: para.bullet,
+      size: firstRun?.size || 14,
+      fontFace: firstRun?.fontFace || '',
+      color: firstRun?.color ?? 0xff202124,
+      bold: firstRun ? RenderUtils.resolveFontBold(firstRun.fontFace, firstRun.bold) : false,
+      italic: firstRun?.italic || false,
+      underline: false
+    };
+    allRuns.push(bulletRun);
+  }
+  if (para.runs && para.runs.length > 0) {
+    allRuns.push(...para.runs);
+  }
+
+  if (allRuns.length === 0) {
     return [];
   }
   if (!paraMatches || paraMatches.length === 0) {
-    return para.runs.map((r): TextSpanItem => {
+    return allRuns.map((r): TextSpanItem => {
       const item: TextSpanItem = {
         text: r.text,
         run: r,
@@ -1218,11 +1240,10 @@ function buildHighlightedSpans(
     });
   }
 
-  const bulletLen = para.bullet ? para.bullet.length : 0;
-  let charCursor = bulletLen;
+  let charCursor = 0;
   const result: TextSpanItem[] = [];
 
-  for (const run of para.runs) {
+  for (const run of allRuns) {
     const runText = run.text;
     const runLen = runText.length;
     if (runLen === 0) continue;
@@ -1312,25 +1333,6 @@ struct DocxParagraphView {
   build() {
     if (this.para) {
       Text() {
-        if (this.para.bullet) {
-          Span(`${this.para.bullet}`)
-            .fontSize(this.para.runs && this.para.runs.length > 0 ? (this.para.runs[0].size || 14) : 14)
-            .fontColor(
-              this.para.runs && this.para.runs.length > 0
-                ? (RenderUtils.argbToCss(this.para.runs[0].color) ?? '#202124')
-                : '#202124'
-            )
-            .fontWeight(
-              this.para.runs && this.para.runs.length > 0 && RenderUtils.resolveFontBold(this.para.runs[0].fontFace, this.para.runs[0].bold)
-                ? FontWeight.Bold
-                : FontWeight.Normal
-            )
-            .fontStyle(
-              this.para.runs && this.para.runs.length > 0 && this.para.runs[0].italic
-                ? FontStyle.Italic
-                : FontStyle.Normal
-            )
-        }
         ForEach(
           buildHighlightedSpans(this.para, this.paraMatches, this.currentMatchKey),
           (item: TextSpanItem, rIdx: number) => {
@@ -1391,11 +1393,15 @@ struct DocxParagraphView {
 @Component
 struct DocxTextBlockView {
   element: model.Element | null = null;
-  @Prop blockMatches: model.SearchMatch[] = [];
+  @Prop @Watch('onMatchesChanged') blockMatches: model.SearchMatch[] = [];
   @Prop @Watch('onCurrentMatchKeyChanged') currentMatchKey: string = '';
   @State private reuseVersion: number = 0;
 
   onCurrentMatchKeyChanged(): void {
+    this.reuseVersion++;
+  }
+
+  onMatchesChanged(): void {
     this.reuseVersion++;
   }
 
@@ -1443,7 +1449,7 @@ struct DocxTextBlockView {
 @Component
 struct DocxTableView {
   element: model.Element | null = null;
-  @Prop blockMatches: model.SearchMatch[] = [];
+  @Prop @Watch('onMatchesChanged') blockMatches: model.SearchMatch[] = [];
   // Canvas 不会被 ArkUI 自动重绘，@Watch 保证「当前命中」变化时立即重画
   @Prop @Watch('onCurrentMatchKeyChanged') currentMatchKey: string = '';
   @State private reuseVersion: number = 0;
@@ -1458,6 +1464,10 @@ struct DocxTableView {
   }
 
   onCurrentMatchKeyChanged(): void {
+    this.drawTable();
+  }
+
+  onMatchesChanged(): void {
     this.drawTable();
   }
 
@@ -1480,7 +1490,8 @@ struct DocxTableView {
 
   private updateHeight(): void {
     if (!this.element) return;
-    const h = CanvasElementDrawer.measureTableHeight(this.element);
+    const availW = this.element.width && this.element.width > 0 ? this.element.width : undefined;
+    const h = CanvasElementDrawer.measureTableHeight(this.element, availW, this.isReady ? this.ctx : null);
     this.measuredHeight = Math.max(20, h);
   }
 
