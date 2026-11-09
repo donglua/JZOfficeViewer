@@ -18,6 +18,7 @@ import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
 import cn.jingzhuan.lib.office.OfficePreviewView;
+import cn.jingzhuan.lib.office.widget.OfficeSearchBar;
 import cn.jingzhuan.lib.office.widget.OfficeSheetTabs;
 import cn.jingzhuan.lib.office.online.RemoteOfficeDownloader;
 import cn.jingzhuan.lib.office.online.RemoteOfficeLoader;
@@ -29,6 +30,7 @@ public final class MainActivity extends Activity {
     private TextView title, status;
     private ImageButton previous, next;
     private OfficeSheetTabs sheets;
+    private OfficeSearchBar searchBar;
     private OfficePreviewView.Info loadedInfo;
     private RemoteOfficeLoader remoteLoader;
     private RemoteOfficeLoader.Task remoteTask;
@@ -49,12 +51,20 @@ public final class MainActivity extends Activity {
         toolbar.addView(button(R.drawable.ic_office_more, "More", this::showMore));
         toolbar.addView(button(R.drawable.ic_office_samples, "Open sample", v -> showSamples()));
         toolbar.addView(button(R.drawable.ic_office_fit, "Reset zoom", v -> preview.resetZoom()));
+        toolbar.addView(button(R.drawable.ic_office_search, "Search document", v -> {
+            if (searchBar != null) searchBar.toggle();
+        }));
         previous = button(R.drawable.ic_office_previous, "Previous slide", v -> preview.jumpToPage(preview.getCurrentPage() - 1));
         next = button(R.drawable.ic_office_next, "Next slide", v -> preview.jumpToPage(preview.getCurrentPage() + 1));
         toolbar.addView(previous); toolbar.addView(next);
         root.addView(toolbar);
         status = new TextView(this); status.setTextSize(12); status.setTextColor(0xff58616b); status.setPadding(dp(16), dp(4), dp(16), dp(8));
         status.setText("DOCX / PPTX / XLSX"); root.addView(status);
+        searchBar = new OfficeSearchBar(this);
+        searchBar.attachTo(preview);
+        LinearLayout.LayoutParams sbLp = new LinearLayout.LayoutParams(-1, -2);
+        sbLp.setMargins(dp(12), 0, dp(12), dp(8));
+        root.addView(searchBar, sbLp);
         preview = new OfficePreviewView(this); preview.setId(android.R.id.primary); root.addView(preview, new LinearLayout.LayoutParams(-1, 0, 1));
         sheets = new OfficeSheetTabs(this); sheets.attachTo(preview); root.addView(sheets, new LinearLayout.LayoutParams(-1, -2));
         remoteLoader = new RemoteOfficeLoader(this);

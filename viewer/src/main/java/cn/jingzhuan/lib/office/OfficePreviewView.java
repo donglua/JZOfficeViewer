@@ -5,6 +5,7 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.net.Uri;
@@ -13,6 +14,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.text.StaticLayout;
 import android.util.AttributeSet;
 import android.util.TypedValue;
 import android.view.GestureDetector;
@@ -56,6 +58,50 @@ public final class OfficePreviewView extends View {
 
     public interface OnPageChangeListener {
         void onPageChanged(int pageNumber, int pageCount);
+    }
+
+    public interface SearchListener {
+        void onSearchResults(String query, int matchCount);
+        void onCurrentMatchChanged(int currentIndex, int matchCount, SearchMatch match);
+    }
+
+    public interface SearchCallback {
+        void onResult(List<SearchMatch> matches);
+        void onError(Exception error);
+    }
+
+    public static final class SearchMatch {
+        public final int pageIndex;
+        public final int elementIndex;
+        public final int paragraphIndex;
+        public final int row;
+        public final int column;
+        public final int startChar;
+        public final int endChar;
+        public final String snippet;
+
+        SearchMatch(OfficeDocument.SearchMatch internal) {
+            this.pageIndex = internal.pageIndex;
+            this.elementIndex = internal.elementIndex;
+            this.paragraphIndex = internal.paragraphIndex;
+            this.row = internal.row;
+            this.column = internal.column;
+            this.startChar = internal.startChar;
+            this.endChar = internal.endChar;
+            this.snippet = internal.snippet != null ? internal.snippet : "";
+        }
+
+        public SearchMatch(int pageIndex, int elementIndex, int paragraphIndex,
+                           int row, int column, int startChar, int endChar, String snippet) {
+            this.pageIndex = pageIndex;
+            this.elementIndex = elementIndex;
+            this.paragraphIndex = paragraphIndex;
+            this.row = row;
+            this.column = column;
+            this.startChar = startChar;
+            this.endChar = endChar;
+            this.snippet = snippet != null ? snippet : "";
+        }
     }
 
     public static final class Info {
@@ -104,6 +150,16 @@ public final class OfficePreviewView extends View {
     private float zoomOverflow;
     private ValueAnimator zoomAnimator;
     private String status = "";
+    private String currentFilePath;
+    private final List<SearchMatch> searchMatches = new ArrayList<>();
+    private int currentMatchIndex = -1;
+    private boolean isSearching;
+    private String lastSearchQuery = "";
+    private RectF targetHighlightRect;
+    private Future<?> searchPending;
+    private final List<SearchListener> searchListeners = new ArrayList<>();
+    private final Paint highlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint highlightStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public OfficePreviewView(Context context) { this(context, null); }
     public OfficePreviewView(Context context, AttributeSet attrs) {
@@ -178,6 +234,7 @@ public final class OfficePreviewView extends View {
                 opened = OfficePackage.open(app, uri);
                 OfficeDocument loaded = opened.document;
                 OfficePackage.checkCancelled();
+                final String filePath = opened.file.getAbsolutePath();
                 final SheetLayout preparedSheet;
                 final OfficeRenderer preparedRenderer;
                 if (loaded.kind == OfficeDocument.Kind.XLSX) {
@@ -194,6 +251,8 @@ public final class OfficePreviewView extends View {
                 final OfficePackage source = opened;
                 main.post(() -> {
                     if (token != generation) { if (source != null) closePackage(source); return; }
+                    currentFilePath = filePath;
+                    clearSearch();
                     document = loaded; status = ""; currentPage = 1;
                     if (isSpreadsheet()) {
                         if (hasRestoredState && restoredPage > 1 && restoredPage <= loaded.sheets.size()) {
@@ -238,7 +297,7 @@ public final class OfficePreviewView extends View {
     }
 
     public void clear() {
-        requireMainThread(); cancel(); releaseImages(); document = null; renderer.clear(); sheetRenderer.clear(); currentPage = pendingJumpPage = 0;
+        requireMainThread(); cancel(); clearSearch(); currentFilePath = null; releaseImages(); document = null; renderer.clear(); sheetRenderer.clear(); currentPage = pendingJumpPage = 0;
         hasRestoredState = false; announcedPage = 0;
         setContentDescription(null);
         contentWidth = contentHeight = offsetX = offsetY = 0;
@@ -441,6 +500,7 @@ public final class OfficePreviewView extends View {
     private void cancel() {
         generation++;
         if (pending != null) { pending.cancel(true); pending = null; }
+        if (searchPending != null) { searchPending.cancel(true); searchPending = null; }
         executor.getQueue().clear();
         if (document == null && "Loading...".equals(status)) { status = ""; invalidate(); }
         settleZoom();
@@ -655,6 +715,9 @@ public final class OfficePreviewView extends View {
             images.request(renderer.visibleImages(visibleLeft, visibleTop, visibleLeft + getWidth() / scale(), visibleBottom, currentPage - 1));
             renderer.draw(canvas, visibleTop, visibleBottom, images.bitmaps);
         }
+        if (!searchMatches.isEmpty()) {
+            drawSearchHighlights(canvas);
+        }
         canvas.restore();
     }
 
@@ -685,6 +748,348 @@ public final class OfficePreviewView extends View {
             restoredDocX = saved.docX;
             restoredDocY = saved.docY;
             applyRestoredState();
+        }
+    }
+
+    // MARK: - 全文检索控制器 API 与高亮绘制
+
+    public void search(String query) {
+        search(query, null);
+    }
+
+    public void search(String query, SearchCallback callback) {
+        requireMainThread();
+        if (searchPending != null) {
+            searchPending.cancel(true);
+            searchPending = null;
+        }
+        final String trimmed = query != null ? query.trim() : "";
+        lastSearchQuery = trimmed;
+        if (trimmed.isEmpty() || currentFilePath == null || document == null) {
+            searchMatches.clear();
+            currentMatchIndex = -1;
+            isSearching = false;
+            targetHighlightRect = null;
+            invalidate();
+            notifySearchResults(trimmed, 0);
+            notifySearchMatchChanged();
+            if (callback != null) callback.onResult(Collections.emptyList());
+            return;
+        }
+
+        isSearching = true;
+        final String path = currentFilePath;
+        final int token = generation;
+        searchPending = executor.submit(() -> {
+            try {
+                String json = NativeCore.search(path, trimmed);
+                final List<OfficeDocument.SearchMatch> internalMatches = DocumentDecoder.decodeSearchMatches(json);
+                final List<SearchMatch> matches = new ArrayList<>(internalMatches.size());
+                for (OfficeDocument.SearchMatch m : internalMatches) {
+                    matches.add(new SearchMatch(m));
+                }
+                main.post(() -> {
+                    if (token != generation) return;
+                    isSearching = false;
+                    searchMatches.clear();
+                    searchMatches.addAll(matches);
+                    currentMatchIndex = matches.isEmpty() ? -1 : 0;
+                    updateTargetForCurrentMatch();
+                    notifySearchResults(trimmed, matches.size());
+                    if (callback != null) callback.onResult(matches);
+                });
+            } catch (Exception e) {
+                main.post(() -> {
+                    if (token != generation) return;
+                    isSearching = false;
+                    searchMatches.clear();
+                    currentMatchIndex = -1;
+                    targetHighlightRect = null;
+                    invalidate();
+                    notifySearchResults(trimmed, 0);
+                    notifySearchMatchChanged();
+                    if (callback != null) callback.onError(e);
+                });
+            }
+        });
+    }
+
+    public boolean findNext() {
+        requireMainThread();
+        if (searchMatches.isEmpty()) return false;
+        currentMatchIndex = (currentMatchIndex + 1) % searchMatches.size();
+        updateTargetForCurrentMatch();
+        return true;
+    }
+
+    public boolean findPrevious() {
+        requireMainThread();
+        if (searchMatches.isEmpty()) return false;
+        currentMatchIndex = (currentMatchIndex - 1 + searchMatches.size()) % searchMatches.size();
+        updateTargetForCurrentMatch();
+        return true;
+    }
+
+    public void clearSearch() {
+        requireMainThread();
+        if (searchPending != null) {
+            searchPending.cancel(true);
+            searchPending = null;
+        }
+        lastSearchQuery = "";
+        searchMatches.clear();
+        currentMatchIndex = -1;
+        isSearching = false;
+        targetHighlightRect = null;
+        invalidate();
+        notifySearchResults("", 0);
+        notifySearchMatchChanged();
+    }
+
+    public List<SearchMatch> getSearchMatches() {
+        return Collections.unmodifiableList(new ArrayList<>(searchMatches));
+    }
+
+    public int getCurrentMatchIndex() {
+        return currentMatchIndex;
+    }
+
+    public boolean isSearching() {
+        return isSearching;
+    }
+
+    public void setSearchListener(SearchListener listener) {
+        requireMainThread();
+        searchListeners.clear();
+        if (listener != null) searchListeners.add(listener);
+    }
+
+    public void addSearchListener(SearchListener listener) {
+        requireMainThread();
+        if (listener != null && !searchListeners.contains(listener)) {
+            searchListeners.add(listener);
+        }
+    }
+
+    public void removeSearchListener(SearchListener listener) {
+        requireMainThread();
+        searchListeners.remove(listener);
+    }
+
+    private void notifySearchResults(String query, int count) {
+        if (!searchListeners.isEmpty()) {
+            List<SearchListener> copy = new ArrayList<>(searchListeners);
+            for (int i = 0; i < copy.size(); i++) {
+                copy.get(i).onSearchResults(query, count);
+            }
+        }
+    }
+
+    private void notifySearchMatchChanged() {
+        if (!searchListeners.isEmpty()) {
+            SearchMatch current = (currentMatchIndex >= 0 && currentMatchIndex < searchMatches.size())
+                ? searchMatches.get(currentMatchIndex) : null;
+            List<SearchListener> copy = new ArrayList<>(searchListeners);
+            for (int i = 0; i < copy.size(); i++) {
+                copy.get(i).onCurrentMatchChanged(currentMatchIndex, searchMatches.size(), current);
+            }
+        }
+    }
+
+    private void updateTargetForCurrentMatch() {
+        if (currentMatchIndex < 0 || currentMatchIndex >= searchMatches.size() || document == null) {
+            targetHighlightRect = null;
+            invalidate();
+            notifySearchMatchChanged();
+            return;
+        }
+        SearchMatch match = searchMatches.get(currentMatchIndex);
+        if (document.kind == OfficeDocument.Kind.PPTX && match.pageIndex + 1 != currentPage) {
+            jumpToPage(match.pageIndex + 1);
+        } else if (document.kind == OfficeDocument.Kind.XLSX && match.pageIndex + 1 != currentPage) {
+            selectSheet(match.pageIndex + 1);
+        }
+
+        List<RectF> rects = computeHighlightRects(match);
+        if (!rects.isEmpty()) {
+            RectF union = new RectF(rects.get(0));
+            for (int i = 1; i < rects.size(); i++) {
+                union.union(rects.get(i));
+            }
+            targetHighlightRect = union;
+            scrollToHighlight(union);
+        } else {
+            targetHighlightRect = null;
+        }
+        invalidate();
+        notifySearchMatchChanged();
+    }
+
+    public void scrollToHighlight(RectF targetRect) {
+        if (targetRect == null || getWidth() == 0 || getHeight() == 0) return;
+        settleZoom();
+        scroller.forceFinished(true);
+        float s = scale();
+        float targetX = targetRect.centerX() * s + left() - getWidth() / 2f;
+        float targetY = targetRect.centerY() * s + top() - getHeight() / 2f;
+        int clampX = Math.max(0, Math.min(maxX(), Math.round(targetX)));
+        int clampY = Math.max(0, Math.min(maxY(), Math.round(targetY)));
+        int dx = clampX - Math.round(offsetX);
+        int dy = clampY - Math.round(offsetY);
+        if (dx != 0 || dy != 0) {
+            scroller.startScroll((int) offsetX, (int) offsetY, dx, dy, 250);
+            postInvalidateOnAnimation();
+        }
+    }
+
+    List<RectF> computeHighlightRects(SearchMatch match) {
+        if (document == null || match == null) return Collections.emptyList();
+        if (document.kind == OfficeDocument.Kind.DOCX) {
+            if (renderer.pages.isEmpty()) return Collections.emptyList();
+            OfficeRenderer.Page page = renderer.pages.get(0);
+            if (match.elementIndex < 0 || match.elementIndex >= page.elements.size()) return Collections.emptyList();
+            OfficeRenderer.Element d = page.elements.get(match.elementIndex);
+            return elementHighlightRects(d, match, 0);
+        } else if (document.kind == OfficeDocument.Kind.PPTX) {
+            if (match.pageIndex < 0 || match.pageIndex >= renderer.pages.size()) return Collections.emptyList();
+            OfficeRenderer.Page page = renderer.pages.get(match.pageIndex);
+            if (match.elementIndex < 0 || match.elementIndex >= page.elements.size()) return Collections.emptyList();
+            OfficeRenderer.Element d = page.elements.get(match.elementIndex);
+            return elementHighlightRects(d, match, page.y);
+        } else if (document.kind == OfficeDocument.Kind.XLSX) {
+            if (match.pageIndex < 0 || match.pageIndex >= document.sheets.size()) return Collections.emptyList();
+            SpreadsheetDocument.Sheet sheet = document.sheets.get(match.pageIndex);
+            SheetLayout layout = (match.pageIndex == currentPage - 1 && sheetRenderer.layout != null)
+                ? sheetRenderer.layout
+                : new SheetLayout(sheet, SheetRenderer.HEADER_WIDTH, SheetRenderer.HEADER_HEIGHT);
+            int r = match.row >= 0 ? match.row : 0;
+            int c = match.column >= 0 ? match.column : 0;
+            if (r < 0 || r >= layout.rows.offsets.length - 1 || c < 0 || c >= layout.columns.offsets.length - 1) {
+                return Collections.emptyList();
+            }
+            if (sheet.geometry != null && sheet.geometry.mergeRects != null) {
+                for (SpreadsheetDocument.MergeRect m : sheet.geometry.mergeRects) {
+                    if (m.anchor == match.elementIndex) {
+                        return Collections.singletonList(new RectF(
+                            m.left + SheetRenderer.HEADER_WIDTH,
+                            m.top + SheetRenderer.HEADER_HEIGHT,
+                            m.right + SheetRenderer.HEADER_WIDTH,
+                            m.bottom + SheetRenderer.HEADER_HEIGHT
+                        ));
+                    }
+                }
+            }
+            float x1 = layout.columns.offsets[c];
+            float x2 = layout.columns.offsets[c + 1];
+            float y1 = layout.rows.offsets[r];
+            float y2 = layout.rows.offsets[r + 1];
+            return Collections.singletonList(new RectF(x1, y1, x2, y2));
+        }
+        return Collections.emptyList();
+    }
+
+    private List<RectF> elementHighlightRects(OfficeRenderer.Element d, SearchMatch match, float pageOffsetY) {
+        if (d.source.type == OfficeDocument.Type.TABLE) {
+            int targetBlockIndex = 0;
+            boolean found = false;
+            int targetR = match.row >= 0 ? match.row : 0;
+            int targetC = match.column >= 0 ? match.column : 0;
+            for (int r = 0; r < d.source.rows.size(); r++) {
+                List<List<OfficeDocument.Paragraph>> row = d.source.rows.get(r);
+                for (int c = 0; c < row.size(); c++) {
+                    List<OfficeDocument.Paragraph> cell = row.get(c);
+                    if (r == targetR && c == targetC) {
+                        targetBlockIndex += match.paragraphIndex;
+                        found = true;
+                        break;
+                    }
+                    if (!cell.isEmpty()) {
+                        targetBlockIndex += cell.size();
+                    }
+                }
+                if (found) break;
+            }
+            if (found && targetBlockIndex >= 0 && targetBlockIndex < d.texts.size()
+                && targetR < d.source.rows.size() && targetC < d.source.rows.get(targetR).size()
+                && match.paragraphIndex < d.source.rows.get(targetR).get(targetC).size()) {
+                OfficeTextLayout.Block block = d.texts.get(targetBlockIndex);
+                OfficeDocument.Paragraph para = d.source.rows.get(targetR).get(targetC).get(match.paragraphIndex);
+                return blockHighlightRects(block, para, match.startChar, match.endChar, d.transform, pageOffsetY);
+            }
+            return Collections.emptyList();
+        } else if (!d.source.paragraphs.isEmpty()) {
+            if (match.paragraphIndex >= 0 && match.paragraphIndex < d.texts.size()
+                && match.paragraphIndex < d.source.paragraphs.size()) {
+                OfficeTextLayout.Block block = d.texts.get(match.paragraphIndex);
+                OfficeDocument.Paragraph para = d.source.paragraphs.get(match.paragraphIndex);
+                return blockHighlightRects(block, para, match.startChar, match.endChar, d.transform, pageOffsetY);
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    private List<RectF> blockHighlightRects(OfficeTextLayout.Block b, OfficeDocument.Paragraph para,
+                                            int startChar, int endChar, Matrix transform, float pageOffsetY) {
+        StaticLayout layout = b.layout;
+        if (layout == null) return Collections.emptyList();
+        int bulletLen = para.bullet != null ? para.bullet.length() : 0;
+        CharSequence text = layout.getText();
+        int totalLen = text.length();
+        int s = Math.max(0, Math.min(totalLen, startChar + bulletLen));
+        int e = Math.max(s, Math.min(totalLen, endChar + bulletLen));
+        if (s >= e) return Collections.emptyList();
+
+        int startLine = layout.getLineForOffset(s);
+        int endLine = layout.getLineForOffset(e);
+
+        List<RectF> rects = new ArrayList<>();
+        for (int line = startLine; line <= endLine; line++) {
+            int lineStart = layout.getLineStart(line);
+            int lineEnd = layout.getLineEnd(line);
+            int selStart = Math.max(s, lineStart);
+            int selEnd = Math.min(e, lineEnd);
+            if (selStart < selEnd) {
+                float x1 = layout.getPrimaryHorizontal(selStart);
+                float x2 = layout.getPrimaryHorizontal(selEnd);
+                float left = Math.min(x1, x2);
+                float right = Math.max(x1, x2);
+                if (right - left < 2f) right = left + 2f;
+                float top = layout.getLineTop(line);
+                float bottom = layout.getLineBottom(line);
+                RectF r = new RectF(b.x + left, b.y + top, b.x + right, b.y + bottom);
+                transform.mapRect(r);
+                r.offset(0, pageOffsetY);
+                rects.add(r);
+            }
+        }
+        return rects;
+    }
+
+    private void drawSearchHighlights(Canvas canvas) {
+        if (searchMatches.isEmpty()) return;
+        highlightPaint.setStyle(Paint.Style.FILL);
+        highlightStrokePaint.setStyle(Paint.Style.STROKE);
+        highlightStrokePaint.setColor(0xffe65100);
+        highlightStrokePaint.setStrokeWidth(1.5f / scale());
+
+        for (int i = 0; i < searchMatches.size(); i++) {
+            SearchMatch match = searchMatches.get(i);
+            if (isSpreadsheet() && match.pageIndex != (currentPage - 1)) {
+                continue;
+            }
+            boolean isCurrent = (i == currentMatchIndex);
+            List<RectF> rects = computeHighlightRects(match);
+            for (int r = 0; r < rects.size(); r++) {
+                RectF rect = rects.get(r);
+                if (isCurrent) {
+                    highlightPaint.setColor(0xbfFFA000);
+                    canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
+                    canvas.drawRoundRect(rect, 2f, 2f, highlightStrokePaint);
+                } else {
+                    highlightPaint.setColor(0x73FFEB3B);
+                    canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
+                }
+            }
         }
     }
 

@@ -31,7 +31,7 @@ final class SheetRenderer {
     float width, height;
     private SpreadsheetDocument.Sheet sheet;
     private List<SpreadsheetDocument.CellStyle> styles = Collections.emptyList();
-    private SheetLayout layout;
+    SheetLayout layout;
     private SheetLayout.Axis rows, columns;
     private final List<Merge> merges = new ArrayList<>();
     private final List<Merge> visibleMerges = new ArrayList<>();
