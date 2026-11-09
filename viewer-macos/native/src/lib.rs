@@ -70,6 +70,41 @@ pub unsafe extern "C" fn jz_office_parse_path(path_utf8: *const c_char) -> JZStr
     }
 }
 
+/// 在指定路径的 Office 文档中执行全文检索（忽略大小写），返回 `SearchMatch` 数组的 JSON 字符串。
+///
+/// # Safety
+/// `path_utf8` 与 `query_utf8` 必须为有效的以 `\0` 结尾的 C 字符串指针；
+/// 返回值中的 `data` 或 `error` 必须通过 `jz_office_free_string` 释放。
+#[no_mangle]
+pub unsafe extern "C" fn jz_office_search_path(
+    path_utf8: *const c_char,
+    query_utf8: *const c_char,
+) -> JZStringResult {
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<String, String> {
+        // SAFETY: 委托 c_str_to_string 检查空指针并按 C 字符串解析。
+        let path_str = unsafe { c_str_to_string(path_utf8)? };
+        // SAFETY: 委托 c_str_to_string 检查空指针并按 C 字符串解析。
+        let query_str = unsafe { c_str_to_string(query_utf8)? };
+        jz_office_core::search_path_to_json(Path::new(&path_str), &query_str)
+            .map_err(|e| e.to_string())
+    }));
+
+    match outcome {
+        Ok(Ok(json)) => JZStringResult {
+            data: into_c_string_ptr(json),
+            error: std::ptr::null_mut(),
+        },
+        Ok(Err(err)) => JZStringResult {
+            data: std::ptr::null_mut(),
+            error: into_c_string_ptr(err),
+        },
+        Err(_) => JZStringResult {
+            data: std::ptr::null_mut(),
+            error: into_c_string_ptr("Document search panicked".to_owned()),
+        },
+    }
+}
+
 /// 从指定文档包中按需读取内嵌部件（如图片媒体资源），受 16 MiB 单部件与 256 MiB 累计解压预算保护。
 ///
 /// # Safety
@@ -182,6 +217,25 @@ mod tests {
         assert!(res.data.is_null());
         assert!(!res.error.is_null());
         // SAFETY: 释放错误字符串。
+        unsafe { jz_office_free_string(res.error) };
+    }
+
+    #[test]
+    fn search_null_or_missing_file_returns_error_without_panic() {
+        // SAFETY: 测试空指针防护逻辑。
+        let res = unsafe { jz_office_search_path(std::ptr::null(), std::ptr::null()) };
+        assert!(res.data.is_null());
+        assert!(!res.error.is_null());
+        // SAFETY: 释放返回的错误字符串。
+        unsafe { jz_office_free_string(res.error) };
+
+        let path = CString::new("/nonexistent/jz-office-missing.docx").unwrap_or_default();
+        let query = CString::new("test").unwrap_or_default();
+        // SAFETY: path 与 query 为合法 CString，结果通过 jz_office_free_string 释放。
+        let res = unsafe { jz_office_search_path(path.as_ptr(), query.as_ptr()) };
+        assert!(res.data.is_null());
+        assert!(!res.error.is_null());
+        // SAFETY: 释放返回的错误字符串。
         unsafe { jz_office_free_string(res.error) };
     }
 }

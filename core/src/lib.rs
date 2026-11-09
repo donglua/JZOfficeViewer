@@ -4,12 +4,14 @@ pub(crate) mod numbering;
 mod package;
 mod package_cache;
 mod pptx;
+pub mod search;
 pub mod spreadsheet;
 mod xlsx;
 mod xml;
 mod zip_directory;
 
 pub use package::Package;
+pub use search::{search_document, search_path, search_path_to_json, MAX_SEARCH_MATCHES};
 use std::io::{Read, Seek};
 use std::path::Path;
 
@@ -36,7 +38,9 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn parse_path(path: &Path) -> Result<model::Document> {
-    parse_reader(std::fs::File::open(path)?)
+    let document = parse_reader(std::fs::File::open(path)?)?;
+    search::cache_document(path, &document);
+    Ok(document)
 }
 
 pub fn parse_path_to_json(path: &Path) -> Result<String> {
@@ -76,12 +80,14 @@ pub fn read_part_limited(path: &Path, part: &str, limit: u64) -> Result<Vec<u8>>
     package_cache::read_part(path, part, limit)
 }
 
-/// 清空当前已打开的文档包缓存及 ZIP 索引句柄
+/// 清空当前已打开的文档包缓存、ZIP 索引句柄与检索文本缓存
 pub fn clear_package_cache() {
     package_cache::clear();
+    search::clear_cache();
 }
 
-/// 从全局 Package 缓存中精准淘汰指定路径的文档包句柄与 ZIP 索引
+/// 从全局 Package 缓存与检索文本缓存中精准淘汰指定路径的句柄与索引
 pub fn evict_package_cache(path: &Path) {
     package_cache::evict(path);
+    search::evict_cache(path);
 }

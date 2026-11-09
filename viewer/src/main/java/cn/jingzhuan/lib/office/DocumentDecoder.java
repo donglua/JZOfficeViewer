@@ -144,6 +144,55 @@ final class DocumentDecoder {
         }
     }
 
+    static List<OfficeDocument.SearchMatch> decodeSearchMatches(String json) throws IOException {
+        if (json == null) throw new IOException("Invalid core search result");
+        try {
+            Cursor c = new Cursor(json);
+            List<OfficeDocument.SearchMatch> matches = new ArrayList<>();
+            c.beginArray();
+            while (c.hasNext()) {
+                if (matches.size() >= 1000) throw new IllegalArgumentException("Too many search matches");
+                matches.add(searchMatch(c));
+            }
+            c.endArray();
+            c.requireEnd();
+            return matches;
+        } catch (RuntimeException e) {
+            throw new IOException("Invalid core search result", e);
+        }
+    }
+
+    private static OfficeDocument.SearchMatch searchMatch(Cursor c) {
+        OfficeDocument.SearchMatch m = new OfficeDocument.SearchMatch();
+        boolean hasPage = false, hasElement = false, hasParagraph = false;
+        boolean hasStart = false, hasEnd = false, hasSnippet = false;
+        c.beginObject();
+        while (c.hasNext()) {
+            switch (c.nextName()) {
+                case "pageIndex": m.pageIndex = nonNegativeInt(c.nextDouble(), "pageIndex"); hasPage = true; break;
+                case "elementIndex": m.elementIndex = nonNegativeInt(c.nextDouble(), "elementIndex"); hasElement = true; break;
+                case "paragraphIndex": m.paragraphIndex = nonNegativeInt(c.nextDouble(), "paragraphIndex"); hasParagraph = true; break;
+                case "row":
+                    if (c.peekNull()) { c.nextNull(); m.row = -1; }
+                    else m.row = nonNegativeInt(c.nextDouble(), "row");
+                    break;
+                case "column":
+                    if (c.peekNull()) { c.nextNull(); m.column = -1; }
+                    else m.column = nonNegativeInt(c.nextDouble(), "column");
+                    break;
+                case "startChar": m.startChar = nonNegativeInt(c.nextDouble(), "startChar"); hasStart = true; break;
+                case "endChar": m.endChar = nonNegativeInt(c.nextDouble(), "endChar"); hasEnd = true; break;
+                case "snippet": m.snippet = c.nextString(); hasSnippet = true; break;
+                default: c.skipValue(); break;
+            }
+        }
+        c.endObject();
+        if (!hasPage || !hasElement || !hasParagraph || !hasStart || !hasEnd || !hasSnippet || m.endChar < m.startChar) {
+            throw new IllegalArgumentException("Invalid search match fields");
+        }
+        return m;
+    }
+
     private static OfficeDocument.Page page(Cursor c) {
         OfficeDocument.Page page = new OfficeDocument.Page();
         boolean hasWidth = false, hasHeight = false, hasBg = false, hasElements = false;

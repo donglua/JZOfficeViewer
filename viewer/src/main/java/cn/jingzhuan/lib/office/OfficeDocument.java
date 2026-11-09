@@ -93,4 +93,15 @@ final class OfficeDocument {
             return r;
         }
     }
+
+    static final class SearchMatch {
+        int pageIndex;
+        int elementIndex;
+        int paragraphIndex;
+        int row = -1;
+        int column = -1;
+        int startChar;
+        int endChar;
+        String snippet = "";
+    }
 }

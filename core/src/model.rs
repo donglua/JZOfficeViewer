@@ -145,6 +145,36 @@ impl Document {
             self.warnings.push(message.to_owned());
         }
     }
+
+    /// 在当前文档模型中执行大小写不敏感的全文检索
+    #[must_use]
+    pub fn search(&self, query: &str) -> Vec<SearchMatch> {
+        crate::search::search_document(self, query)
+    }
+}
+
+/// 全文检索单条命中结果（跨平台 JSON 协议，字段采用 camelCase）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchMatch {
+    /// 页或工作表索引（0-based：DOCX 固定为 0，PPTX 为幻灯片序号，XLSX 为工作表序号）
+    pub page_index: u32,
+    /// 元素索引（0-based：DOCX 为 headerBlocks + blocks + footerBlocks 合并流序号，PPTX 为 page.elements 序号，XLSX 为 sheet.cells 序号）
+    pub element_index: u32,
+    /// 段落索引（0-based：普通文本块在 element.paragraphs 中的序号，表格单元格在 rows[row][column] 中的序号，XLSX 固定为 0）
+    pub paragraph_index: u32,
+    /// 表格或电子表格中的行号（0-based，仅 TABLE 元素与 XLSX 单元格存在）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row: Option<u32>,
+    /// 表格或电子表格中的列号（0-based，仅 TABLE 元素与 XLSX 单元格存在）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    /// 命中文本在渲染段落（含 bullet 前缀）或单元格文本中的起始 UTF-16 码元偏移（0-based，包含）
+    pub start_char: u32,
+    /// 命中文本在渲染段落（含 bullet 前缀）或单元格文本中的结束 UTF-16 码元偏移（0-based，不包含）
+    pub end_char: u32,
+    /// 命中位置前后的上下文摘要文本
+    pub snippet: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

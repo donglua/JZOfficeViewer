@@ -168,3 +168,17 @@ export interface OfficeDocument {
   marginLeft?: number;
   marginRight?: number;
 }
+
+/**
+ * 全文检索单条命中结果（对齐 core/src/model.rs 中的 SearchMatch）
+ */
+export interface SearchMatch {
+  pageIndex: number;
+  elementIndex: number;
+  paragraphIndex: number;
+  row?: number;
+  column?: number;
+  startChar: number;
+  endChar: number;
+  snippet: string;
+}

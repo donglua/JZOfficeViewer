@@ -1,6 +1,9 @@
 pub mod support;
 
-use jz_office_core::{model::Kind, parse_path, parse_reader, Package};
+use jz_office_core::{
+    clear_package_cache, evict_package_cache, model::Kind, parse_path, parse_path_to_json,
+    parse_reader, search_path, search_path_to_json, Package,
+};
 use std::{
     fs,
     io::Cursor,
@@ -185,6 +188,52 @@ fn pptx_color_fixture_matches_solid_reference_through_path_api() -> TestResult {
         assert_eq!(run.size, 64.0);
         assert_eq!(run.color, 0xfffff3dd);
     }
+    Ok(())
+}
+
+#[test]
+fn search_path_to_json_contract_and_cache_across_all_formats() -> TestResult {
+    // 1. PPTX: 检索 "first"（忽略大小写）
+    let pptx_file = TemporaryFile::new("search.pptx", &archive(&pptx::parts())?)?;
+    let _ = parse_path_to_json(&pptx_file.path)?;
+    let raw_json = search_path_to_json(&pptx_file.path, "first")?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw_json)?;
+    assert!(parsed.is_array());
+    let first = &parsed[0];
+    assert_eq!(first["pageIndex"], 0);
+    assert_eq!(first["elementIndex"], 0);
+    assert_eq!(first["paragraphIndex"], 0);
+    assert!(first.get("row").is_none());
+    assert!(first.get("column").is_none());
+    assert_eq!(first["startChar"], 0);
+    assert_eq!(first["endChar"], 5);
+    assert_eq!(first["snippet"], "First 中文");
+
+    // 空关键词返回空 JSON 数组
+    assert_eq!(search_path_to_json(&pptx_file.path, "")?, "[]");
+
+    // 2. XLSX: 检索综合样例或基础表格
+    let xlsx_file = TemporaryFile::new("search.xlsx", &archive(&support::xlsx_showcase::parts())?)?;
+    let xlsx_matches = search_path(&xlsx_file.path, "JZ")?;
+    let xlsx_json: serde_json::Value =
+        serde_json::from_str(&search_path_to_json(&xlsx_file.path, "JZ")?)?;
+    assert_eq!(xlsx_json.as_array().map(Vec::len), Some(xlsx_matches.len()));
+    if let Some(m) = xlsx_matches.first() {
+        assert!(m.row.is_some());
+        assert!(m.column.is_some());
+        assert!(m.end_char > m.start_char);
+        assert!(xlsx_json[0]["row"].is_number());
+        assert!(xlsx_json[0]["column"].is_number());
+    }
+
+    // 3. 缓存驱逐与清空后仍能正常回退重算
+    evict_package_cache(&pptx_file.path);
+    let after_evict = search_path(&pptx_file.path, "ENGLISH")?;
+    assert_eq!(after_evict.len(), 1);
+    assert_eq!(after_evict[0].page_index, 1);
+    assert_eq!(after_evict[0].start_char, 7);
+    assert_eq!(after_evict[0].end_char, 14);
+    clear_package_cache();
     Ok(())
 }
 

@@ -1,5 +1,5 @@
-import { parse, parseAsync, readPart, readPartAsync, clearCache, evictCache, AbortSignal } from 'libjz_office_ohos.so';
-import { OfficeDocument } from './OfficeModel';
+import { parse, parseAsync, search, searchAsync, readPart, readPartAsync, clearCache, evictCache, AbortSignal } from 'libjz_office_ohos.so';
+import { OfficeDocument, SearchMatch } from './OfficeModel';
 
 export class NativeCore {
   /**
@@ -30,6 +30,37 @@ export class NativeCore {
       throw new Error(`Unsupported core model version: ${doc.schemaVersion}`);
     }
     return doc;
+  }
+
+  /**
+   * 异步在指定沙箱路径的 Office 文档中执行全文检索（忽略大小写，复用底层轻量文本索引缓存）
+   * @param path 沙箱中的本地文件路径
+   * @param query 检索关键词
+   * @param signal 可选的中断信号
+   */
+  public static async searchDocumentAsync(
+    path: string,
+    query: string,
+    signal?: AbortSignal
+  ): Promise<SearchMatch[]> {
+    if (!query) {
+      return [];
+    }
+    const rawJson: string = await searchAsync(path, query, signal);
+    return JSON.parse(rawJson) as SearchMatch[];
+  }
+
+  /**
+   * 同步在指定沙箱路径的 Office 文档中执行全文检索（忽略大小写）
+   * @param path 沙箱中的本地文件路径
+   * @param query 检索关键词
+   */
+  public static searchDocumentSync(path: string, query: string): SearchMatch[] {
+    if (!query) {
+      return [];
+    }
+    const rawJson: string = search(path, query);
+    return JSON.parse(rawJson) as SearchMatch[];
   }
 
   /**

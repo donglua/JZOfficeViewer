@@ -216,6 +216,73 @@ struct JZOfficeTests {
         }
     }
 
+    @Test("NativeCore 全文检索接口支持 DOCX / PPTX / XLSX 并返回 UTF-16 偏移与摘要")
+    func fullTextSearchAllFormats() throws {
+        let docxURL = samplePath("sample.docx")
+        let pptxURL = samplePath("sample.pptx")
+        let xlsxURL = samplePath("sample.xlsx")
+
+        guard FileManager.default.fileExists(atPath: docxURL.path) else {
+            return
+        }
+
+        // 空查询返回空数组
+        let emptyMatches = try NativeCore.searchDocument(at: docxURL.path, query: "")
+        #expect(emptyMatches.isEmpty)
+
+        // DOCX 检索
+        let docxDoc = try NativeCore.parseDocument(at: docxURL.path)
+        let firstWord = docxDoc.blocks
+            .flatMap(\.paragraphs)
+            .flatMap(\.runs)
+            .map(\.text)
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !firstWord.isEmpty {
+            let query = String(firstWord.prefix(2))
+            let matches = try NativeCore.searchDocument(at: docxURL.path, query: query)
+            #expect(!matches.isEmpty)
+            #expect(matches[0].pageIndex == 0)
+            #expect(matches[0].endChar > matches[0].startChar)
+            #expect(!matches[0].snippet.isEmpty)
+        }
+
+        // PPTX 检索
+        if FileManager.default.fileExists(atPath: pptxURL.path) {
+            let pptxDoc = try NativeCore.parseDocument(at: pptxURL.path)
+            let slideWord = pptxDoc.pages
+                .flatMap(\.elements)
+                .flatMap(\.paragraphs)
+                .flatMap(\.runs)
+                .map(\.text)
+                .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !slideWord.isEmpty {
+                let query = String(slideWord.prefix(2))
+                let matches = try NativeCore.searchDocument(at: pptxURL.path, query: query)
+                #expect(!matches.isEmpty)
+                #expect(matches[0].endChar > matches[0].startChar)
+            }
+        }
+
+        // XLSX 检索
+        if FileManager.default.fileExists(atPath: xlsxURL.path) {
+            let xlsxDoc = try NativeCore.parseDocument(at: xlsxURL.path)
+            let cellWord = xlsxDoc.sheets
+                .flatMap(\.cells)
+                .map(\.text)
+                .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !cellWord.isEmpty {
+                let query = String(cellWord.prefix(2))
+                let matches = try NativeCore.searchDocument(at: xlsxURL.path, query: query)
+                #expect(!matches.isEmpty)
+                #expect(matches[0].row != nil)
+                #expect(matches[0].column != nil)
+            }
+        }
+    }
+
     private func hasNonWhitePixel(_ image: CGImage) -> Bool {
         let w = image.width
         let h = image.height

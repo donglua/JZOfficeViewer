@@ -347,3 +347,35 @@ public struct OfficeDocument: Codable, Sendable {
         self.marginRight = try c.decodeIfPresent(CGFloat.self, forKey: .marginRight) ?? 0
     }
 }
+
+/// 全文检索单条命中结果（对齐 `core/src/model.rs` 中的 `SearchMatch`）
+public struct OfficeSearchMatch: Codable, Equatable, Sendable {
+    public let pageIndex: Int
+    public let elementIndex: Int
+    public let paragraphIndex: Int
+    public let row: Int?
+    public let column: Int?
+    public let startChar: Int
+    public let endChar: Int
+    public let snippet: String
+
+    public init(
+        pageIndex: Int,
+        elementIndex: Int,
+        paragraphIndex: Int,
+        row: Int? = nil,
+        column: Int? = nil,
+        startChar: Int,
+        endChar: Int,
+        snippet: String
+    ) {
+        self.pageIndex = pageIndex
+        self.elementIndex = elementIndex
+        self.paragraphIndex = paragraphIndex
+        self.row = row
+        self.column = column
+        self.startChar = startChar
+        self.endChar = endChar
+        self.snippet = snippet
+    }
+}

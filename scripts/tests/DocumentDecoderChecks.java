@@ -13,7 +13,39 @@ public final class DocumentDecoderChecks {
         checkEscapesAndOutOfOrderKeys();
         checkSheetGeometryValidation();
         checkLargeGeometryArrays();
+        checkSearchMatchesDecodeAndValidation();
         System.out.println("PASS DocumentDecoderChecks (" + passed + " assertions)");
+    }
+
+    private static void checkSearchMatchesDecodeAndValidation() throws Exception {
+        String json = "["
+            + "{\"pageIndex\":0,\"elementIndex\":2,\"paragraphIndex\":1,\"startChar\":5,\"endChar\":9,\"snippet\":\"...2026财务报表...\"},"
+            + "{\"pageIndex\":1,\"elementIndex\":4,\"paragraphIndex\":0,\"row\":3,\"column\":2,\"startChar\":0,\"endChar\":4,\"snippet\":\"Cell text\"}"
+            + "]";
+        java.util.List<OfficeDocument.SearchMatch> matches = DocumentDecoder.decodeSearchMatches(json);
+        check(matches.size() == 2, "search matches count");
+        OfficeDocument.SearchMatch m0 = matches.get(0);
+        check(m0.pageIndex == 0 && m0.elementIndex == 2 && m0.paragraphIndex == 1, "m0 indices");
+        check(m0.row == -1 && m0.column == -1, "m0 omitted row/column default to -1");
+        check(m0.startChar == 5 && m0.endChar == 9 && "...2026财务报表...".equals(m0.snippet), "m0 offsets & snippet");
+        OfficeDocument.SearchMatch m1 = matches.get(1);
+        check(m1.row == 3 && m1.column == 2 && m1.startChar == 0 && m1.endChar == 4, "m1 row/column & offsets");
+
+        check(DocumentDecoder.decodeSearchMatches("[]").isEmpty(), "empty search matches array");
+        rejectSearch(null, "null search json");
+        rejectSearch("[{\"pageIndex\":0}]", "missing required search match fields");
+        rejectSearch("[{\"pageIndex\":0,\"elementIndex\":0,\"paragraphIndex\":0,\"startChar\":8,\"endChar\":4,\"snippet\":\"x\"}]",
+            "endChar before startChar");
+    }
+
+    private static void rejectSearch(String json, String label) {
+        try {
+            DocumentDecoder.decodeSearchMatches(json);
+        } catch (IOException expected) {
+            check("Invalid core search result".equals(expected.getMessage()), label + " message: " + expected.getMessage());
+            return;
+        }
+        throw new AssertionError("Expected search rejection for: " + label);
     }
 
     private static void checkSheetGeometryValidation() throws Exception {

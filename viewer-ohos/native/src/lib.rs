@@ -21,6 +21,20 @@ fn parse_path_to_json(path: &str) -> Result<String> {
     }
 }
 
+fn search_path_to_json(path: &str, query: &str) -> Result<String> {
+    let result = catch_unwind(AssertUnwindSafe(
+        || -> std::result::Result<String, String> {
+            jz_office_core::search_path_to_json(Path::new(path), query).map_err(|e| e.to_string())
+        },
+    ));
+
+    match result {
+        Ok(Ok(json)) => Ok(json),
+        Ok(Err(error)) => Err(Error::from_reason(error)),
+        Err(_) => Err(Error::from_reason("Document search failed".to_owned())),
+    }
+}
+
 fn create_arraybuffer_from_vec(env: &Env, data: Vec<u8>) -> Result<ArrayBuffer<'static>> {
     let mut raw_value = std::ptr::null_mut();
     let mut data_ptr = std::ptr::null_mut();
@@ -86,6 +100,41 @@ pub fn parse_async(
     abort_signal: Option<AbortSignal>,
 ) -> AsyncTask<ParseDocumentTask> {
     AsyncTask::with_optional_signal(ParseDocumentTask { path }, abort_signal)
+}
+
+/// 同步全文检索接口（对齐 Android NativeCore.search）
+#[napi]
+pub fn search(path: String, query: String) -> Result<String> {
+    search_path_to_json(&path, &query)
+}
+
+pub struct SearchDocumentTask {
+    path: String,
+    query: String,
+}
+
+#[napi]
+impl Task for SearchDocumentTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        search_path_to_json(&self.path, &self.query)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// 异步全文检索接口（使用鸿蒙底层 libuv Worker 线程池，不阻塞 ArkUI 主线程）
+#[napi]
+pub fn search_async(
+    path: String,
+    query: String,
+    abort_signal: Option<AbortSignal>,
+) -> AsyncTask<SearchDocumentTask> {
+    AsyncTask::with_optional_signal(SearchDocumentTask { path, query }, abort_signal)
 }
 
 pub struct ReadPartTask {

@@ -72,6 +72,61 @@ public enum NativeCore {
         }
     }
 
+    /// 同步在指定本地文档路径中执行大小写不敏感的全文检索
+    public static func searchDocument(at path: String, query: String) throws -> [OfficeSearchMatch] {
+        guard !query.isEmpty else { return [] }
+        let json = try searchJSON(at: path, query: query)
+        return try decodeSearchMatches(from: json)
+    }
+
+    /// 异步在指定本地文档路径中执行全文检索（在后台并发线程执行，不阻塞主线程）
+    public static func searchDocumentAsync(at path: String, query: String) async throws -> [OfficeSearchMatch] {
+        guard !query.isEmpty else { return [] }
+        return try await Task.detached(priority: .userInitiated) {
+            try searchDocument(at: path, query: query)
+        }.value
+    }
+
+    /// 同步在指定本地文档路径中执行全文检索并返回原始 JSON 字符串
+    public static func searchJSON(at path: String, query: String) throws -> String {
+        guard !path.isEmpty else {
+            throw OfficeError.invalidArguments("File path cannot be empty")
+        }
+        let result = path.withCString { cPath in
+            query.withCString { cQuery in
+                jz_office_search_path(cPath, cQuery)
+            }
+        }
+        defer {
+            if let dataPtr = result.data {
+                jz_office_free_string(dataPtr)
+            }
+            if let errPtr = result.error {
+                jz_office_free_string(errPtr)
+            }
+        }
+        if let errPtr = result.error {
+            let msg = String(cString: errPtr)
+            throw OfficeError.parseFailed(msg)
+        }
+        guard let dataPtr = result.data else {
+            throw OfficeError.parseFailed("Empty search output")
+        }
+        return String(cString: dataPtr)
+    }
+
+    /// 从 JSON 字符串解码 `OfficeSearchMatch` 数组
+    public static func decodeSearchMatches(from json: String) throws -> [OfficeSearchMatch] {
+        guard let data = json.data(using: .utf8) else {
+            throw OfficeError.parseFailed("Invalid UTF-8 search JSON output")
+        }
+        do {
+            return try JSONDecoder().decode([OfficeSearchMatch].self, from: data)
+        } catch {
+            throw OfficeError.parseFailed("Search matches decode failed: \(error.localizedDescription)")
+        }
+    }
+
     /// 同步读取 ZIP 包内指定媒体部件字节（受 16 MiB 单部件与 256 MiB 整包预算限制）
     public static func readPart(at path: String, part: String) throws -> Data {
         guard !path.isEmpty, !part.isEmpty else {
