@@ -8,6 +8,7 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.RectF;
 import android.net.Uri;
 import java.io.IOException;
 import java.io.File;
@@ -30,6 +31,7 @@ final class PptxTableChecks {
         instrumentation.runOnMainChecked(() -> {
             capturePptx(context);
             emptyDocxCellFillsStayTransparent();
+            mergedTableHighlightSkipsCoveredCells(context);
         });
         return "PASS PPTX table cell fills, transparent body cells and DOCX empty cellFills compatibility\n"
             + "SCREENSHOTS pptx-table-synthetic.png\n";
@@ -115,6 +117,8 @@ final class PptxTableChecks {
         OfficeDocument document = new OfficeDocument();
         document.kind = OfficeDocument.Kind.DOCX;
         document.width = 200;
+        document.marginLeft = 32;
+        document.marginRight = 32;
         document.blocks.add(table(0, 0, 120, 40, null));
         OfficeRenderer renderer = new OfficeRenderer();
         renderer.layout(document);
@@ -216,5 +220,101 @@ final class PptxTableChecks {
             && Math.abs(Color.blue(actual) - Color.blue(expected)) <= tolerance,
             label + " at " + x + "," + y + " expected #" + Integer.toHexString(expected)
                 + " actual #" + Integer.toHexString(actual));
+    }
+
+    private static void mergedTableHighlightSkipsCoveredCells(Context context) {
+        OfficeDocument document = new OfficeDocument();
+        document.kind = OfficeDocument.Kind.PPTX;
+        document.width = 400;
+        OfficeDocument.Page page = new OfficeDocument.Page();
+        page.width = 400;
+        page.height = 300;
+        document.pages.add(page);
+
+        OfficeDocument.Element table = new OfficeDocument.Element();
+        table.type = OfficeDocument.Type.TABLE;
+        table.x = 10;
+        table.y = 10;
+        table.width = 300;
+        table.height = 100;
+        table.transform = new float[] {1, 0, 0, 1, 10, 10};
+        table.columnWidths.add(100f);
+        table.columnWidths.add(100f);
+        table.columnWidths.add(100f);
+
+        // Row 0:
+        // Col 0: "Merged Header" (merges 0,0 -> 0,1)
+        // Col 1: "Covered Row0Col1" (covered cell with dummy paragraph)
+        // Col 2: "Col2"
+        // Row 1:
+        // Col 0: "Row1Col0"
+        // Col 1: "TargetCell"
+        // Col 2: "LastCell"
+        List<OfficeDocument.Paragraph> p00 = makeParagraph("Merged Header");
+        List<OfficeDocument.Paragraph> p01 = makeParagraph("Covered Row0Col1");
+        List<OfficeDocument.Paragraph> p02 = makeParagraph("Col2");
+        List<OfficeDocument.Paragraph> p10 = makeParagraph("Row1Col0");
+        List<OfficeDocument.Paragraph> p11 = makeParagraph("TargetCell");
+        List<OfficeDocument.Paragraph> p12 = makeParagraph("LastCell");
+
+        List<List<OfficeDocument.Paragraph>> row0 = new ArrayList<>();
+        row0.add(p00);
+        row0.add(p01);
+        row0.add(p02);
+        List<List<OfficeDocument.Paragraph>> row1 = new ArrayList<>();
+        row1.add(p10);
+        row1.add(p11);
+        row1.add(p12);
+        table.rows.add(row0);
+        table.rows.add(row1);
+
+        SpreadsheetDocument.CellRange merge = new SpreadsheetDocument.CellRange();
+        merge.startRow = 0;
+        merge.startColumn = 0;
+        merge.endRow = 0;
+        merge.endColumn = 1;
+        table.merges.add(merge);
+        page.elements.add(table);
+
+        OfficeRenderer renderer = new OfficeRenderer();
+        renderer.layout(document);
+        OfficeRenderer.Element renderedTable = renderer.pages.get(0).elements.get(0);
+        check(renderedTable.texts.size() == 5, "Renderer skips covered table cell, texts.size == 5");
+
+        OfficePreviewView previewView = new OfficePreviewView(context);
+
+        // Covered cell (0, 1) should return empty highlight rects because it has no layout block
+        OfficePreviewView.SearchMatch coveredMatch = new OfficePreviewView.SearchMatch(
+            0, 0, 0, 0, 1, 0, 7, "Covered"
+        );
+        List<RectF> coveredRects = previewView.elementHighlightRects(renderedTable, coveredMatch, 0);
+        check(coveredRects.isEmpty(), "Covered cell should not have highlight rects");
+
+        // LastCell is at row 1, col 2, paragraphIndex 0.
+        // Before fix: targetBlockIndex becomes 5 (due to covered cell not skipped), which is >= texts.size() (5),
+        // causing lastRects to be empty!
+        OfficePreviewView.SearchMatch lastMatch = new OfficePreviewView.SearchMatch(
+            0, 0, 0, 1, 2, 0, 4, "Last"
+        );
+        List<RectF> lastRects = previewView.elementHighlightRects(renderedTable, lastMatch, 0);
+        check(!lastRects.isEmpty(), "Highlight rects should not be empty for last cell in table");
+
+        // TargetCell is at row 1, col 1, paragraphIndex 0 (x coordinate around 10 + 100 = 110)
+        // Before fix: targetBlockIndex wrongly points to block index 4 (LastCell), so its rect.left would be ~210 instead of ~110
+        OfficePreviewView.SearchMatch targetMatch = new OfficePreviewView.SearchMatch(
+            0, 0, 0, 1, 1, 0, 6, "Target"
+        );
+        List<RectF> targetRects = previewView.elementHighlightRects(renderedTable, targetMatch, 0);
+        check(!targetRects.isEmpty(), "Highlight rects should not be empty for TargetCell");
+        check(targetRects.get(0).left < 150f, "TargetCell highlight x should be in column 1 (left < 150)");
+    }
+
+    private static List<OfficeDocument.Paragraph> makeParagraph(String text) {
+        OfficeDocument.Paragraph paragraph = new OfficeDocument.Paragraph();
+        OfficeDocument.Run run = new OfficeDocument.Run();
+        run.size = 12;
+        run.text = text;
+        paragraph.runs.add(run);
+        return Collections.singletonList(paragraph);
     }
 }

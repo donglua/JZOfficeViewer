@@ -988,16 +988,24 @@ public final class OfficePreviewView extends View {
         return Collections.emptyList();
     }
 
-    private List<RectF> elementHighlightRects(OfficeRenderer.Element d, SearchMatch match, float pageOffsetY) {
+    List<RectF> elementHighlightRects(OfficeRenderer.Element d, SearchMatch match, float pageOffsetY) {
         if (d.source.type == OfficeDocument.Type.TABLE) {
             int targetBlockIndex = 0;
             boolean found = false;
             int targetR = match.row >= 0 ? match.row : 0;
             int targetC = match.column >= 0 ? match.column : 0;
+            int cols = 0;
+            for (List<List<OfficeDocument.Paragraph>> row : d.source.rows) {
+                cols = Math.max(cols, row.size());
+            }
             for (int r = 0; r < d.source.rows.size(); r++) {
                 List<List<OfficeDocument.Paragraph>> row = d.source.rows.get(r);
-                for (int c = 0; c < row.size(); c++) {
-                    List<OfficeDocument.Paragraph> cell = row.get(c);
+                for (int c = 0; c < cols; c++) {
+                    SpreadsheetDocument.CellRange m = OfficeRenderer.findMerge(d.source.merges, r, c);
+                    if (m != null && (m.startRow != r || m.startColumn != c)) {
+                        continue;
+                    }
+                    List<OfficeDocument.Paragraph> cell = c < row.size() ? row.get(c) : Collections.emptyList();
                     if (r == targetR && c == targetC) {
                         targetBlockIndex += match.paragraphIndex;
                         found = true;

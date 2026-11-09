@@ -370,7 +370,8 @@ final class OfficeRenderer {
         }
     }
 
-    private static SpreadsheetDocument.CellRange findMerge(List<SpreadsheetDocument.CellRange> merges, int r, int c) {
+    static SpreadsheetDocument.CellRange findMerge(List<SpreadsheetDocument.CellRange> merges, int r, int c) {
+        if (merges == null) return null;
         for (SpreadsheetDocument.CellRange m : merges) {
             if (r >= m.startRow && r <= m.endRow && c >= m.startColumn && c <= m.endColumn) return m;
         }
