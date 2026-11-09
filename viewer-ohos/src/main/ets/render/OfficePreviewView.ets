@@ -611,7 +611,8 @@ struct DocxFlowView {
   filePath: string = '';
   // 检索结果与当前命中必须可观察，否则 LazyForEach 复用后子组件拿不到新值
   @Prop searchMatches: model.SearchMatch[] = [];
-  @Prop currentMatchIndex: number = -1;
+  @Prop @Watch('onCurrentMatchChanged') currentMatchIndex: number = -1;
+  @State private reuseVersion: number = 0;
   registerControls?: (
     jumpToPage: (pageNumber: number) => void,
     getZoom: () => number,
@@ -631,6 +632,10 @@ struct DocxFlowView {
   private bodyCount: number = 0;
   /** 页眉与正文、正文与页脚之间的额外留白，对齐 Android OfficeRenderer 的 10pt 分隔 */
   private sectionGap: number = 10;
+
+  onCurrentMatchChanged(): void {
+    this.reuseVersion++;
+  }
 
   aboutToAppear(): void {
     this.imageStore = new ImageStore(this.filePath);
@@ -652,6 +657,7 @@ struct DocxFlowView {
           this.setZoom(value, this.viewportWidth / 2, this.viewportHeight / 2);
         },
         (match: model.SearchMatch): void => {
+          this.reuseVersion++;
           if (match.elementIndex >= 0 && match.elementIndex < this.blockSource.totalCount()) {
             this.scroller.scrollToIndex(match.elementIndex, true, ScrollAlign.CENTER);
           }
@@ -739,6 +745,17 @@ struct DocxFlowView {
     return result;
   }
 
+  /** 计算块在 LazyForEach 中的缓存键，保证当前命中切换时受影响的块能够触发 ArkUI 刷新 */
+  private getBlockKey(index: number): string {
+    const hasMatches = this.searchMatches && this.searchMatches.some((m: model.SearchMatch): boolean => m.elementIndex === index);
+    if (!hasMatches) {
+      return `block-${index}`;
+    }
+    const isCurrent = (this.currentMatchIndex >= 0 && this.currentMatchIndex < this.searchMatches.length)
+      && this.searchMatches[this.currentMatchIndex].elementIndex === index;
+    return `block-${index}-${this.reuseVersion}-${isCurrent ? this.currentMatchIndex : 'idle'}`;
+  }
+
   build() {
     if (this.document) {
       Stack() {
@@ -773,7 +790,7 @@ struct DocxFlowView {
                   bottom: this.headerCount > 0 && this.headerCount - 1 === index ? this.sectionGap : 0
                 })
               },
-              (_element: model.Element, index: number) => `block-${index}`
+              (_element: model.Element, index: number): string => this.getBlockKey(index)
             )
           }
           .cachedCount(6)
@@ -1375,13 +1392,17 @@ struct DocxParagraphView {
 struct DocxTextBlockView {
   element: model.Element | null = null;
   @Prop blockMatches: model.SearchMatch[] = [];
-  @Prop currentMatchKey: string = '';
+  @Prop @Watch('onCurrentMatchKeyChanged') currentMatchKey: string = '';
   @State private reuseVersion: number = 0;
 
+  onCurrentMatchKeyChanged(): void {
+    this.reuseVersion++;
+  }
+
   aboutToReuse(params: Record<string, Object>): void {
+    this.reuseVersion++;
     if (params['element']) {
       this.element = params['element'] as model.Element;
-      this.reuseVersion++;
     }
     if (params['blockMatches']) {
       this.blockMatches = params['blockMatches'] as model.SearchMatch[];
@@ -1404,7 +1425,12 @@ struct DocxTextBlockView {
             })
           },
           // key 带上当前命中，切换命中时仅重建受影响的段落
-          (_para: model.Paragraph, pIdx: number) => `p-${pIdx}-${this.reuseVersion}-${this.blockMatches.length}-${this.currentMatchKey.length > 0 ? 1 : 0}`
+          (_para: model.Paragraph, pIdx: number): string => {
+            const isCur = this.blockMatches && this.blockMatches.some((m: model.SearchMatch): boolean =>
+              m.paragraphIndex === pIdx && searchMatchKey(m) === this.currentMatchKey
+            );
+            return `p-${pIdx}-${this.reuseVersion}-${this.blockMatches.length}-${isCur ? this.currentMatchKey : 'idle'}`;
+          }
         )
       }
       .width('100%')

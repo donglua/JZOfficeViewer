@@ -485,14 +485,14 @@ export class CanvasElementDrawer {
     line: WrappedLine,
     lineAvailWidth: number
   ): number[] | null {
-    const extra = lineAvailWidth - line.width;
-    if (extra <= 0.5) return null;
+    if (lineAvailWidth - line.width <= 0.5) return null;
 
     const charWidths: number[] = [];
     const charCodes: number[] = [];
     const charUnits: number[] = [];
     const unitStarts: number[] = [];
     let totalUnits = 0;
+    let totalCharsWidth = 0;
     for (const seg of line.segments) {
       const text = seg.text;
       const segLen = text.length;
@@ -511,6 +511,7 @@ export class CanvasElementDrawer {
           if (measured > 0) width = measured;
         }
         charWidths.push(width);
+        totalCharsWidth += width;
         charCodes.push(code);
         charUnits.push(step);
         unitStarts.push(totalUnits);
@@ -520,6 +521,9 @@ export class CanvasElementDrawer {
     }
     const count = charWidths.length;
     if (count === 0) return null;
+
+    const extra = lineAvailWidth - totalCharsWidth;
+    if (extra <= 0.5) return null;
 
     const gapAfter: boolean[] = [];
     let gapCount = 0;
