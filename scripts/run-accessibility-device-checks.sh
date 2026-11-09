@@ -40,7 +40,34 @@ if [[ "$device_state" != device ]]; then
 fi
 
 mkdir -p "$(dirname "$log")"
-adb "${adb_args[@]}" install -r -t "$apk" >/dev/null
+
+# 确保包管理器服务已就绪（特别是在模拟器刚启动时）
+for i in {1..30}; do
+    if adb "${adb_args[@]}" shell pm path android >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+
+# 关闭包安装完整性校验，避免受限或高负载环境下校验超时
+adb "${adb_args[@]}" shell settings put global package_verifier_enable 0 2>/dev/null || true
+adb "${adb_args[@]}" shell settings put global verifier_verify_adb_installs 0 2>/dev/null || true
+
+# 安装测试 APK（最多重试 3 次以应对冷启动并发导致的 Broken pipe）
+installed=0
+for attempt in 1 2 3; do
+    if adb "${adb_args[@]}" install -r -t "$apk" >/dev/null 2>&1; then
+        installed=1
+        break
+    fi
+    sleep 3
+done
+
+if [[ "$installed" -ne 1 ]]; then
+    echo "Failed to install test APK after 3 attempts: $apk" >&2
+    adb "${adb_args[@]}" install -r -t "$apk" >&2 || true
+    exit 1
+fi
 echo "Running accessibility suite; log: $log"
 adb "${adb_args[@]}" shell am instrument -w -e suite accessibility \
     cn.jingzhuan.lib.office.test/cn.jingzhuan.lib.office.OfficeInstrumentation | tee "$log"
