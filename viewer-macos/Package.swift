@@ -1,6 +1,17 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
+import Foundation
+
+var testSwiftSettings: [SwiftSetting] = []
+let cltTestingMacros = "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib"
+if FileManager.default.fileExists(atPath: cltTestingMacros) {
+    testSwiftSettings.append(.unsafeFlags([
+        "-Xfrontend", "-load-plugin-library",
+        "-Xfrontend", "\(cltTestingMacros)#TestingMacros"
+    ]))
+}
+
 let package = Package(
     name: "JZOffice",
     platforms: [
@@ -40,7 +51,8 @@ let package = Package(
         .testTarget(
             name: "JZOfficeTests",
             dependencies: ["JZOffice"],
-            path: "Tests/JZOfficeTests"
+            path: "Tests/JZOfficeTests",
+            swiftSettings: testSwiftSettings
         )
     ]
 )

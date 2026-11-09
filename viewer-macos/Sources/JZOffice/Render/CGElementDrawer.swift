@@ -553,6 +553,320 @@ public enum CGElementDrawer {
         }
     }
 
+    // MARK: - 全文检索高亮矩形计算
+
+    public static func computeDocxBlockYOffsets(in doc: OfficeDocument) -> [CGFloat] {
+        guard doc.kind == .docx else { return [] }
+        let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
+        let docW = doc.width > 0 ? doc.width : 595
+        let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
+        let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
+        let availW = max(100, docW - marginX - marginR)
+        var curY: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
+        var offsets: [CGFloat] = []
+        offsets.reserveCapacity(allBlocks.count)
+        for b in allBlocks {
+            offsets.append(curY)
+            let elW = b.width > 0 ? min(availW, b.width) : availW
+            var elH = b.height
+            if elH <= 0 {
+                if b.type == .table && !b.rows.isEmpty {
+                    var tbl = b
+                    tbl.width = elW
+                    elH = measureTableHeight(element: tbl)
+                } else if !b.paragraphs.isEmpty {
+                    elH = measureParagraphsHeight(b.paragraphs, availableWidth: elW, wrap: true) + 8
+                } else {
+                    elH = 80
+                }
+            }
+            curY += elH + 8
+        }
+        return offsets
+    }
+
+    public static func computeHighlightRects(
+        for match: OfficeSearchMatch,
+        in doc: OfficeDocument,
+        docxBlockYOffsets: [CGFloat]? = nil
+    ) -> [CGRect] {
+        switch doc.kind {
+        case .docx:
+            let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
+            guard match.elementIndex >= 0 && match.elementIndex < allBlocks.count else { return [] }
+            let docW = doc.width > 0 ? doc.width : 595
+            let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
+            let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
+            let availW = max(100, docW - marginX - marginR)
+            let curY: CGFloat
+            if let offsets = docxBlockYOffsets, match.elementIndex < offsets.count {
+                curY = offsets[match.elementIndex]
+            } else {
+                var calculatedY: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
+                for i in 0..<match.elementIndex {
+                    let b = allBlocks[i]
+                    let elW = b.width > 0 ? min(availW, b.width) : availW
+                    var elH = b.height
+                    if elH <= 0 {
+                        if b.type == .table && !b.rows.isEmpty {
+                            var tbl = b
+                            tbl.width = elW
+                            elH = measureTableHeight(element: tbl)
+                        } else if !b.paragraphs.isEmpty {
+                            elH = measureParagraphsHeight(b.paragraphs, availableWidth: elW, wrap: true) + 8
+                        } else {
+                            elH = 80
+                        }
+                    }
+                    calculatedY += elH + 8
+                }
+                curY = calculatedY
+            }
+
+            let block = allBlocks[match.elementIndex]
+            if block.type == .table && !block.rows.isEmpty {
+                guard let r = match.row, let c = match.column,
+                      r >= 0, r < block.rows.count, c >= 0, c < block.rows[r].count else { return [] }
+                let cellParas = block.rows[r][c]
+                guard match.paragraphIndex >= 0 && match.paragraphIndex < cellParas.count else { return [] }
+                let cols = block.rows.map(\.count).max() ?? 0
+                let colWidths = resolveColumnWidths(element: block, cols: cols)
+                var rowY: CGFloat = 0
+                for rIdx in 0..<r {
+                    var rh: CGFloat = 20
+                    for colIdx in 0..<cols {
+                        let paras = colIdx < block.rows[rIdx].count ? block.rows[rIdx][colIdx] : []
+                        if !paras.isEmpty {
+                            let h = measureParagraphsHeight(paras, availableWidth: max(1, colWidths[colIdx] - 10), wrap: true)
+                            rh = max(rh, h + 10)
+                        }
+                    }
+                    rowY += rh
+                }
+                let cellX = marginX + colWidths.prefix(c).reduce(0, +)
+                let cellW = colWidths[c]
+                let availCellW = max(1, cellW - 10)
+                let cellOrigin = CGPoint(x: cellX + 5, y: curY + rowY + 5)
+                return charHighlightRects(
+                    paragraphs: cellParas,
+                    targetParagraphIndex: match.paragraphIndex,
+                    startChar: match.startChar,
+                    endChar: match.endChar,
+                    availableWidth: availCellW,
+                    wrap: true,
+                    origin: cellOrigin
+                )
+            } else {
+                guard match.paragraphIndex >= 0 && match.paragraphIndex < block.paragraphs.count else { return [] }
+                let elW = block.width > 0 ? min(availW, block.width) : availW
+                let origin = CGPoint(x: marginX, y: curY)
+                return charHighlightRects(
+                    paragraphs: block.paragraphs,
+                    targetParagraphIndex: match.paragraphIndex,
+                    startChar: match.startChar,
+                    endChar: match.endChar,
+                    availableWidth: elW,
+                    wrap: true,
+                    origin: origin
+                )
+            }
+
+        case .pptx:
+            guard match.pageIndex >= 0 && match.pageIndex < doc.pages.count else { return [] }
+            var curY: CGFloat = 0
+            for i in 0..<match.pageIndex {
+                let pH = doc.pages[i].height > 0 ? doc.pages[i].height : 405
+                curY += pH + 16
+            }
+            let page = doc.pages[match.pageIndex]
+            guard match.elementIndex >= 0 && match.elementIndex < page.elements.count else { return [] }
+            let el = page.elements[match.elementIndex]
+
+            let affine: CGAffineTransform
+            if el.transform.count >= 6 {
+                let m = el.transform
+                affine = CGAffineTransform(a: m[0], b: m[1], c: m[2], d: m[3], tx: m[4], ty: m[5] + curY)
+            } else {
+                affine = CGAffineTransform(translationX: el.x, y: el.y + curY)
+            }
+
+            if el.type == .table && !el.rows.isEmpty {
+                guard let r = match.row, let c = match.column,
+                      r >= 0, r < el.rows.count, c >= 0, c < el.rows[r].count else { return [] }
+                let cellParas = el.rows[r][c]
+                guard match.paragraphIndex >= 0 && match.paragraphIndex < cellParas.count else { return [] }
+                let cols = el.rows.map(\.count).max() ?? 0
+                let colWidths = resolveColumnWidths(element: el, cols: cols)
+                var rowY: CGFloat = 0
+                for rIdx in 0..<r {
+                    var rh: CGFloat = 20
+                    for colIdx in 0..<cols {
+                        let paras = colIdx < el.rows[rIdx].count ? el.rows[rIdx][colIdx] : []
+                        if !paras.isEmpty {
+                            let h = measureParagraphsHeight(paras, availableWidth: max(1, colWidths[colIdx] - 10), wrap: true)
+                            rh = max(rh, h + 10)
+                        }
+                    }
+                    rowY += rh
+                }
+                let cellX = colWidths.prefix(c).reduce(0, +)
+                let cellW = colWidths[c]
+                let availCellW = max(1, cellW - 10)
+                let cellOrigin = CGPoint(x: cellX + 5, y: rowY + 5)
+                let localRects = charHighlightRects(
+                    paragraphs: cellParas,
+                    targetParagraphIndex: match.paragraphIndex,
+                    startChar: match.startChar,
+                    endChar: match.endChar,
+                    availableWidth: availCellW,
+                    wrap: true,
+                    origin: cellOrigin
+                )
+                return localRects.map { $0.applying(affine) }
+            } else {
+                guard match.paragraphIndex >= 0 && match.paragraphIndex < el.paragraphs.count else { return [] }
+                let padding = max(0, el.padding)
+                let availW = max(1, el.width - padding * 2)
+                let totalH = measureParagraphsHeight(el.paragraphs, availableWidth: availW, wrap: el.textWrap)
+                var offsetY = padding
+                let remaining = max(0, el.height - padding * 2 - totalH)
+                if el.verticalAlignment == .center {
+                    offsetY += remaining / 2
+                } else if el.verticalAlignment == .bottom {
+                    offsetY += remaining
+                }
+                let origin = CGPoint(x: padding, y: offsetY)
+                let localRects = charHighlightRects(
+                    paragraphs: el.paragraphs,
+                    targetParagraphIndex: match.paragraphIndex,
+                    startChar: match.startChar,
+                    endChar: match.endChar,
+                    availableWidth: availW,
+                    wrap: el.textWrap,
+                    origin: origin
+                )
+                return localRects.map { $0.applying(affine) }
+            }
+
+        case .xlsx:
+            guard match.pageIndex >= 0 && match.pageIndex < doc.sheets.count else { return [] }
+            let sheet = doc.sheets[match.pageIndex]
+            let (colOffsets, rowOffsets, _, _) = computeSheetExtents(sheet)
+            let r = match.row ?? 0
+            let c = match.column ?? 0
+            guard r >= 0, r + 1 < rowOffsets.count, c >= 0, c + 1 < colOffsets.count else { return [] }
+
+            if let g = sheet.geometry {
+                for m in g.mergeRects {
+                    if m.anchor == match.elementIndex {
+                        return [CGRect(
+                            x: m.left + sheetHeaderWidth,
+                            y: m.top + sheetHeaderHeight,
+                            width: max(1, m.right - m.left),
+                            height: max(1, m.bottom - m.top)
+                        )]
+                    }
+                }
+            }
+            let cellRect = CGRect(
+                x: colOffsets[c],
+                y: rowOffsets[r],
+                width: max(1, colOffsets[c + 1] - colOffsets[c]),
+                height: max(1, rowOffsets[r + 1] - rowOffsets[r])
+            )
+            return [cellRect]
+        }
+    }
+
+    private static func charHighlightRects(
+        paragraphs: [OfficeParagraph],
+        targetParagraphIndex: Int,
+        startChar: Int,
+        endChar: Int,
+        availableWidth: CGFloat,
+        wrap: Bool,
+        origin: CGPoint
+    ) -> [CGRect] {
+        var curY = origin.y
+        for (pIdx, para) in paragraphs.enumerated() {
+            let baseIndent = max(0, para.indent)
+            let firstIndent = max(0, baseIndent + para.firstLineIndent)
+            let rightIndent = max(0, para.rightIndent)
+
+            let attrString = buildAttributedString(for: para)
+            let totalLen = attrString.length
+
+            guard totalLen > 0 else {
+                let defaultSize = para.runs.first?.size ?? 12
+                let h = computeLineHeight(para: para, naturalHeight: defaultSize * 1.2)
+                curY += max(0, para.before) + h + max(0, para.after)
+                continue
+            }
+
+            let typesetter = CTTypesetterCreateWithAttributedString(attrString as CFAttributedString)
+            var startIdx = 0
+            var lineIndex = 0
+            let isTargetPara = (pIdx == targetParagraphIndex)
+            var rects: [CGRect] = []
+
+            while startIdx < totalLen {
+                let leftInd = lineIndex == 0 ? firstIndent : baseIndent
+                let limitW = wrap ? Double(max(8, availableWidth - leftInd - rightIndent)) : 1_000_000.0
+                let count = max(1, CTTypesetterSuggestLineBreak(typesetter, startIdx, limitW))
+                let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: startIdx, length: count))
+
+                var ascent: CGFloat = 0
+                var descent: CGFloat = 0
+                var leading: CGFloat = 0
+                let w = CGFloat(CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading))
+                let natural = max(10, ascent + descent + max(0, leading))
+                let lineH = computeLineHeight(para: para, naturalHeight: natural)
+
+                let before = lineIndex == 0 ? max(0, para.before) : 0
+                let isLast = (startIdx + count) >= totalLen
+                let after = isLast ? max(0, para.after) : 0
+
+                curY += before
+
+                if isTargetPara {
+                    let lineStart = startIdx
+                    let lineEnd = startIdx + count
+                    let selStart = max(startChar, lineStart)
+                    let selEnd = min(endChar, lineEnd)
+
+                    if selStart < selEnd {
+                        let lineAvailW = max(1, availableWidth - leftInd - rightIndent)
+                        var lineX = origin.x + leftInd
+                        if para.alignment == 1 {
+                            lineX += (lineAvailW - w) / 2.0
+                        } else if para.alignment == 2 {
+                            lineX += lineAvailW - w
+                        }
+
+                        let x1 = CTLineGetOffsetForStringIndex(ctLine, selStart - lineStart, nil)
+                        let x2 = CTLineGetOffsetForStringIndex(ctLine, selEnd - lineStart, nil)
+                        let rect = CGRect(
+                            x: lineX + min(x1, x2),
+                            y: curY,
+                            width: max(2.0, abs(x2 - x1)),
+                            height: lineH
+                        )
+                        rects.append(rect)
+                    }
+                }
+
+                curY += lineH + after
+                startIdx += count
+                lineIndex += 1
+            }
+
+            if isTargetPara {
+                return rects
+            }
+        }
+        return []
+    }
+
     // MARK: - XLSX 电子表格绘制（复用 Rust SheetGeometry 预计算偏移与合并区域）
 
     public static let sheetHeaderWidth: CGFloat = 42

@@ -31,6 +31,18 @@ public final class OfficePreviewController: ObservableObject {
     @Published internal var isLoading: Bool = true
     @Published internal var errorMessage: String?
 
+    // MARK: - 全文检索状态与控制器 API
+
+    @Published public internal(set) var isSearchPresented: Bool = false
+    @Published public internal(set) var searchQuery: String = ""
+    @Published public internal(set) var searchResults: [OfficeSearchMatch] = []
+    @Published public internal(set) var currentMatchIndex: Int = -1
+    @Published public internal(set) var isSearching: Bool = false
+
+    @Published internal var targetHighlightRect: CGRect? = nil
+    internal var currentFilePath: String? = nil
+    private var activeSearchTask: Task<Void, Never>? = nil
+
     private var pageListeners: [UUID: (Int, Int) -> Void] = [:]
 
     nonisolated public init() {}
@@ -72,6 +84,93 @@ public final class OfficePreviewController: ObservableObject {
         }
     }
 
+    public func presentSearch() {
+        isSearchPresented = true
+    }
+
+    public func dismissSearch() {
+        isSearchPresented = false
+        clearSearch()
+    }
+
+    public func search(query: String) {
+        searchQuery = query
+        activeSearchTask?.cancel()
+
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let path = currentFilePath else {
+            searchResults = []
+            currentMatchIndex = -1
+            targetHighlightRect = nil
+            isSearching = false
+            return
+        }
+
+        isSearching = true
+        activeSearchTask = Task { [weak self] in
+            do {
+                let matches = try await NativeCore.searchDocumentAsync(at: path, query: trimmed)
+                guard !Task.isCancelled else { return }
+                self?.searchResults = matches
+                self?.currentMatchIndex = matches.isEmpty ? -1 : 0
+                self?.isSearching = false
+                self?.updateTargetForCurrentMatch()
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.searchResults = []
+                self?.currentMatchIndex = -1
+                self?.isSearching = false
+                self?.targetHighlightRect = nil
+            }
+        }
+    }
+
+    @discardableResult
+    public func findNext() -> Bool {
+        guard !searchResults.isEmpty else { return false }
+        currentMatchIndex = (currentMatchIndex + 1) % searchResults.count
+        updateTargetForCurrentMatch()
+        return true
+    }
+
+    @discardableResult
+    public func findPrevious() -> Bool {
+        guard !searchResults.isEmpty else { return false }
+        currentMatchIndex = (currentMatchIndex - 1 + searchResults.count) % searchResults.count
+        updateTargetForCurrentMatch()
+        return true
+    }
+
+    public func clearSearch() {
+        activeSearchTask?.cancel()
+        searchQuery = ""
+        searchResults = []
+        currentMatchIndex = -1
+        targetHighlightRect = nil
+        isSearching = false
+    }
+
+    private func updateTargetForCurrentMatch() {
+        guard currentMatchIndex >= 0 && currentMatchIndex < searchResults.count,
+              let doc = document else {
+            targetHighlightRect = nil
+            return
+        }
+        let match = searchResults[currentMatchIndex]
+        if doc.kind == .pptx && match.pageIndex + 1 != currentPage {
+            jumpToPage(match.pageIndex + 1)
+        } else if doc.kind == .xlsx && match.pageIndex + 1 != currentPage {
+            selectSheet(match.pageIndex + 1)
+        }
+
+        let rects = CGElementDrawer.computeHighlightRects(for: match, in: doc)
+        if let first = rects.first {
+            targetHighlightRect = rects.reduce(first) { $0.union($1) }
+        } else {
+            targetHighlightRect = nil
+        }
+    }
+
     internal func updateDocumentState(page: Int, count: Int, sheets: [String]) {
         self.sheetNames = sheets
         self.pageCount = count
@@ -110,7 +209,7 @@ public struct OfficePreviewView: View {
     }
 
     public var body: some View {
-        ZStack {
+        ZStack(alignment: .topTrailing) {
             Color(nsColor: NSColor(srgbRed: 0.97, green: 0.975, blue: 0.98, alpha: 1.0))
             if controller.isLoading {
                 VStack(spacing: 10) {
@@ -119,6 +218,7 @@ public struct OfficePreviewView: View {
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let errorMessage = controller.errorMessage {
                 VStack(spacing: 10) {
                     Text("⚠️")
@@ -129,6 +229,7 @@ public struct OfficePreviewView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let doc = controller.document {
                 ScrollViewReader { scrollProxy in
                     ScrollView([.horizontal, .vertical], showsIndicators: true) {
@@ -137,7 +238,14 @@ public struct OfficePreviewView: View {
                                 document: doc,
                                 images: controller.imageCache,
                                 currentPage: controller.currentPage,
-                                zoom: controller.zoom
+                                zoom: controller.zoom,
+                                searchResults: controller.searchResults,
+                                currentMatchIndex: controller.currentMatchIndex,
+                                targetHighlightRect: controller.targetHighlightRect,
+                                onPresentSearch: { controller.presentSearch() },
+                                onDismissSearch: { controller.dismissSearch() },
+                                onFindNext: { _ = controller.findNext() },
+                                onFindPrevious: { _ = controller.findPrevious() }
                             )
                             .frame(
                                 width: canvasContentSize(for: doc).width * controller.zoom,
@@ -167,7 +275,19 @@ public struct OfficePreviewView: View {
                     }
                 }
             }
+
+            if controller.isSearchPresented {
+                OfficeSearchBarView(controller: controller)
+                    .padding(.top, 14)
+                    .padding(.trailing, 18)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity
+                    ))
+                    .zIndex(100)
+            }
         }
+        .animation(.easeInOut(duration: 0.18), value: controller.isSearchPresented)
         .task(id: fileURL) {
             await loadDocument(from: fileURL)
         }
@@ -216,6 +336,8 @@ public struct OfficePreviewView: View {
         controller.document = nil
         controller.metadata = nil
         controller.imageCache = [:]
+        controller.currentFilePath = url.path
+        controller.clearSearch()
         controller.updateDocumentState(page: 0, count: 0, sheets: [])
 
         let path = url.path
@@ -268,6 +390,13 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
     let images: [String: CGImage]
     let currentPage: Int
     let zoom: CGFloat
+    let searchResults: [OfficeSearchMatch]
+    let currentMatchIndex: Int
+    let targetHighlightRect: CGRect?
+    let onPresentSearch: () -> Void
+    let onDismissSearch: () -> Void
+    let onFindNext: () -> Void
+    let onFindPrevious: () -> Void
 
     func makeNSView(context: Context) -> OfficeDocumentNSView {
         let view = OfficeDocumentNSView()
@@ -275,6 +404,11 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
         view.images = images
         view.currentPage = currentPage
         view.zoom = zoom
+        view.onPresentSearch = onPresentSearch
+        view.onDismissSearch = onDismissSearch
+        view.onFindNext = onFindNext
+        view.onFindPrevious = onFindPrevious
+        view.updateSearchResults(searchResults, currentIndex: currentMatchIndex, targetRect: targetHighlightRect)
         return view
     }
 
@@ -283,6 +417,11 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
         nsView.images = images
         nsView.currentPage = currentPage
         nsView.zoom = zoom
+        nsView.onPresentSearch = onPresentSearch
+        nsView.onDismissSearch = onDismissSearch
+        nsView.onFindNext = onFindNext
+        nsView.onFindPrevious = onFindPrevious
+        nsView.updateSearchResults(searchResults, currentIndex: currentMatchIndex, targetRect: targetHighlightRect)
         nsView.needsDisplay = true
     }
 }
@@ -297,6 +436,15 @@ private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         }
     }
 
+    var searchResults: [OfficeSearchMatch] = []
+    var currentMatchIndex: Int = -1
+    var onPresentSearch: (() -> Void)?
+    var onDismissSearch: (() -> Void)?
+    var onFindNext: (() -> Void)?
+    var onFindPrevious: (() -> Void)?
+
+    private var docxBlockYOffsets: [CGFloat]?
+    private var lastScrolledMatchIndex: Int = -1
     private var textLayout: DocumentTextLayout?
     private var selection: TextSelection?
 
@@ -304,11 +452,67 @@ private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     override var acceptsFirstResponder: Bool { true }
 
     func setDocument(_ newDoc: OfficeDocument) {
-        // 当文档切换时清空旧选区与空间索引
+        let isDocChanged = (document?.kind != newDoc.kind ||
+            document?.width != newDoc.width ||
+            document?.pages.count != newDoc.pages.count ||
+            document?.sheets.count != newDoc.sheets.count ||
+            document?.blocks.count != newDoc.blocks.count)
         document = newDoc
-        textLayout = nil
-        selection = nil
-        window?.invalidateCursorRects(for: self)
+        if isDocChanged || docxBlockYOffsets == nil {
+            docxBlockYOffsets = newDoc.kind == .docx ? CGElementDrawer.computeDocxBlockYOffsets(in: newDoc) : nil
+            textLayout = nil
+            selection = nil
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    func updateSearchResults(_ results: [OfficeSearchMatch], currentIndex: Int, targetRect: CGRect?) {
+        let resultsChanged = (self.searchResults != results)
+        let indexChanged = (self.currentMatchIndex != currentIndex)
+        self.searchResults = results
+        self.currentMatchIndex = currentIndex
+
+        if results.isEmpty {
+            lastScrolledMatchIndex = -1
+            return
+        }
+
+        if (indexChanged || resultsChanged) && currentIndex >= 0 && currentIndex < results.count {
+            if let targetRect = targetRect {
+                scrollToHighlight(targetRect)
+                lastScrolledMatchIndex = currentIndex
+            } else if let doc = document {
+                let rects = CGElementDrawer.computeHighlightRects(
+                    for: results[currentIndex],
+                    in: doc,
+                    docxBlockYOffsets: docxBlockYOffsets
+                )
+                if let first = rects.first {
+                    let union = rects.reduce(first) { $0.union($1) }
+                    scrollToHighlight(union)
+                    lastScrolledMatchIndex = currentIndex
+                }
+            }
+        }
+    }
+
+    func scrollToHighlight(_ docRect: CGRect) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let clipView = self.enclosingScrollView?.contentView else { return }
+            let viewRect = CGRect(
+                x: docRect.origin.x * self.zoom,
+                y: docRect.origin.y * self.zoom,
+                width: docRect.width * self.zoom,
+                height: docRect.height * self.zoom
+            )
+            let clipBounds = clipView.bounds
+            let maxX = max(0, self.bounds.width - clipBounds.width)
+            let maxY = max(0, self.bounds.height - clipBounds.height)
+            let targetX = min(max(0, viewRect.midX - clipBounds.width / 2), maxX)
+            let targetY = min(max(0, viewRect.midY - clipBounds.height / 2), maxY)
+            clipView.animator().scroll(to: NSPoint(x: targetX, y: targetY))
+            self.enclosingScrollView?.reflectScrolledClipView(clipView)
+        }
     }
 
     private func ensureTextLayout() -> DocumentTextLayout? {
@@ -415,6 +619,39 @@ private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             )
         }
 
+        // 绘制全文检索高亮（在文档未缩放坐标系下，由 ctx.scaleBy 统一放大）
+        if !searchResults.isEmpty {
+            ctx.saveGState()
+            for (index, match) in searchResults.enumerated() {
+                if doc.kind == .xlsx && match.pageIndex != (currentPage - 1) {
+                    continue
+                }
+                let isCurrent = (index == currentMatchIndex)
+                let rects = CGElementDrawer.computeHighlightRects(
+                    for: match,
+                    in: doc,
+                    docxBlockYOffsets: docxBlockYOffsets
+                )
+                for r in rects {
+                    let path = CGPath(roundedRect: r, cornerWidth: 2, cornerHeight: 2, transform: nil)
+                    if isCurrent {
+                        ctx.setFillColor(CGColor(srgbRed: 1.0, green: 0.60, blue: 0.0, alpha: 0.75))
+                        ctx.addPath(path)
+                        ctx.fillPath()
+                        ctx.setStrokeColor(CGColor(srgbRed: 0.90, green: 0.40, blue: 0.0, alpha: 1.0))
+                        ctx.setLineWidth(1.5)
+                        ctx.addPath(path)
+                        ctx.strokePath()
+                    } else {
+                        ctx.setFillColor(CGColor(srgbRed: 1.0, green: 0.92, blue: 0.23, alpha: 0.45))
+                        ctx.addPath(path)
+                        ctx.fillPath()
+                    }
+                }
+            }
+            ctx.restoreGState()
+        }
+
         // 绘制选区高亮（在文档未缩放坐标系下，由 ctx.scaleBy 统一放大）
         if let sel = selection, !sel.isEmpty, let layout = ensureTextLayout() {
             let rects = layout.selectionRects(for: sel)
@@ -516,6 +753,22 @@ private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             } else if event.charactersIgnoringModifiers == "a" {
                 selectAll(nil)
                 return true
+            } else if event.charactersIgnoringModifiers == "f" {
+                onPresentSearch?()
+                return true
+            } else if event.charactersIgnoringModifiers == "g" {
+                onFindNext?()
+                return true
+            }
+        } else if flags == [.command, .shift] {
+            if event.charactersIgnoringModifiers?.lowercased() == "g" {
+                onFindPrevious?()
+                return true
+            }
+        } else if flags.isEmpty {
+            if event.keyCode == 53 { // Escape
+                onDismissSearch?()
+                return true
             }
         }
         return super.performKeyEquivalent(with: event)
@@ -577,5 +830,102 @@ private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         menu.addItem(selectAllItem)
 
         return menu
+    }
+}
+
+// MARK: - 全文检索工具栏
+
+/// JZOffice 全文检索交互悬浮工具栏（SwiftUI）
+public struct OfficeSearchBarView: View {
+    @ObservedObject public var controller: OfficePreviewController
+    @FocusState private var isFieldFocused: Bool
+
+    public init(controller: OfficePreviewController) {
+        self.controller = controller
+    }
+
+    public var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+                .font(.system(size: 12))
+
+            TextField("搜索文档...", text: Binding(
+                get: { controller.searchQuery },
+                set: { controller.search(query: $0) }
+            ))
+            .textFieldStyle(.plain)
+            .focused($isFieldFocused)
+            .font(.system(size: 13))
+            .frame(width: 140)
+            .onSubmit {
+                if NSEvent.modifierFlags.contains(.shift) {
+                    controller.findPrevious()
+                } else {
+                    controller.findNext()
+                }
+            }
+
+            if controller.isSearching {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                    .frame(width: 16, height: 16)
+            } else if !controller.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if controller.searchResults.isEmpty {
+                    Text("无结果")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("\(controller.currentMatchIndex + 1)/\(controller.searchResults.count)")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Divider()
+                .frame(height: 14)
+
+            Button(action: { controller.findPrevious() }) {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.borderless)
+            .disabled(controller.searchResults.isEmpty)
+            .help("上一个匹配项 (⇧↩ 或 ⌘⇧G)")
+
+            Button(action: { controller.findNext() }) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.borderless)
+            .disabled(controller.searchResults.isEmpty)
+            .help("下一个匹配项 (↩ 或 ⌘G)")
+
+            Button(action: { controller.dismissSearch() }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("关闭 (Esc)")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.ultraThinMaterial)
+                .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 0.5)
+        )
+        .onAppear {
+            isFieldFocused = true
+        }
+        .onExitCommand {
+            controller.dismissSearch()
+        }
     }
 }

@@ -60,6 +60,19 @@ struct DemoContentView: View {
                 Button("+") {
                     controller.setZoom(controller.zoom + 0.25)
                 }
+
+                Divider().frame(height: 20)
+
+                Button(action: {
+                    if controller.isSearchPresented {
+                        controller.dismissSearch()
+                    } else {
+                        controller.presentSearch()
+                    }
+                }) {
+                    Image(systemName: "magnifyingglass")
+                }
+                .help("搜索 (⌘F)")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

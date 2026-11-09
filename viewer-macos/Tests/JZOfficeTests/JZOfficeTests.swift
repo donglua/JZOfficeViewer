@@ -283,6 +283,134 @@ struct JZOfficeTests {
         }
     }
 
+    @Test("CGElementDrawer 全文检索高亮矩形计算与行偏移缓存")
+    func computeHighlightRectsAllFormats() throws {
+        let docxURL = samplePath("sample.docx")
+        let pptxURL = samplePath("sample.pptx")
+        let xlsxURL = samplePath("sample.xlsx")
+
+        guard FileManager.default.fileExists(atPath: docxURL.path) else { return }
+
+        // 1. DOCX 高亮矩形计算与行偏移缓存
+        let docxDoc = try NativeCore.parseDocument(at: docxURL.path)
+        let offsets = CGElementDrawer.computeDocxBlockYOffsets(in: docxDoc)
+        #expect(offsets.count == docxDoc.headerBlocks.count + docxDoc.blocks.count + docxDoc.footerBlocks.count)
+        for i in 1..<offsets.count {
+            #expect(offsets[i] >= offsets[i - 1])
+        }
+
+        let docxWord = docxDoc.blocks
+            .flatMap(\.paragraphs)
+            .flatMap(\.runs)
+            .map(\.text)
+            .first { $0.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 }?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !docxWord.isEmpty {
+            let matches = try NativeCore.searchDocument(at: docxURL.path, query: String(docxWord.prefix(2)))
+            if let first = matches.first {
+                let rects = CGElementDrawer.computeHighlightRects(for: first, in: docxDoc, docxBlockYOffsets: offsets)
+                #expect(!rects.isEmpty)
+                for r in rects {
+                    #expect(r.width > 0)
+                    #expect(r.height > 0)
+                }
+            }
+        }
+
+        // 2. PPTX 高亮矩形计算
+        if FileManager.default.fileExists(atPath: pptxURL.path) {
+            let pptxDoc = try NativeCore.parseDocument(at: pptxURL.path)
+            let slideWord = pptxDoc.pages
+                .flatMap(\.elements)
+                .flatMap(\.paragraphs)
+                .flatMap(\.runs)
+                .map(\.text)
+                .first { $0.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !slideWord.isEmpty {
+                let matches = try NativeCore.searchDocument(at: pptxURL.path, query: String(slideWord.prefix(2)))
+                if let first = matches.first {
+                    let rects = CGElementDrawer.computeHighlightRects(for: first, in: pptxDoc)
+                    #expect(!rects.isEmpty)
+                    for r in rects {
+                        #expect(r.width > 0)
+                        #expect(r.height > 0)
+                    }
+                }
+            }
+        }
+
+        // 3. XLSX 高亮矩形计算
+        if FileManager.default.fileExists(atPath: xlsxURL.path) {
+            let xlsxDoc = try NativeCore.parseDocument(at: xlsxURL.path)
+            let cellWord = xlsxDoc.sheets
+                .flatMap(\.cells)
+                .map(\.text)
+                .first { $0.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !cellWord.isEmpty {
+                let matches = try NativeCore.searchDocument(at: xlsxURL.path, query: String(cellWord.prefix(2)))
+                if let first = matches.first {
+                    let rects = CGElementDrawer.computeHighlightRects(for: first, in: xlsxDoc)
+                    #expect(!rects.isEmpty)
+                    for r in rects {
+                        #expect(r.width > 0)
+                        #expect(r.height > 0)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test("OfficePreviewController 检索状态转换与环形遍历")
+    @MainActor
+    func searchControllerStateTransitionsAndCycling() {
+        let controller = OfficePreviewController()
+        #expect(!controller.isSearchPresented)
+        #expect(controller.searchQuery == "")
+        #expect(controller.searchResults.isEmpty)
+        #expect(controller.currentMatchIndex == -1)
+
+        // 展示 / 收起交互
+        controller.presentSearch()
+        #expect(controller.isSearchPresented)
+
+        controller.dismissSearch()
+        #expect(!controller.isSearchPresented)
+        #expect(controller.searchQuery == "")
+
+        // 模拟命中项并测试环形跳转
+        let match1 = OfficeSearchMatch(
+            pageIndex: 0, elementIndex: 0, paragraphIndex: 0,
+            row: nil, column: nil, startChar: 0, endChar: 2, snippet: "测试"
+        )
+        let match2 = OfficeSearchMatch(
+            pageIndex: 0, elementIndex: 1, paragraphIndex: 0,
+            row: nil, column: nil, startChar: 5, endChar: 7, snippet: "测试2"
+        )
+        controller.searchResults = [match1, match2]
+        controller.currentMatchIndex = 0
+
+        // findNext 环形递增
+        #expect(controller.findNext())
+        #expect(controller.currentMatchIndex == 1)
+        #expect(controller.findNext())
+        #expect(controller.currentMatchIndex == 0)
+
+        // findPrevious 环形递减
+        #expect(controller.findPrevious())
+        #expect(controller.currentMatchIndex == 1)
+        #expect(controller.findPrevious())
+        #expect(controller.currentMatchIndex == 0)
+
+        // 清空检索
+        controller.clearSearch()
+        #expect(controller.searchQuery == "")
+        #expect(controller.searchResults.isEmpty)
+        #expect(controller.currentMatchIndex == -1)
+        #expect(controller.targetHighlightRect == nil)
+    }
+
     private func hasNonWhitePixel(_ image: CGImage) -> Bool {
         let w = image.width
         let h = image.height
