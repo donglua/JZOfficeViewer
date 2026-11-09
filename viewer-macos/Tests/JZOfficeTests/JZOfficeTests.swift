@@ -202,6 +202,18 @@ struct JZOfficeTests {
             let allText = layout.selectedText(for: allSel)
             #expect(!allText.isEmpty)
         }
+
+        // 6. PPTX 幻灯片多元素文本排版与选区验证
+        let pptxURL = samplePath("sample.pptx")
+        if FileManager.default.fileExists(atPath: pptxURL.path) {
+            let pptxDoc = try NativeCore.parseDocument(at: pptxURL.path)
+            let pptxLayout = DocumentTextLayout.build(from: pptxDoc)
+            #expect(!pptxLayout.blocks.isEmpty)
+            if let pptxSel = pptxLayout.allTextRange() {
+                let pptxText = pptxLayout.selectedText(for: pptxSel)
+                #expect(!pptxText.isEmpty)
+            }
+        }
     }
 
     private func hasNonWhitePixel(_ image: CGImage) -> Bool {
