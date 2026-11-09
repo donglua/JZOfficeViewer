@@ -228,6 +228,22 @@ fn character_unit_paragraph_indents_are_supported() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn justified_paragraphs_map_to_alignment_three() -> TestResult {
+    let both_body = text_paragraph("both", r#"<w:jc w:val="both"/>"#);
+    let parts = layout_parts(&both_body, "");
+    let doc = parse_reader(Cursor::new(archive(&parts)?))?;
+    assert_eq!(doc.blocks[0].paragraphs[0].alignment, 3);
+    assert!(!doc.warnings.iter().any(|w| w.contains("Justified")));
+
+    let dist_body = text_paragraph("distribute", r#"<w:jc w:val="distribute"/>"#);
+    let dist_parts = layout_parts(&dist_body, "");
+    let dist_doc = parse_reader(Cursor::new(archive(&dist_parts)?))?;
+    assert_eq!(dist_doc.blocks[0].paragraphs[0].alignment, 3);
+    assert!(!dist_doc.warnings.iter().any(|w| w.contains("Justified")));
+    Ok(())
+}
+
 fn layout_values(paragraph: &Paragraph) -> [f32; 6] {
     [
         paragraph.before,

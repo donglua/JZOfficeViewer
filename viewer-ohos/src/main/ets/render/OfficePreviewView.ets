@@ -972,6 +972,7 @@ struct DocxParagraphView {
     switch (align) {
       case 1: return TextAlign.Center;
       case 2: return TextAlign.End;
+      case 3: return TextAlign.JUSTIFY;
       default: return TextAlign.Start;
     }
   }

@@ -397,7 +397,11 @@ public enum CGElementDrawer {
             }
             let baselineY = curY + line.ascent + max(0, (line.height - (line.ascent + line.descent)) / 2.0)
             ctx.textPosition = CGPoint(x: lineX, y: baselineY)
-            CTLineDraw(line.ctLine, ctx)
+            if line.alignment == 3, let justified = CTLineCreateJustifiedLine(line.ctLine, 1.0, Double(lineAvailW)) {
+                CTLineDraw(justified, ctx)
+            } else {
+                CTLineDraw(line.ctLine, ctx)
+            }
             curY += line.height + line.after
         }
         ctx.restoreGState()

@@ -173,6 +173,7 @@ impl ParagraphFormat {
                     self.paragraph.alignment = match node.attr("val") {
                         "center" => 1,
                         "right" | "end" => 2,
+                        "both" | "distribute" => 3,
                         _ => 0,
                     }
                 }

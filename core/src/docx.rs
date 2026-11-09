@@ -265,9 +265,6 @@ fn inspect(node: &Node, document: &mut Document) {
         "vertAlign" | "strike" | "dstrike" | "highlight" | "vanish" => {
             Some("Some advanced run formatting is not reproduced.")
         }
-        "jc" if matches!(node.attr("val"), "both" | "distribute") => {
-            Some("Justified paragraphs are left aligned.")
-        }
         "spacing"
             if ["beforeLines", "afterLines"]
                 .iter()

@@ -76,6 +76,9 @@ final class OfficeTextLayout {
         StaticLayout.Builder builder = StaticLayout.Builder.obtain(text, 0, text.length(), font, layoutWidth)
             .setAlignment(align).setIncludePad(false)
             .setIndents(new int[] {first, rest}, new int[] {right});
+        if (paragraph.alignment == 3 && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            builder.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD);
+        }
         if (paragraph.lineSpacingRule == OfficeDocument.LineSpacingRule.AUTO) {
             if (pptx && paragraph.lineSpacing != 1) {
                 text.setSpan(new PptxLineHeight(font, paragraph.lineSpacing),
