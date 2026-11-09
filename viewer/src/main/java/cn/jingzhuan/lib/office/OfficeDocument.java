@@ -47,6 +47,7 @@ final class OfficeDocument {
         final List<List<List<Paragraph>>> rows = new ArrayList<>();
         final List<Float> columnWidths = new ArrayList<>();
         final List<List<Integer>> cellFills = new ArrayList<>();
+        final List<SpreadsheetDocument.CellRange> merges = new ArrayList<>();
         final List<Path> paths = new ArrayList<>();
         GradientFill fillGradient;
     }

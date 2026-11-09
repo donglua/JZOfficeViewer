@@ -250,12 +250,6 @@ fn inspect(node: &Node, document: &mut Document) {
         "footnoteReference" | "endnoteReference" => Some("Footnotes and endnotes are omitted."),
         "oMath" | "oMathPara" => Some("Mathematical equations are omitted."),
         "anchor" => Some("Floating drawings use document flow; anchors and wrapping are ignored."),
-        "vMerge" | "hMerge" | "gridBefore" | "gridAfter" => {
-            Some("Merged or irregular table cells use an unmerged rectangular approximation.")
-        }
-        "gridSpan" if xml::number(node.attr("val"), 1.0) > 1.0 => {
-            Some("Merged or irregular table cells use an unmerged rectangular approximation.")
-        }
         "pict" | "object" | "txbxContent" => {
             Some("Legacy drawings, embedded objects and text boxes are omitted.")
         }

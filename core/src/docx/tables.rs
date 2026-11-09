@@ -1,7 +1,8 @@
 use super::{alternate, format, skipped, Parser, MAX_CELLS, MAX_COLUMNS, MAX_ROWS};
-use crate::model::{Element, ElementType, Paragraph};
+use crate::model::{CellRange, Element, ElementType, Paragraph};
 use crate::xml::{self, Node};
 use crate::{Error, Result};
+use std::collections::HashMap;
 
 impl Parser<'_> {
     pub(super) fn table(&mut self, node: &Node) -> Result<Element> {
@@ -18,7 +19,9 @@ impl Parser<'_> {
                     .push(format::points(column.attr("w"), 0.0));
             }
         }
-        for row in node.named("tr") {
+        let mut active_v_merges: HashMap<usize, (u32, u32, u32)> = HashMap::new();
+        for (r_idx, row) in node.named("tr").enumerate() {
+            let row_num = r_idx as u32;
             if table.rows.len() >= MAX_ROWS {
                 return Err(Error::Limit("DOCX table exceeds 500 rows"));
             }
@@ -30,7 +33,9 @@ impl Parser<'_> {
             for cell in row.named("tc") {
                 let properties = cell.child("tcPr");
                 let span = grid_count(properties, "gridSpan", 1)?;
+                let start_col = cells.len() as u32;
                 let end = cells.len() + span;
+                let end_col = (end.saturating_sub(1)) as u32;
                 columns(end)?;
                 self.claim_cells(span)?;
                 while table.column_widths.len() < end {
@@ -51,6 +56,52 @@ impl Parser<'_> {
                 self.cell(cell, &mut paragraphs)?;
                 cells.push(paragraphs);
                 cells.resize_with(end, Vec::new);
+
+                let v_merge = properties.and_then(|p| p.child("vMerge"));
+                match v_merge {
+                    Some(vm) if vm.attr("val") == "restart" => {
+                        if let Some((s_row, s_col, e_col)) =
+                            active_v_merges.remove(&(start_col as usize))
+                        {
+                            if s_row < row_num.saturating_sub(1) || e_col > s_col {
+                                table.merges.push(CellRange {
+                                    start_row: s_row,
+                                    start_column: s_col,
+                                    end_row: row_num.saturating_sub(1),
+                                    end_column: e_col,
+                                });
+                            }
+                        }
+                        active_v_merges.insert(start_col as usize, (row_num, start_col, end_col));
+                    }
+                    Some(_) => {
+                        active_v_merges
+                            .entry(start_col as usize)
+                            .or_insert((row_num, start_col, end_col));
+                    }
+                    None => {
+                        if let Some((s_row, s_col, e_col)) =
+                            active_v_merges.remove(&(start_col as usize))
+                        {
+                            if s_row < row_num.saturating_sub(1) || e_col > s_col {
+                                table.merges.push(CellRange {
+                                    start_row: s_row,
+                                    start_column: s_col,
+                                    end_row: row_num.saturating_sub(1),
+                                    end_column: e_col,
+                                });
+                            }
+                        }
+                        if span > 1 {
+                            table.merges.push(CellRange {
+                                start_row: row_num,
+                                start_column: start_col,
+                                end_row: row_num,
+                                end_column: end_col,
+                            });
+                        }
+                    }
+                }
             }
             let end = cells.len() + after;
             self.pad(&mut cells, end)?;
@@ -58,6 +109,17 @@ impl Parser<'_> {
                 table.column_widths.push(0.0);
             }
             table.rows.push(cells);
+        }
+        let total_rows = table.rows.len() as u32;
+        for (_, (s_row, s_col, e_col)) in active_v_merges {
+            if s_row < total_rows.saturating_sub(1) || e_col > s_col {
+                table.merges.push(CellRange {
+                    start_row: s_row,
+                    start_column: s_col,
+                    end_row: total_rows.saturating_sub(1),
+                    end_column: e_col,
+                });
+            }
         }
         if table.column_widths.is_empty() {
             table.column_widths.push(0.0);

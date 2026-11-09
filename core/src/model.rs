@@ -191,6 +191,8 @@ pub struct Element {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub column_widths: Vec<f32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub merges: Vec<CellRange>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cell_fills: Vec<Vec<u32>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<Path>,
@@ -222,6 +224,7 @@ impl Default for Element {
             paragraphs: Vec::new(),
             rows: Vec::new(),
             column_widths: Vec::new(),
+            merges: Vec::new(),
             cell_fills: Vec::new(),
             paths: Vec::new(),
             fill_gradient: None,

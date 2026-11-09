@@ -168,18 +168,47 @@ final class OfficeRenderer {
             for (List<List<OfficeDocument.Paragraph>> row : source.rows) cols = Math.max(cols, row.size());
             float total = 0;
             for (Float w : source.columnWidths) total += Math.max(1, w);
+            float[] colX = new float[cols + 1];
+            for (int c = 0; c < cols; c++) {
+                float w = source.columnWidths.size() == cols && total > 0 ? d.width * Math.max(1, source.columnWidths.get(c)) / total : d.width / Math.max(1, cols);
+                colX[c + 1] = colX[c] + w;
+            }
+            int numRows = source.rows.size();
+            float[] rowTops = new float[numRows + 1];
             float y = 0;
-            for (List<List<OfficeDocument.Paragraph>> row : source.rows) {
-                float x = 0, rowHeight = 20;
-                int first = d.cells.size();
+            for (int r = 0; r < numRows; r++) {
+                rowTops[r] = y;
+                float rowHeight = 20;
+                List<List<OfficeDocument.Paragraph>> row = source.rows.get(r);
                 for (int c = 0; c < cols; c++) {
-                    float w = source.columnWidths.size() == cols && total > 0 ? d.width * Math.max(1, source.columnWidths.get(c)) / total : d.width / Math.max(1, cols);
+                    SpreadsheetDocument.CellRange m = findMerge(source.merges, r, c);
+                    if (m != null && (m.startRow != r || m.startColumn != c)) continue;
+                    float x1 = colX[c];
+                    float x2 = m != null ? colX[Math.min(cols, (int) m.endColumn + 1)] : colX[c + 1];
+                    float cellW = Math.max(1, x2 - x1);
                     List<OfficeDocument.Paragraph> cell = c < row.size() ? row.get(c) : Collections.emptyList();
-                    rowHeight = Math.max(rowHeight, OfficeTextLayout.append(cell, x + 5, y + 5, Math.max(1, w - 10), d.texts, !flow) - y + 5);
-                    d.cells.add(new RectF(x, y, x + w, y)); x += w;
+                    if (!cell.isEmpty()) {
+                        rowHeight = Math.max(rowHeight, OfficeTextLayout.append(cell, x1 + 5, y + 5, Math.max(1, cellW - 10), d.texts, !flow) - y + 5);
+                    }
                 }
-                for (int i = first; i < d.cells.size(); i++) d.cells.get(i).bottom = y + rowHeight;
                 y += rowHeight;
+            }
+            rowTops[numRows] = y;
+            for (int r = 0; r < numRows; r++) {
+                for (int c = 0; c < cols; c++) {
+                    SpreadsheetDocument.CellRange m = findMerge(source.merges, r, c);
+                    if (m != null) {
+                        if (m.startRow == r && m.startColumn == c) {
+                            float x1 = colX[c];
+                            float x2 = colX[Math.min(cols, (int) m.endColumn + 1)];
+                            float y1 = rowTops[r];
+                            float y2 = rowTops[Math.min(numRows, (int) m.endRow + 1)];
+                            d.cells.add(new RectF(x1, y1, x2, y2));
+                        }
+                    } else {
+                        d.cells.add(new RectF(colX[c], rowTops[r], colX[c + 1], rowTops[r + 1]));
+                    }
+                }
             }
             if (flow) d.height = Math.max(1, y);
             else if (y > d.height) document.warn("Table content exceeds its slide bounds and is clipped");
@@ -339,5 +368,12 @@ final class OfficeRenderer {
                 canvas.drawRect(cells.get(index), paint);
             }
         }
+    }
+
+    private static SpreadsheetDocument.CellRange findMerge(List<SpreadsheetDocument.CellRange> merges, int r, int c) {
+        for (SpreadsheetDocument.CellRange m : merges) {
+            if (r >= m.startRow && r <= m.endRow && c >= m.startColumn && c <= m.endColumn) return m;
+        }
+        return null;
     }
 }

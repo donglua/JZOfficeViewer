@@ -628,6 +628,15 @@ final class DocumentDecoder {
                         c.endArray();
                     }
                     break;
+                case "merges":
+                    if (c.peekNull()) {
+                        c.nextNull();
+                    } else {
+                        c.beginArray();
+                        while (c.hasNext()) e.merges.add(rawMerge(c));
+                        c.endArray();
+                    }
+                    break;
                 default: c.skipValue(); break;
             }
         }
