@@ -464,6 +464,138 @@ export class CanvasElementDrawer {
     return total;
   }
 
+  /** 空格类字符：半角空格、制表符、全角空格 */
+  private static isBlankCode(code: number): boolean {
+    return code === 0x20 || code === 0x09 || code === 0x3000;
+  }
+
+  /** CJK 及全角字符，与 Word 的字间断行/对齐规则保持一致 */
+  private static isCjkCode(code: number): boolean {
+    return code >= 0x2E80 && code <= 0x9FFF;
+  }
+
+  /**
+   * 两端对齐（alignment === 3）时，计算一行内每个 UTF-16 单元的绘制起点（相对行左端）。
+   * 拉伸只发生在空格后与相邻 CJK 字之间，字形本身不缩放，与 Android 的 INTER_WORD、
+   * macOS 的 CTLineCreateJustifiedLine 保持一致；该行无可拉伸间隙时返回 null 表示按左对齐绘制。
+   * 返回数组长度为「行内字符数 + 1」，末位是拉伸后的行尾，便于高亮区间复用同一套坐标。
+   */
+  private static justifiedLineStarts(
+    ctx: OfficeCanvasContext | null,
+    line: WrappedLine,
+    lineAvailWidth: number
+  ): number[] | null {
+    const extra = lineAvailWidth - line.width;
+    if (extra <= 0.5) return null;
+
+    const charWidths: number[] = [];
+    const charCodes: number[] = [];
+    const charUnits: number[] = [];
+    const unitStarts: number[] = [];
+    let totalUnits = 0;
+    for (const seg of line.segments) {
+      const text = seg.text;
+      const segLen = text.length;
+      if (segLen === 0) continue;
+      if (ctx) ctx.font = seg.font;
+      // 无画笔时按字符数均分 run 宽度，保证与 layoutParagraph 的折行结果一致
+      const avgUnitWidth = seg.width / segLen;
+      let i = 0;
+      while (i < segLen) {
+        const code = text.charCodeAt(i);
+        const paired = code >= 0xD800 && code <= 0xDBFF && i + 1 < segLen;
+        const step = paired ? 2 : 1;
+        let width = avgUnitWidth * step;
+        if (ctx) {
+          const measured = ctx.measureText(text.substring(i, i + step)).width;
+          if (measured > 0) width = measured;
+        }
+        charWidths.push(width);
+        charCodes.push(code);
+        charUnits.push(step);
+        unitStarts.push(totalUnits);
+        totalUnits += step;
+        i += step;
+      }
+    }
+    const count = charWidths.length;
+    if (count === 0) return null;
+
+    const gapAfter: boolean[] = [];
+    let gapCount = 0;
+    for (let k = 0; k < count; k++) {
+      let stretchable = false;
+      if (k < count - 1) {
+        const cur = charCodes[k];
+        const next = charCodes[k + 1];
+        stretchable = CanvasElementDrawer.isBlankCode(cur) ||
+          (CanvasElementDrawer.isCjkCode(cur) && CanvasElementDrawer.isCjkCode(next));
+      }
+      gapAfter.push(stretchable);
+      if (stretchable) gapCount++;
+    }
+    if (gapCount === 0) return null;
+
+    const gapWidth = extra / gapCount;
+    const starts: number[] = [];
+    for (let u = 0; u <= totalUnits; u++) {
+      starts.push(0);
+    }
+    let x = 0;
+    for (let k = 0; k < count; k++) {
+      const u = unitStarts[k];
+      starts[u] = x;
+      // 代理对的两个 UTF-16 单元共用一个起点，避免被拆开绘制
+      if (charUnits[k] === 2) starts[u + 1] = x;
+      x += charWidths[k];
+      if (gapAfter[k]) x += gapWidth;
+    }
+    starts[totalUnits] = x;
+    return starts;
+  }
+
+  /**
+   * 按预设字符起点逐字绘制两端对齐行：整段 fillText 无法表达字间拉伸，
+   * 故仅在两端对齐时退化为逐字符绘制（表格单元格静态绘制一次，不影响滚动帧率）
+   */
+  private static drawJustifiedLine(
+    ctx: OfficeCanvasContext,
+    line: WrappedLine,
+    lineX: number,
+    baselineY: number,
+    starts: number[]
+  ): void {
+    let unitCursor = 0;
+    for (const seg of line.segments) {
+      const text = seg.text;
+      const segLen = text.length;
+      if (segLen === 0) continue;
+      ctx.font = seg.font;
+      ctx.fillStyle = seg.color;
+      let k = 0;
+      while (k < segLen) {
+        const code = text.charCodeAt(k);
+        const paired = code >= 0xD800 && code <= 0xDBFF && k + 1 < segLen;
+        const step = paired ? 2 : 1;
+        ctx.fillText(text.substring(k, k + step), lineX + starts[unitCursor + k], baselineY);
+        k += step;
+      }
+      if (seg.underline) {
+        const underlineLeft = lineX + starts[unitCursor];
+        const underlineRight = lineX + starts[unitCursor + segLen];
+        if (underlineRight > underlineLeft) {
+          ctx.strokeStyle = seg.color;
+          ctx.lineWidth = Math.max(0.75, seg.fontSize * 0.06);
+          ctx.beginPath();
+          ctx.moveTo(underlineLeft, baselineY + seg.fontSize * 0.12);
+          ctx.lineTo(underlineRight, baselineY + seg.fontSize * 0.12);
+          ctx.stroke();
+        }
+      }
+      unitCursor += segLen;
+    }
+  }
+
   private static drawParagraphLines(
     ctx: OfficeCanvasContext,
     para: model.Paragraph,
@@ -493,6 +625,16 @@ export class CanvasElementDrawer {
       }
 
       const baselineY = curY + line.height - (line.height - line.maxFontSize) / 2 - line.maxFontSize * 0.15;
+      // 两端对齐按字间间隙拉伸绘制，段落末行保持左对齐（与 Word 规则一致）
+      const justifyStarts = para.alignment === 3 && i < lines.length - 1
+        ? CanvasElementDrawer.justifiedLineStarts(ctx, line, lineAvailWidth)
+        : null;
+      if (justifyStarts) {
+        CanvasElementDrawer.drawJustifiedLine(ctx, line, lineX, baselineY, justifyStarts);
+        curY += line.height;
+        continue;
+      }
+
       let segX = lineX;
       for (const seg of line.segments) {
         ctx.font = seg.font;
@@ -781,6 +923,11 @@ export class CanvasElementDrawer {
       let segX = lineX;
       let lineHighlightMinX = -1;
       let lineHighlightMaxX = -1;
+      const lineCharBase = globalCharOffset;
+      // 与 drawParagraphLines 使用同一套两端对齐坐标，保证高亮框贴合拉伸后的字形
+      const justifyStarts = para.alignment === 3 && i < lines.length - 1
+        ? CanvasElementDrawer.justifiedLineStarts(ctx, line, lineAvailWidth)
+        : null;
 
       for (const seg of line.segments) {
         const segLen = seg.text.length;
@@ -791,23 +938,32 @@ export class CanvasElementDrawer {
           const matchStartInSeg = Math.max(0, startChar - segStart);
           const matchEndInSeg = Math.min(segLen, endChar - segStart);
 
-          let x1 = 0;
-          let x2 = seg.width;
-          if (ctx && segLen > 0) {
-            ctx.font = seg.font;
-            if (matchStartInSeg > 0) {
-              x1 = ctx.measureText(seg.text.substring(0, matchStartInSeg)).width;
+          let hLeft = 0;
+          let hRight = 0;
+          if (justifyStarts) {
+            const lastIdx = justifyStarts.length - 1;
+            const leftIdx = Math.min(lastIdx, Math.max(0, (segStart - lineCharBase) + matchStartInSeg));
+            const rightIdx = Math.min(lastIdx, Math.max(0, (segStart - lineCharBase) + matchEndInSeg));
+            hLeft = lineX + justifyStarts[leftIdx];
+            hRight = lineX + justifyStarts[rightIdx];
+          } else {
+            let x1 = 0;
+            let x2 = seg.width;
+            if (ctx && segLen > 0) {
+              ctx.font = seg.font;
+              if (matchStartInSeg > 0) {
+                x1 = ctx.measureText(seg.text.substring(0, matchStartInSeg)).width;
+              }
+              if (matchEndInSeg < segLen) {
+                x2 = ctx.measureText(seg.text.substring(0, matchEndInSeg)).width;
+              }
+            } else if (segLen > 0) {
+              x1 = (matchStartInSeg / segLen) * seg.width;
+              x2 = (matchEndInSeg / segLen) * seg.width;
             }
-            if (matchEndInSeg < segLen) {
-              x2 = ctx.measureText(seg.text.substring(0, matchEndInSeg)).width;
-            }
-          } else if (segLen > 0) {
-            x1 = (matchStartInSeg / segLen) * seg.width;
-            x2 = (matchEndInSeg / segLen) * seg.width;
+            hLeft = segX + x1;
+            hRight = segX + x2;
           }
-
-          const hLeft = segX + x1;
-          const hRight = segX + x2;
 
           if (lineHighlightMinX < 0 || hLeft < lineHighlightMinX) {
             lineHighlightMinX = hLeft;
@@ -871,8 +1027,9 @@ export class CanvasElementDrawer {
       const availW = Math.max(1, x2 - x1 - 10);
       const cellY = rowTops[anchorR];
 
-      const cellParas = (targetR < rows.length && targetC < rows[targetR].length)
-        ? rows[targetR][targetC]
+      // 文字始终存放在合并区域的起始单元格，坐标一律以 anchor 为准
+      const cellParas = (anchorR < rows.length && anchorC < rows[anchorR].length)
+        ? rows[anchorR][anchorC]
         : [];
       if (cellParas && match.paragraphIndex >= 0 && match.paragraphIndex < cellParas.length) {
         let paraY = cellY + 5;
