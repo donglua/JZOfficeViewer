@@ -1021,30 +1021,27 @@ public final class OfficePreviewView extends View {
                 && targetR < d.source.rows.size() && targetC < d.source.rows.get(targetR).size()
                 && match.paragraphIndex < d.source.rows.get(targetR).get(targetC).size()) {
                 OfficeTextLayout.Block block = d.texts.get(targetBlockIndex);
-                OfficeDocument.Paragraph para = d.source.rows.get(targetR).get(targetC).get(match.paragraphIndex);
-                return blockHighlightRects(block, para, match.startChar, match.endChar, d.transform, pageOffsetY);
+                return blockHighlightRects(block, match.startChar, match.endChar, d.transform, pageOffsetY);
             }
             return Collections.emptyList();
         } else if (!d.source.paragraphs.isEmpty()) {
             if (match.paragraphIndex >= 0 && match.paragraphIndex < d.texts.size()
                 && match.paragraphIndex < d.source.paragraphs.size()) {
                 OfficeTextLayout.Block block = d.texts.get(match.paragraphIndex);
-                OfficeDocument.Paragraph para = d.source.paragraphs.get(match.paragraphIndex);
-                return blockHighlightRects(block, para, match.startChar, match.endChar, d.transform, pageOffsetY);
+                return blockHighlightRects(block, match.startChar, match.endChar, d.transform, pageOffsetY);
             }
         }
         return Collections.emptyList();
     }
 
-    private List<RectF> blockHighlightRects(OfficeTextLayout.Block b, OfficeDocument.Paragraph para,
+    private List<RectF> blockHighlightRects(OfficeTextLayout.Block b,
                                             int startChar, int endChar, Matrix transform, float pageOffsetY) {
         StaticLayout layout = b.layout;
         if (layout == null) return Collections.emptyList();
-        int bulletLen = para.bullet != null ? para.bullet.length() : 0;
         CharSequence text = layout.getText();
         int totalLen = text.length();
-        int s = Math.max(0, Math.min(totalLen, startChar + bulletLen));
-        int e = Math.max(s, Math.min(totalLen, endChar + bulletLen));
+        int s = Math.max(0, Math.min(totalLen, startChar));
+        int e = Math.max(s, Math.min(totalLen, endChar));
         if (s >= e) return Collections.emptyList();
 
         int startLine = layout.getLineForOffset(s);

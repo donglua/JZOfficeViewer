@@ -32,6 +32,7 @@ final class PptxTableChecks {
             capturePptx(context);
             emptyDocxCellFillsStayTransparent();
             mergedTableHighlightSkipsCoveredCells(context);
+            bulletParagraphHighlightOffsets(context);
         });
         return "PASS PPTX table cell fills, transparent body cells and DOCX empty cellFills compatibility\n"
             + "SCREENSHOTS pptx-table-synthetic.png\n";
@@ -307,6 +308,58 @@ final class PptxTableChecks {
         List<RectF> targetRects = previewView.elementHighlightRects(renderedTable, targetMatch, 0);
         check(!targetRects.isEmpty(), "Highlight rects should not be empty for TargetCell");
         check(targetRects.get(0).left < 150f, "TargetCell highlight x should be in column 1 (left < 150)");
+    }
+
+    private static void bulletParagraphHighlightOffsets(Context context) {
+        OfficeDocument document = new OfficeDocument();
+        document.kind = OfficeDocument.Kind.PPTX;
+        document.width = 400;
+        OfficeDocument.Page page = new OfficeDocument.Page();
+        page.width = 400;
+
+        OfficeDocument.Element box = new OfficeDocument.Element();
+        box.type = OfficeDocument.Type.TEXT;
+        box.x = 20;
+        box.y = 20;
+        box.width = 300;
+        box.height = 100;
+        box.transform = new float[] {1, 0, 0, 1, 20, 20};
+
+        OfficeDocument.Paragraph para = new OfficeDocument.Paragraph();
+        para.bullet = "1. ";
+        OfficeDocument.Run run = new OfficeDocument.Run();
+        run.size = 14;
+        run.text = "Hi";
+        para.runs.add(run);
+        box.paragraphs.add(para);
+
+        page.elements.add(box);
+        document.pages.add(page);
+
+        OfficeRenderer renderer = new OfficeRenderer();
+        renderer.layout(document);
+        OfficeRenderer.Element renderedBox = renderer.pages.get(0).elements.get(0);
+
+        OfficePreviewView previewView = new OfficePreviewView(context);
+
+        // In core search, rendered text is "1. Hi".
+        // Match for "Hi" is startChar=3, endChar=5.
+        // If bulletLen (3) is erroneously added again, the range becomes [6, 5] (clamped to [5, 5]),
+        // which makes highlight rects empty!
+        OfficePreviewView.SearchMatch hiMatch = new OfficePreviewView.SearchMatch(
+            0, 0, 0, -1, -1, 3, 5, "Hi"
+        );
+        List<RectF> hiRects = previewView.elementHighlightRects(renderedBox, hiMatch, 0);
+        check(!hiRects.isEmpty(), "Highlight rects for run text in bullet paragraph should not be empty");
+
+        // Match for bullet "1." is startChar=0, endChar=2.
+        OfficePreviewView.SearchMatch bulletMatch = new OfficePreviewView.SearchMatch(
+            0, 0, 0, -1, -1, 0, 2, "1."
+        );
+        List<RectF> bulletRects = previewView.elementHighlightRects(renderedBox, bulletMatch, 0);
+        check(!bulletRects.isEmpty(), "Highlight rects for bullet text should not be empty");
+        check(bulletRects.get(0).right <= hiRects.get(0).left + 1f,
+            "Bullet highlight should precede run text highlight horizontally");
     }
 
     private static List<OfficeDocument.Paragraph> makeParagraph(String text) {
