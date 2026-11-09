@@ -377,14 +377,15 @@ public final class DocumentTextLayout: @unchecked Sendable {
         baseIndex: Int
     ) -> [TextBlockLayout] {
         let rows = element.rows
-        var cols = 0
-        for r in rows { cols = max(cols, r.count) }
-        guard cols > 0 else { return [] }
+        let geom = CGElementDrawer.computeTableGeometry(element: element)
+        let cols = geom.cols
+        let colX = geom.colX
+        let rowTops = geom.rowTops
+        let numRows = rows.count
+        guard cols > 0 && numRows > 0 else { return [] }
 
-        let colWidths = CGElementDrawer.resolveColumnWidths(element: element, cols: cols)
         var result: [TextBlockLayout] = []
         var curIdx = baseIndex
-        var currentY: CGFloat = 0
 
         let tableAffine: CGAffineTransform
         if element.transform.count >= 6 {
@@ -394,63 +395,47 @@ public final class DocumentTextLayout: @unchecked Sendable {
             tableAffine = CGAffineTransform(translationX: element.x, y: element.y)
         }
 
-        for row in rows {
-            var rowHeight: CGFloat = 20
-            var cellLinesList: [[TextLineLayout]] = []
-            var cellTexts: [String] = []
-
+        for (r, row) in rows.enumerated() {
             for c in 0..<cols {
-                let colW = colWidths[c]
-                let cellParas = c < row.count ? row[c] : []
-                if cellParas.isEmpty {
-                    cellLinesList.append([])
-                    cellTexts.append("")
+                let m = CGElementDrawer.findMerge(element.merges, r: r, c: c)
+                if let m, (m.startRow != r || m.startColumn != c) {
                     continue
                 }
+                let x1 = colX[c]
+                let x2 = m != nil ? colX[min(cols, m!.endColumn + 1)] : colX[c + 1]
+                let y1 = rowTops[r]
+                let y2 = m != nil ? rowTops[min(numRows, m!.endRow + 1)] : rowTops[r + 1]
+                let cellW = max(1, x2 - x1)
+                let cellH = max(1, y2 - y1)
+                let cellParas = c < row.count ? row[c] : []
+                if cellParas.isEmpty { continue }
+
                 var dummyEl = element
                 dummyEl.paragraphs = cellParas
                 dummyEl.padding = 4
-                dummyEl.width = max(1, colW - 10)
+                dummyEl.width = max(1, cellW - 10)
                 dummyEl.height = 0
                 dummyEl.transform = [1, 0, 0, 1, 0, 0]
                 dummyEl.textWrap = true
 
                 if let blk = buildParagraphsBlock(element: dummyEl, blockIndex: curIdx) {
-                    cellLinesList.append(blk.lines)
-                    cellTexts.append(blk.fullText)
-                    let textH = blk.lines.reduce(0) { max($0, $1.rect.maxY) }
-                    rowHeight = max(rowHeight, textH + 10)
-                } else {
-                    cellLinesList.append([])
-                    cellTexts.append("")
-                }
-            }
-
-            var currentX: CGFloat = 0
-            for c in 0..<cols {
-                let colW = colWidths[c]
-                let rawLines = cellLinesList[c]
-                let text = cellTexts[c]
-                if !rawLines.isEmpty {
-                    let cellLocalOrigin = CGPoint(x: currentX + 5, y: currentY + 5)
+                    let cellLocalOrigin = CGPoint(x: x1 + 5, y: y1 + 5)
                     let cellTransform = tableAffine.concatenating(
                         CGAffineTransform(translationX: cellLocalOrigin.x, y: cellLocalOrigin.y)
                     )
-                    let cellRect = CGRect(x: 0, y: 0, width: max(1, colW - 10), height: rowHeight - 10)
+                    let cellRect = CGRect(x: 0, y: 0, width: max(1, cellW - 10), height: max(1, cellH - 10))
                     let docBounds = cellRect.applying(cellTransform)
 
                     result.append(TextBlockLayout(
                         blockIndex: curIdx,
                         bounds: docBounds,
                         transform: cellTransform,
-                        fullText: text,
-                        lines: rawLines
+                        fullText: blk.fullText,
+                        lines: blk.lines
                     ))
                     curIdx += 1
                 }
-                currentX += colW
             }
-            currentY += rowHeight
         }
 
         return result

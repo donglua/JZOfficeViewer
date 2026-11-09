@@ -33,6 +33,13 @@ export interface OfficeRect {
   height: number;
 }
 
+export interface TableGeometry {
+  cols: number;
+  colWidths: number[];
+  colX: number[];
+  rowTops: number[];
+}
+
 export class CanvasElementDrawer {
   // 缓存已构建的 Path2D，避免滑动时每帧重复解析成百上千条矢量指令
   private static readonly pathCache: WeakMap<model.Path, Path2D> = new WeakMap();
@@ -177,88 +184,212 @@ export class CanvasElementDrawer {
     return RenderUtils.argbToCss(e.fill);
   }
 
-  private static drawTable(ctx: OfficeCanvasContext, element: model.Element): void {
+  public static findMerge(
+    merges: model.CellRange[] | undefined,
+    r: number,
+    c: number
+  ): model.CellRange | null {
+    if (!merges || merges.length === 0) return null;
+    for (let i = 0; i < merges.length; i++) {
+      const m = merges[i];
+      if (r >= m.startRow && r <= m.endRow && c >= m.startColumn && c <= m.endColumn) {
+        return m;
+      }
+    }
+    return null;
+  }
+
+  public static resolveColumnWidths(
+    element: model.Element,
+    cols: number,
+    tableW: number
+  ): number[] {
+    const raw = element.columnWidths ?? [];
+    let totalWeight = 0;
+    for (let i = 0; i < raw.length; i++) {
+      totalWeight += Math.max(1, raw[i]);
+    }
+    const result: number[] = [];
+    for (let c = 0; c < cols; c++) {
+      if (raw.length === cols && totalWeight > 0) {
+        if (Math.abs(totalWeight - tableW) < 0.5) {
+          result.push(Math.max(1, raw[c]));
+        } else {
+          result.push((tableW * Math.max(1, raw[c])) / totalWeight);
+        }
+      } else {
+        result.push(tableW / cols);
+      }
+    }
+    return result;
+  }
+
+  public static computeTableGeometry(
+    ctx: OfficeCanvasContext | null,
+    element: model.Element,
+    availableWidth?: number
+  ): TableGeometry {
     const rows = element.rows ?? [];
     let cols = 0;
-    for (const r of rows) {
-      cols = Math.max(cols, r.length);
+    for (let i = 0; i < rows.length; i++) {
+      cols = Math.max(cols, rows[i].length);
     }
-    if (cols === 0) return;
-
-    const colWidths = element.columnWidths ?? [];
-    let totalWeight = 0;
-    for (const cw of colWidths) {
-      totalWeight += Math.max(1, cw);
+    const numRows = rows.length;
+    if (cols === 0 || numRows === 0) {
+      const emptyGeom: TableGeometry = {
+        cols: 0,
+        colWidths: [],
+        colX: [0],
+        rowTops: [0]
+      };
+      return emptyGeom;
     }
 
-    const cellFills = element.cellFills ?? [];
+    const tableW = element.width && element.width > 0
+      ? element.width
+      : (availableWidth && availableWidth > 0 ? availableWidth : 500);
+    const colWidths = CanvasElementDrawer.resolveColumnWidths(element, cols, tableW);
+    const colX: number[] = new Array<number>(cols + 1).fill(0);
+    for (let c = 0; c < cols; c++) {
+      colX[c + 1] = colX[c] + colWidths[c];
+    }
+
+    const rowTops: number[] = new Array<number>(numRows + 1).fill(0);
     let currentY = 0;
 
-    for (let r = 0; r < rows.length; r++) {
-      const row = rows[r];
-      // 单遍预排版并测量当前行最大高度，缓存每个单元格的折行结果供下方绘制直接复用
-      const computedColWidths: number[] = [];
-      const rowCellLines: WrappedLine[][][] = [];
+    for (let r = 0; r < numRows; r++) {
+      rowTops[r] = currentY;
       let rowHeight = 20;
+      const row = rows[r];
+
       for (let c = 0; c < cols; c++) {
-        const colW =
-          colWidths.length === cols && totalWeight > 0
-            ? (Math.abs(totalWeight - element.width) < 0.5
-                ? Math.max(1, colWidths[c])
-                : (element.width * Math.max(1, colWidths[c])) / totalWeight)
-            : element.width / cols;
-        computedColWidths.push(colW);
+        const m = CanvasElementDrawer.findMerge(element.merges, r, c);
+        if (m && (m.startRow !== r || m.startColumn !== c)) {
+          continue;
+        }
+        const x1 = colX[c];
+        const x2 = m ? colX[Math.min(cols, m.endColumn + 1)] : colX[c + 1];
+        const cellW = Math.max(1, x2 - x1);
         const cellParas = c < row.length ? row[c] : [];
-        const paraLinesList: WrappedLine[][] = [];
         if (cellParas && cellParas.length > 0) {
-          const availW = Math.max(1, colW - 10);
+          const availW = Math.max(1, cellW - 10);
           let cellTextH = 0;
-          for (const para of cellParas) {
+          for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
+            const para = cellParas[pIdx];
             cellTextH += Math.max(0, para.before || 0);
-            const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
-            paraLinesList.push(lines);
-            for (const line of lines) {
-              cellTextH += line.height;
+            if (ctx) {
+              const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
+              for (let lIdx = 0; lIdx < lines.length; lIdx++) {
+                cellTextH += lines[lIdx].height;
+              }
+            } else {
+              let charCount = 0;
+              let maxFontSize = 12;
+              if (para.runs) {
+                for (let rIdx = 0; rIdx < para.runs.length; rIdx++) {
+                  charCount += (para.runs[rIdx].text || '').length;
+                  maxFontSize = Math.max(maxFontSize, para.runs[rIdx].size || 12);
+                }
+              }
+              const linesEstimate = Math.max(1, Math.ceil((charCount * maxFontSize * 0.6) / availW));
+              cellTextH += linesEstimate * CanvasElementDrawer.computeLineHeight(para, maxFontSize);
             }
             cellTextH += Math.max(0, para.after || 0);
           }
           rowHeight = Math.max(rowHeight, cellTextH + 10);
         }
-        rowCellLines.push(paraLinesList);
       }
+      currentY += rowHeight;
+    }
+    rowTops[numRows] = currentY;
 
-      let currentX = 0;
+    const geom: TableGeometry = {
+      cols,
+      colWidths,
+      colX,
+      rowTops
+    };
+    return geom;
+  }
+
+  public static measureTableHeight(
+    element: model.Element,
+    availableWidth?: number,
+    ctx?: OfficeCanvasContext | null
+  ): number {
+    const geom = CanvasElementDrawer.computeTableGeometry(ctx ?? null, element, availableWidth);
+    return geom.rowTops[geom.rowTops.length - 1] ?? 0;
+  }
+
+  public static drawTable(ctx: OfficeCanvasContext, element: model.Element): void {
+    const rows = element.rows ?? [];
+    let cols = 0;
+    for (let i = 0; i < rows.length; i++) {
+      cols = Math.max(cols, rows[i].length);
+    }
+    const numRows = rows.length;
+    if (cols === 0 || numRows === 0) return;
+
+    const geom = CanvasElementDrawer.computeTableGeometry(ctx, element);
+    const colX = geom.colX;
+    const rowTops = geom.rowTops;
+    const cellFills = element.cellFills ?? [];
+
+    for (let r = 0; r < numRows; r++) {
+      const row = rows[r];
       for (let c = 0; c < cols; c++) {
-        const colW = computedColWidths[c];
+        const m = CanvasElementDrawer.findMerge(element.merges, r, c);
+        let x1: number;
+        let x2: number;
+        let y1: number;
+        let y2: number;
+
+        if (m) {
+          if (m.startRow !== r || m.startColumn !== c) {
+            continue;
+          }
+          x1 = colX[c];
+          x2 = colX[Math.min(cols, m.endColumn + 1)];
+          y1 = rowTops[r];
+          y2 = rowTops[Math.min(numRows, m.endRow + 1)];
+        } else {
+          x1 = colX[c];
+          x2 = colX[c + 1];
+          y1 = rowTops[r];
+          y2 = rowTops[r + 1];
+        }
+
+        const cellW = Math.max(1, x2 - x1);
+        const cellH = Math.max(1, y2 - y1);
+
         const fillInt = cellFills[r]?.[c] ?? 0;
         const fillCss = RenderUtils.argbToCss(fillInt);
         if (fillCss) {
           ctx.fillStyle = fillCss;
-          ctx.fillRect(currentX, currentY, colW, rowHeight);
+          ctx.fillRect(x1, y1, cellW, cellH);
         }
 
         ctx.strokeStyle = '#b7bec7';
         ctx.lineWidth = 0.6;
-        ctx.strokeRect(currentX, currentY, colW, rowHeight);
+        ctx.strokeRect(x1, y1, cellW, cellH);
 
         const cellParas = c < row.length ? row[c] : [];
-        const paraLinesList = rowCellLines[c];
-        if (cellParas && cellParas.length > 0 && paraLinesList.length === cellParas.length) {
+        if (cellParas && cellParas.length > 0) {
           ctx.save();
           ctx.beginPath();
-          ctx.rect(currentX, currentY, colW, rowHeight);
+          ctx.rect(x1, y1, cellW, cellH);
           ctx.clip();
-          let paraY = currentY + 5;
-          const availW = Math.max(1, colW - 10);
+          let paraY = y1 + 5;
+          const availW = Math.max(1, cellW - 10);
           for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
             const para = cellParas[pIdx];
-            const lines = paraLinesList[pIdx];
             paraY += Math.max(0, para.before || 0);
+            const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
             const h = CanvasElementDrawer.drawParagraphLines(
               ctx,
               para,
               lines,
-              currentX + 5,
+              x1 + 5,
               paraY,
               availW
             );
@@ -266,9 +397,7 @@ export class CanvasElementDrawer {
           }
           ctx.restore();
         }
-        currentX += colW;
       }
-      currentY += rowHeight;
     }
   }
 
@@ -717,98 +846,60 @@ export class CanvasElementDrawer {
     if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
       const rows = element.rows;
       let cols = 0;
-      for (const r of rows) {
-        cols = Math.max(cols, r.length);
+      for (let i = 0; i < rows.length; i++) {
+        cols = Math.max(cols, rows[i].length);
       }
-      if (cols === 0) return [];
-
-      const colWidths = element.columnWidths ?? [];
-      let totalWeight = 0;
-      for (const cw of colWidths) {
-        totalWeight += Math.max(1, cw);
-      }
+      const numRows = rows.length;
+      if (cols === 0 || numRows === 0) return [];
 
       const targetR = match.row !== undefined && match.row >= 0 ? match.row : 0;
       const targetC = match.column !== undefined && match.column >= 0 ? match.column : 0;
+      if (targetR >= numRows || targetC >= cols) return [];
 
-      let currentY = 0;
-      for (let r = 0; r < rows.length; r++) {
-        const row = rows[r];
-        const computedColWidths: number[] = [];
-        let rowHeight = 20;
+      const geom = CanvasElementDrawer.computeTableGeometry(ctx, element);
+      const colX = geom.colX;
+      const rowTops = geom.rowTops;
 
-        for (let c = 0; c < cols; c++) {
-          const colW =
-            colWidths.length === cols && totalWeight > 0
-              ? (Math.abs(totalWeight - element.width) < 0.5
-                  ? Math.max(1, colWidths[c])
-                  : (element.width * Math.max(1, colWidths[c])) / totalWeight)
-              : element.width / cols;
-          computedColWidths.push(colW);
+      const m = CanvasElementDrawer.findMerge(element.merges, targetR, targetC);
+      const anchorR = m ? m.startRow : targetR;
+      const anchorC = m ? m.startColumn : targetC;
+      const x1 = colX[anchorC];
+      const x2 = m ? colX[Math.min(cols, m.endColumn + 1)] : colX[anchorC + 1];
+      const availW = Math.max(1, x2 - x1 - 10);
+      const cellY = rowTops[anchorR];
 
-          const cellParas = c < row.length ? row[c] : [];
-          if (cellParas && cellParas.length > 0) {
-            const availW = Math.max(1, colW - 10);
-            let cellTextH = 0;
-            for (const para of cellParas) {
-              cellTextH += Math.max(0, para.before || 0);
-              const lines = ctx
-                ? CanvasElementDrawer.layoutParagraph(ctx, para, availW, true)
-                : [];
-              for (const line of lines) {
-                cellTextH += line.height;
-              }
-              cellTextH += Math.max(0, para.after || 0);
-            }
-            rowHeight = Math.max(rowHeight, cellTextH + 10);
+      const cellParas = (targetR < rows.length && targetC < rows[targetR].length)
+        ? rows[targetR][targetC]
+        : [];
+      if (cellParas && match.paragraphIndex >= 0 && match.paragraphIndex < cellParas.length) {
+        let paraY = cellY + 5;
+        for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
+          const para = cellParas[pIdx];
+          paraY += Math.max(0, para.before || 0);
+          if (pIdx === match.paragraphIndex) {
+            const pRects = CanvasElementDrawer.computeParagraphHighlightRects(
+              ctx,
+              para,
+              match.startChar,
+              match.endChar,
+              x1 + 5,
+              paraY,
+              availW,
+              true
+            );
+            rawRects.push(...pRects);
+            break;
           }
-        }
-
-        if (r === targetR) {
-          let currentX = 0;
-          for (let c = 0; c < cols; c++) {
-            const colW = computedColWidths[c];
-            if (c === targetC) {
-              const cellParas = c < row.length ? row[c] : [];
-              if (cellParas && match.paragraphIndex < cellParas.length) {
-                const availW = Math.max(1, colW - 10);
-                let paraY = currentY + 5;
-                for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
-                  const para = cellParas[pIdx];
-                  paraY += Math.max(0, para.before || 0);
-                  if (pIdx === match.paragraphIndex) {
-                    const pRects = CanvasElementDrawer.computeParagraphHighlightRects(
-                      ctx,
-                      para,
-                      match.startChar,
-                      match.endChar,
-                      currentX + 5,
-                      paraY,
-                      availW,
-                      true
-                    );
-                    rawRects.push(...pRects);
-                    break;
-                  }
-                  if (ctx) {
-                    const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
-                    for (const line of lines) {
-                      paraY += line.height;
-                    }
-                  } else {
-                    paraY += 16;
-                  }
-                  paraY += Math.max(0, para.after || 0);
-                }
-              }
-              break;
+          if (ctx) {
+            const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
+            for (let lIdx = 0; lIdx < lines.length; lIdx++) {
+              paraY += lines[lIdx].height;
             }
-            currentX += colW;
+          } else {
+            paraY += 16;
           }
-          break;
+          paraY += Math.max(0, para.after || 0);
         }
-
-        currentY += rowHeight;
       }
     } else if (element.paragraphs && element.paragraphs.length > 0) {
       if (match.paragraphIndex >= 0 && match.paragraphIndex < element.paragraphs.length) {

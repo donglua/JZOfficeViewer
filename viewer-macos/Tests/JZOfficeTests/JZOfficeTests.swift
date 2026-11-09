@@ -411,6 +411,88 @@ struct JZOfficeTests {
         #expect(controller.targetHighlightRect == nil)
     }
 
+    @Test("DOCX 与 PPTX 表格横向与纵向合并单元格解析、几何测量与绘制")
+    func tableMergedCellsDecodingMeasurementAndDrawing() throws {
+        // 1. JSON 解码 OfficeElement 携带 merges
+        let json = """
+        {
+            "type": "TABLE",
+            "width": 300,
+            "columnWidths": [100, 100, 100],
+            "merges": [
+                {"startRow": 0, "startColumn": 0, "endRow": 0, "endColumn": 1},
+                {"startRow": 1, "startColumn": 0, "endRow": 2, "endColumn": 0}
+            ],
+            "rows": [
+                [
+                    [{"runs": [{"text": "跨2列合并"}]}],
+                    [],
+                    [{"runs": [{"text": "普通格0-2"}]}]
+                ],
+                [
+                    [{"runs": [{"text": "跨2行纵向合并"}]}],
+                    [{"runs": [{"text": "普通格1-1"}]}],
+                    [{"runs": [{"text": "普通格1-2"}]}]
+                ],
+                [
+                    [],
+                    [{"runs": [{"text": "普通格2-1"}]}],
+                    [{"runs": [{"text": "普通格2-2"}]}]
+                ]
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let element = try JSONDecoder().decode(OfficeElement.self, from: json)
+        #expect(element.type == .table)
+        #expect(element.merges.count == 2)
+        #expect(element.merges[0].startRow == 0 && element.merges[0].endColumn == 1)
+        #expect(element.merges[1].startRow == 1 && element.merges[1].endRow == 2)
+
+        // 2. findMerge 命中与未命中校验
+        let m0 = CGElementDrawer.findMerge(element.merges, r: 0, c: 0)
+        #expect(m0 != nil)
+        #expect(m0?.endColumn == 1)
+
+        let m01 = CGElementDrawer.findMerge(element.merges, r: 0, c: 1)
+        #expect(m01 != nil)
+        #expect(m01?.startColumn == 0)
+
+        let mNone = CGElementDrawer.findMerge(element.merges, r: 0, c: 2)
+        #expect(mNone == nil)
+
+        let mV = CGElementDrawer.findMerge(element.merges, r: 2, c: 0)
+        #expect(mV != nil)
+        #expect(mV?.startRow == 1 && mV?.endRow == 2)
+
+        // 3. 几何测量：cols, colX, rowTops
+        let geom = CGElementDrawer.computeTableGeometry(element: element)
+        #expect(geom.cols == 3)
+        #expect(geom.colX.count == 4)
+        #expect(geom.rowTops.count == 4)
+        #expect(geom.colX[0] == 0)
+        #expect(geom.colX[3] == 300)
+        let totalH = CGElementDrawer.measureTableHeight(element: element)
+        #expect(totalH >= 60)
+        #expect(geom.rowTops[3] == totalH)
+
+        // 4. 离屏绘制无崩溃且产生非空白像素
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var bytes = [UInt8](repeating: 255, count: 300 * Int(totalH) * 4)
+        let ctx = CGContext(
+            data: &bytes,
+            width: 300,
+            height: Int(totalH),
+            bitsPerComponent: 8,
+            bytesPerRow: 300 * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        CGElementDrawer.drawElement(in: ctx, element: element, images: [:])
+        let img = ctx.makeImage()!
+        #expect(hasNonWhitePixel(img))
+    }
+
     private func hasNonWhitePixel(_ image: CGImage) -> Bool {
         let w = image.width
         let h = image.height

@@ -227,27 +227,13 @@ public enum CGElementDrawer {
 
     // MARK: - 表格测量与绘制
 
-    public static func measureTableHeight(element: OfficeElement) -> CGFloat {
-        let rows = element.rows
-        var cols = 0
-        for r in rows { cols = max(cols, r.count) }
-        guard cols > 0 else { return 0 }
-
-        let colWidths = resolveColumnWidths(element: element, cols: cols)
-        var totalY: CGFloat = 0
-        for row in rows {
-            var rowHeight: CGFloat = 20
-            for c in 0..<cols {
-                let colW = colWidths[c]
-                let cellParas = c < row.count ? row[c] : []
-                if !cellParas.isEmpty {
-                    let h = measureParagraphsHeight(cellParas, availableWidth: max(1, colW - 10), wrap: true)
-                    rowHeight = max(rowHeight, h + 10)
-                }
+    public static func findMerge(_ merges: [OfficeCellRange], r: Int, c: Int) -> OfficeCellRange? {
+        for m in merges {
+            if r >= m.startRow && r <= m.endRow && c >= m.startColumn && c <= m.endColumn {
+                return m
             }
-            totalY += rowHeight
         }
-        return totalY
+        return nil
     }
 
     public static func resolveColumnWidths(element: OfficeElement, cols: Int) -> [CGFloat] {
@@ -265,36 +251,87 @@ public enum CGElementDrawer {
         }
     }
 
-    private static func drawTable(in ctx: CGContext, element: OfficeElement) {
+    public static func computeTableGeometry(
+        element: OfficeElement
+    ) -> (cols: Int, colWidths: [CGFloat], colX: [CGFloat], rowTops: [CGFloat]) {
         let rows = element.rows
         var cols = 0
         for r in rows { cols = max(cols, r.count) }
-        guard cols > 0 else { return }
-
+        guard cols > 0 else { return (0, [], [], []) }
+        let numRows = rows.count
         let colWidths = resolveColumnWidths(element: element, cols: cols)
-        let borderColor = argbToCGColor(0xffb7bec7)
-        var currentY: CGFloat = 0
-
-        for (rIdx, row) in rows.enumerated() {
+        var colX = [CGFloat](repeating: 0, count: cols + 1)
+        for c in 0..<cols {
+            colX[c + 1] = colX[c] + colWidths[c]
+        }
+        var rowTops = [CGFloat](repeating: 0, count: numRows + 1)
+        var y: CGFloat = 0
+        for (r, row) in rows.enumerated() {
+            rowTops[r] = y
             var rowHeight: CGFloat = 20
-            var cellLayouts: [[LaidOutLine]] = []
             for c in 0..<cols {
-                let colW = colWidths[c]
+                let m = findMerge(element.merges, r: r, c: c)
+                if let m, (m.startRow != r || m.startColumn != c) {
+                    continue
+                }
+                let x1 = colX[c]
+                let x2 = m != nil ? colX[min(cols, m!.endColumn + 1)] : colX[c + 1]
+                let cellW = max(1, x2 - x1)
                 let cellParas = c < row.count ? row[c] : []
-                let lines = layoutParagraphs(cellParas, availableWidth: max(1, colW - 10), wrap: true)
-                cellLayouts.append(lines)
-                let textH = lines.reduce(0) { $0 + $1.before + $1.height + $1.after }
                 if !cellParas.isEmpty {
-                    rowHeight = max(rowHeight, textH + 10)
+                    let h = measureParagraphsHeight(cellParas, availableWidth: max(1, cellW - 10), wrap: true)
+                    rowHeight = max(rowHeight, h + 10)
                 }
             }
+            y += rowHeight
+        }
+        rowTops[numRows] = y
+        return (cols, colWidths, colX, rowTops)
+    }
 
-            var currentX: CGFloat = 0
+    public static func measureTableHeight(element: OfficeElement) -> CGFloat {
+        let geom = computeTableGeometry(element: element)
+        return geom.rowTops.last ?? 0
+    }
+
+    private static func drawTable(in ctx: CGContext, element: OfficeElement) {
+        let rows = element.rows
+        let geom = computeTableGeometry(element: element)
+        let cols = geom.cols
+        let colX = geom.colX
+        let rowTops = geom.rowTops
+        let numRows = rows.count
+        guard cols > 0 && numRows > 0 else { return }
+
+        let borderColor = argbToCGColor(0xffb7bec7)
+
+        for r in 0..<numRows {
+            let row = rows[r]
             for c in 0..<cols {
-                let colW = colWidths[c]
-                let cellRect = CGRect(x: currentX, y: currentY, width: colW, height: rowHeight)
-                if rIdx < element.cellFills.count && c < element.cellFills[rIdx].count {
-                    if let fillCG = argbToCGColor(element.cellFills[rIdx][c]) {
+                let m = findMerge(element.merges, r: r, c: c)
+                let x1: CGFloat
+                let x2: CGFloat
+                let y1: CGFloat
+                let y2: CGFloat
+
+                if let m {
+                    // 非锚点合并单元格直接跳过，防止内部网格线横穿合并区域
+                    guard m.startRow == r && m.startColumn == c else { continue }
+                    x1 = colX[c]
+                    x2 = colX[min(cols, m.endColumn + 1)]
+                    y1 = rowTops[r]
+                    y2 = rowTops[min(numRows, m.endRow + 1)]
+                } else {
+                    x1 = colX[c]
+                    x2 = colX[c + 1]
+                    y1 = rowTops[r]
+                    y2 = rowTops[r + 1]
+                }
+
+                let cellRect = CGRect(x: x1, y: y1, width: max(1, x2 - x1), height: max(1, y2 - y1))
+
+                if r < element.cellFills.count && c < element.cellFills[r].count {
+                    if let fillCG = argbToCGColor(element.cellFills[r][c]) {
                         ctx.setFillColor(fillCG)
                         ctx.fill(cellRect)
                     }
@@ -305,22 +342,24 @@ public enum CGElementDrawer {
                     ctx.stroke(cellRect)
                 }
 
-                let lines = cellLayouts[c]
-                if !lines.isEmpty {
-                    ctx.saveGState()
-                    ctx.clip(to: cellRect)
-                    drawLaidOutLines(
-                        in: ctx,
-                        lines: lines,
-                        originX: currentX + 5,
-                        originY: currentY + 5,
-                        availableWidth: max(1, colW - 10)
-                    )
-                    ctx.restoreGState()
+                let cellParas = c < row.count ? row[c] : []
+                if !cellParas.isEmpty {
+                    let availW = max(1, cellRect.width - 10)
+                    let lines = layoutParagraphs(cellParas, availableWidth: availW, wrap: true)
+                    if !lines.isEmpty {
+                        ctx.saveGState()
+                        ctx.clip(to: cellRect)
+                        drawLaidOutLines(
+                            in: ctx,
+                            lines: lines,
+                            originX: x1 + 5,
+                            originY: y1 + 5,
+                            availableWidth: availW
+                        )
+                        ctx.restoreGState()
+                    }
                 }
-                currentX += colW
             }
-            currentY += rowHeight
         }
     }
 
@@ -629,24 +668,21 @@ public enum CGElementDrawer {
                       r >= 0, r < block.rows.count, c >= 0, c < block.rows[r].count else { return [] }
                 let cellParas = block.rows[r][c]
                 guard match.paragraphIndex >= 0 && match.paragraphIndex < cellParas.count else { return [] }
-                let cols = block.rows.map(\.count).max() ?? 0
-                let colWidths = resolveColumnWidths(element: block, cols: cols)
-                var rowY: CGFloat = 0
-                for rIdx in 0..<r {
-                    var rh: CGFloat = 20
-                    for colIdx in 0..<cols {
-                        let paras = colIdx < block.rows[rIdx].count ? block.rows[rIdx][colIdx] : []
-                        if !paras.isEmpty {
-                            let h = measureParagraphsHeight(paras, availableWidth: max(1, colWidths[colIdx] - 10), wrap: true)
-                            rh = max(rh, h + 10)
-                        }
-                    }
-                    rowY += rh
-                }
-                let cellX = marginX + colWidths.prefix(c).reduce(0, +)
-                let cellW = colWidths[c]
+                let geom = computeTableGeometry(element: block)
+                let cols = geom.cols
+                let colX = geom.colX
+                let rowTops = geom.rowTops
+                guard cols > 0, r < rowTops.count - 1, c < colX.count - 1 else { return [] }
+
+                let m = findMerge(block.merges, r: r, c: c)
+                let anchorR = m?.startRow ?? r
+                let anchorC = m?.startColumn ?? c
+                let x1 = colX[anchorC]
+                let x2 = m != nil ? colX[min(cols, m!.endColumn + 1)] : colX[anchorC + 1]
+                let cellX = marginX + x1
+                let cellW = max(1, x2 - x1)
                 let availCellW = max(1, cellW - 10)
-                let cellOrigin = CGPoint(x: cellX + 5, y: curY + rowY + 5)
+                let cellOrigin = CGPoint(x: cellX + 5, y: curY + rowTops[anchorR] + 5)
                 return charHighlightRects(
                     paragraphs: cellParas,
                     targetParagraphIndex: match.paragraphIndex,
@@ -695,24 +731,20 @@ public enum CGElementDrawer {
                       r >= 0, r < el.rows.count, c >= 0, c < el.rows[r].count else { return [] }
                 let cellParas = el.rows[r][c]
                 guard match.paragraphIndex >= 0 && match.paragraphIndex < cellParas.count else { return [] }
-                let cols = el.rows.map(\.count).max() ?? 0
-                let colWidths = resolveColumnWidths(element: el, cols: cols)
-                var rowY: CGFloat = 0
-                for rIdx in 0..<r {
-                    var rh: CGFloat = 20
-                    for colIdx in 0..<cols {
-                        let paras = colIdx < el.rows[rIdx].count ? el.rows[rIdx][colIdx] : []
-                        if !paras.isEmpty {
-                            let h = measureParagraphsHeight(paras, availableWidth: max(1, colWidths[colIdx] - 10), wrap: true)
-                            rh = max(rh, h + 10)
-                        }
-                    }
-                    rowY += rh
-                }
-                let cellX = colWidths.prefix(c).reduce(0, +)
-                let cellW = colWidths[c]
+                let geom = computeTableGeometry(element: el)
+                let cols = geom.cols
+                let colX = geom.colX
+                let rowTops = geom.rowTops
+                guard cols > 0, r < rowTops.count - 1, c < colX.count - 1 else { return [] }
+
+                let m = findMerge(el.merges, r: r, c: c)
+                let anchorR = m?.startRow ?? r
+                let anchorC = m?.startColumn ?? c
+                let x1 = colX[anchorC]
+                let x2 = m != nil ? colX[min(cols, m!.endColumn + 1)] : colX[anchorC + 1]
+                let cellW = max(1, x2 - x1)
                 let availCellW = max(1, cellW - 10)
-                let cellOrigin = CGPoint(x: cellX + 5, y: rowY + 5)
+                let cellOrigin = CGPoint(x: x1 + 5, y: rowTops[anchorR] + 5)
                 let localRects = charHighlightRects(
                     paragraphs: cellParas,
                     targetParagraphIndex: match.paragraphIndex,

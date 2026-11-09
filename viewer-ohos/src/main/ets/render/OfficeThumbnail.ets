@@ -128,7 +128,9 @@ async function renderDocxThumbnail(
       if (curY >= docH - 16) break;
       const elW = block.width && block.width > 0 ? Math.min(availW, block.width) : availW;
       let elH = block.height && block.height > 0 ? block.height : 0;
-      if (elH <= 0 && block.paragraphs && block.paragraphs.length > 0) {
+      if (elH <= 0 && block.type === 'TABLE' && block.rows && block.rows.length > 0) {
+        elH = CanvasElementDrawer.measureTableHeight(block, elW, ctx);
+      } else if (elH <= 0 && block.paragraphs && block.paragraphs.length > 0) {
         elH = CanvasElementDrawer.measureParagraphsHeight(ctx, block.paragraphs, elW, true) + 8;
       } else if (elH <= 0) {
         elH = 80;
@@ -154,7 +156,8 @@ async function renderDocxThumbnail(
         columnWidths: block.columnWidths,
         cellFills: block.cellFills,
         paths: block.paths,
-        fillGradient: block.fillGradient
+        fillGradient: block.fillGradient,
+        merges: block.merges
       };
       CanvasElementDrawer.drawElement(ctx, positioned, imageStore.cache);
       curY += elH + 8;

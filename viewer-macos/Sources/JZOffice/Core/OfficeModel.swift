@@ -172,10 +172,57 @@ public struct OfficeElement: Codable, Sendable {
     public var cellFills: [[UInt32]]
     public var paths: [OfficePath]
     public var fillGradient: OfficeGradientFill?
+    public var merges: [OfficeCellRange]
 
     enum CodingKeys: String, CodingKey {
         case type, x, y, width, height, transform, padding, fill, stroke, strokeWidth
-        case image, imageBounds, verticalAlignment, textWrap, paragraphs, rows, columnWidths, cellFills, paths, fillGradient
+        case image, imageBounds, verticalAlignment, textWrap, paragraphs, rows, columnWidths, cellFills, paths, fillGradient, merges
+    }
+
+    public init(
+        type: OfficeElementType = .text,
+        x: CGFloat = 0,
+        y: CGFloat = 0,
+        width: CGFloat = 0,
+        height: CGFloat = 0,
+        transform: [CGFloat] = [1, 0, 0, 1, 0, 0],
+        padding: CGFloat = 4,
+        fill: UInt32 = 0,
+        stroke: UInt32 = 0,
+        strokeWidth: CGFloat = 1,
+        image: String? = nil,
+        imageBounds: [CGFloat]? = nil,
+        verticalAlignment: OfficeVerticalAlignment = .top,
+        textWrap: Bool = true,
+        paragraphs: [OfficeParagraph] = [],
+        rows: [[[OfficeParagraph]]] = [],
+        columnWidths: [CGFloat] = [],
+        cellFills: [[UInt32]] = [],
+        paths: [OfficePath] = [],
+        fillGradient: OfficeGradientFill? = nil,
+        merges: [OfficeCellRange] = []
+    ) {
+        self.type = type
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.transform = transform
+        self.padding = padding
+        self.fill = fill
+        self.stroke = stroke
+        self.strokeWidth = strokeWidth
+        self.image = image
+        self.imageBounds = imageBounds
+        self.verticalAlignment = verticalAlignment
+        self.textWrap = textWrap
+        self.paragraphs = paragraphs
+        self.rows = rows
+        self.columnWidths = columnWidths
+        self.cellFills = cellFills
+        self.paths = paths
+        self.fillGradient = fillGradient
+        self.merges = merges
     }
 
     public init(from decoder: Decoder) throws {
@@ -200,6 +247,7 @@ public struct OfficeElement: Codable, Sendable {
         self.cellFills = try c.decodeIfPresent([[UInt32]].self, forKey: .cellFills) ?? []
         self.paths = try c.decodeIfPresent([OfficePath].self, forKey: .paths) ?? []
         self.fillGradient = try c.decodeIfPresent(OfficeGradientFill.self, forKey: .fillGradient)
+        self.merges = try c.decodeIfPresent([OfficeCellRange].self, forKey: .merges) ?? []
     }
 }
 
@@ -222,11 +270,18 @@ public struct OfficePage: Codable, Sendable {
     }
 }
 
-public struct OfficeCellRange: Codable, Sendable {
+public struct OfficeCellRange: Codable, Sendable, Equatable {
     public let startRow: Int
     public let startColumn: Int
     public let endRow: Int
     public let endColumn: Int
+
+    public init(startRow: Int, startColumn: Int, endRow: Int, endColumn: Int) {
+        self.startRow = startRow
+        self.startColumn = startColumn
+        self.endRow = endRow
+        self.endColumn = endColumn
+    }
 }
 
 public struct OfficeCellStyle: Codable, Sendable {

@@ -75,6 +75,7 @@ export interface Element {
   cellFills?: number[][];
   paths?: Path[];
   fillGradient?: GradientFill;
+  merges?: CellRange[];
 }
 
 export interface Page {

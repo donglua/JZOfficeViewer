@@ -1403,11 +1403,19 @@ struct DocxTableView {
   blockMatches: model.SearchMatch[] = [];
   currentMatch: model.SearchMatch | null = null;
   @State private reuseVersion: number = 0;
+  @State private measuredHeight: number = 60;
+
+  private settings: RenderingContextSettings = new RenderingContextSettings(true);
+  private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private isReady: boolean = false;
+
+  aboutToAppear(): void {
+    this.updateHeight();
+  }
 
   aboutToReuse(params: Record<string, Object>): void {
     if (params['element']) {
       this.element = params['element'] as model.Element;
-      this.reuseVersion++;
     }
     if (params['blockMatches']) {
       this.blockMatches = params['blockMatches'] as model.SearchMatch[];
@@ -1415,48 +1423,81 @@ struct DocxTableView {
     if (params['currentMatch'] !== undefined) {
       this.currentMatch = params['currentMatch'] as model.SearchMatch | null;
     }
+    this.reuseVersion++;
+    this.updateHeight();
+    if (this.isReady) {
+      this.drawTable();
+    }
+  }
+
+  private updateHeight(): void {
+    if (!this.element) return;
+    const h = CanvasElementDrawer.measureTableHeight(this.element);
+    this.measuredHeight = Math.max(20, h);
+  }
+
+  private drawTable(): void {
+    if (!this.isReady || !this.element) return;
+    const w = this.ctx.width;
+    const h = this.ctx.height;
+    if (w <= 0 || h <= 0) return;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, w, h);
+    CanvasElementDrawer.drawTable(ctx, this.element);
+
+    if (this.blockMatches && this.blockMatches.length > 0) {
+      for (let mIdx = 0; mIdx < this.blockMatches.length; mIdx++) {
+        const m = this.blockMatches[mIdx];
+        const isCurrent = this.currentMatch !== null &&
+          m.elementIndex === this.currentMatch.elementIndex &&
+          m.row === this.currentMatch.row &&
+          m.column === this.currentMatch.column &&
+          m.paragraphIndex === this.currentMatch.paragraphIndex &&
+          m.startChar === this.currentMatch.startChar &&
+          m.endChar === this.currentMatch.endChar;
+        const rects = CanvasElementDrawer.computeElementHighlightRects(ctx, this.element, m);
+        for (let rIdx = 0; rIdx < rects.length; rIdx++) {
+          const r = rects[rIdx];
+          if (isCurrent) {
+            ctx.fillStyle = 'rgba(255, 160, 0, 0.75)';
+            ctx.fillRect(r.x, r.y, r.width, r.height);
+            ctx.strokeStyle = '#e65100';
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(r.x, r.y, r.width, r.height);
+          } else {
+            ctx.fillStyle = 'rgba(255, 235, 59, 0.45)';
+            ctx.fillRect(r.x, r.y, r.width, r.height);
+          }
+        }
+      }
+    }
   }
 
   build() {
     if (this.element) {
-      Column() {
-        ForEach(
-          this.element.rows ?? [],
-          (row: model.Paragraph[][], rIdx: number) => {
-            Row() {
-              ForEach(
-                row,
-                (cellParas: model.Paragraph[], cIdx: number) => {
-                  Column({ space: 2 }) {
-                    ForEach(
-                      cellParas,
-                      (para: model.Paragraph, pIdx: number) => {
-                        DocxParagraphView({
-                          para: para,
-                          paraMatches: this.blockMatches
-                            ? this.blockMatches.filter(m => m.row === rIdx && m.column === cIdx && m.paragraphIndex === pIdx)
-                            : [],
-                          currentMatch: this.currentMatch
-                        })
-                      },
-                      (_p: model.Paragraph, pIdx: number) => `cp-${pIdx}-${this.reuseVersion}-${this.blockMatches.length}`
-                    )
-                  }
-                  .layoutWeight(Math.max(1, this.element?.columnWidths?.[cIdx] ?? 1))
-                  .padding(6)
-                  .border({ width: 0.5, color: '#b7bec7' })
-                  .backgroundColor(RenderUtils.argbToCss(this.element?.cellFills?.[rIdx]?.[cIdx] ?? 0) ?? '#ffffff')
-                },
-                (_cell: model.Paragraph[], cIdx: number) => `c-${rIdx}-${cIdx}-${this.reuseVersion}`
-              )
+      Row() {
+        Canvas(this.ctx)
+          .width(this.element.width && this.element.width > 0 ? this.element.width : '100%')
+          .height(this.measuredHeight)
+          .constraintSize({ maxWidth: '100%' })
+          .onReady(() => {
+            this.isReady = true;
+            this.drawTable();
+          })
+          .onAreaChange((_oldVal: Area, newVal: Area) => {
+            const newW = Number(newVal.width);
+            if (newW > 0 && (!this.element?.width || Math.abs(this.element.width - newW) > 1)) {
+              if (this.element) {
+                this.element.width = newW;
+              }
+              this.updateHeight();
             }
-            .width('100%')
-          },
-          (_row: model.Paragraph[][], rIdx: number) => `r-${rIdx}-${this.reuseVersion}`
-        )
+            this.drawTable();
+          })
       }
-      .width(this.element.width && this.element.width > 0 ? this.element.width : '100%')
-      .constraintSize({ maxWidth: '100%' })
+      .id(`table-${this.reuseVersion}`)
+      .width('100%')
+      .justifyContent(FlexAlign.Start)
       .margin({ top: 8, bottom: 8 })
     }
   }
