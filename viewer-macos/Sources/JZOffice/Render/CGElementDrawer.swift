@@ -376,6 +376,7 @@ public enum CGElementDrawer {
         let rightIndent: CGFloat
         let before: CGFloat
         let after: CGFloat
+        let isLast: Bool
     }
 
     public static func measureParagraphsHeight(
@@ -436,7 +437,7 @@ public enum CGElementDrawer {
             }
             let baselineY = curY + line.ascent + max(0, (line.height - (line.ascent + line.descent)) / 2.0)
             ctx.textPosition = CGPoint(x: lineX, y: baselineY)
-            if line.alignment == 3, let justified = CTLineCreateJustifiedLine(line.ctLine, 1.0, Double(lineAvailW)) {
+            if line.alignment == 3 && !line.isLast, let justified = CTLineCreateJustifiedLine(line.ctLine, 1.0, Double(lineAvailW)) {
                 CTLineDraw(justified, ctx)
             } else {
                 CTLineDraw(line.ctLine, ctx)
@@ -472,7 +473,8 @@ public enum CGElementDrawer {
                     leftIndent: firstIndent,
                     rightIndent: rightIndent,
                     before: max(0, para.before),
-                    after: max(0, para.after)
+                    after: max(0, para.after),
+                    isLast: true
                 ))
                 continue
             }
@@ -507,7 +509,8 @@ public enum CGElementDrawer {
                     leftIndent: leftInd,
                     rightIndent: rightIndent,
                     before: isFirst ? max(0, para.before) : 0,
-                    after: isLast ? max(0, para.after) : 0
+                    after: isLast ? max(0, para.after) : 0,
+                    isLast: isLast
                 ))
                 startIdx += count
                 lineIndex += 1
@@ -663,12 +666,15 @@ public enum CGElementDrawer {
             }
 
             let block = allBlocks[match.elementIndex]
+            let elW = block.width > 0 ? min(availW, block.width) : availW
             if block.type == .table && !block.rows.isEmpty {
                 guard let r = match.row, let c = match.column,
                       r >= 0, r < block.rows.count, c >= 0, c < block.rows[r].count else { return [] }
                 let cellParas = block.rows[r][c]
                 guard match.paragraphIndex >= 0 && match.paragraphIndex < cellParas.count else { return [] }
-                let geom = computeTableGeometry(element: block)
+                var tbl = block
+                tbl.width = elW
+                let geom = computeTableGeometry(element: tbl)
                 let cols = geom.cols
                 let colX = geom.colX
                 let rowTops = geom.rowTops
@@ -694,14 +700,30 @@ public enum CGElementDrawer {
                 )
             } else {
                 guard match.paragraphIndex >= 0 && match.paragraphIndex < block.paragraphs.count else { return [] }
-                let elW = block.width > 0 ? min(availW, block.width) : availW
-                let origin = CGPoint(x: marginX, y: curY)
+                var elH = block.height
+                if elH <= 0 {
+                    elH = measureParagraphsHeight(block.paragraphs, availableWidth: elW, wrap: true) + 8
+                }
+                let padding = max(0, block.padding)
+                let availBlockW = max(1, elW - padding * 2)
+                let totalH = measureParagraphsHeight(block.paragraphs, availableWidth: availBlockW, wrap: true)
+                var offsetY = padding
+                let remaining = max(0, elH - padding * 2 - totalH)
+                switch block.verticalAlignment {
+                case .center:
+                    offsetY += remaining / 2
+                case .bottom:
+                    offsetY += remaining
+                case .top:
+                    break
+                }
+                let origin = CGPoint(x: marginX + padding, y: curY + offsetY)
                 return charHighlightRects(
                     paragraphs: block.paragraphs,
                     targetParagraphIndex: match.paragraphIndex,
                     startChar: match.startChar,
                     endChar: match.endChar,
-                    availableWidth: elW,
+                    availableWidth: availBlockW,
                     wrap: true,
                     origin: origin
                 )
@@ -875,8 +897,15 @@ public enum CGElementDrawer {
                             lineX += lineAvailW - w
                         }
 
-                        let x1 = CTLineGetOffsetForStringIndex(ctLine, selStart - lineStart, nil)
-                        let x2 = CTLineGetOffsetForStringIndex(ctLine, selEnd - lineStart, nil)
+                        let effectiveLine: CTLine
+                        if para.alignment == 3 && !isLast, let justified = CTLineCreateJustifiedLine(ctLine, 1.0, Double(lineAvailW)) {
+                            effectiveLine = justified
+                        } else {
+                            effectiveLine = ctLine
+                        }
+
+                        let x1 = CTLineGetOffsetForStringIndex(effectiveLine, selStart - lineStart, nil)
+                        let x2 = CTLineGetOffsetForStringIndex(effectiveLine, selEnd - lineStart, nil)
                         let rect = CGRect(
                             x: lineX + min(x1, x2),
                             y: curY,

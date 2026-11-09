@@ -26,7 +26,16 @@ public final class OfficePreviewController: ObservableObject {
     @Published public internal(set) var zoom: CGFloat = 1.0
     @Published public internal(set) var metadata: OfficeMetadata?
 
-    @Published internal var document: OfficeDocument?
+    @Published internal var document: OfficeDocument? {
+        didSet {
+            if let doc = document, doc.kind == .docx {
+                docxBlockYOffsets = CGElementDrawer.computeDocxBlockYOffsets(in: doc)
+            } else {
+                docxBlockYOffsets = nil
+            }
+        }
+    }
+    private var docxBlockYOffsets: [CGFloat]?
     @Published internal var imageCache: [String: CGImage] = [:]
     @Published internal var isLoading: Bool = true
     @Published internal var errorMessage: String?
@@ -163,7 +172,11 @@ public final class OfficePreviewController: ObservableObject {
             selectSheet(match.pageIndex + 1)
         }
 
-        let rects = CGElementDrawer.computeHighlightRects(for: match, in: doc)
+        let rects = CGElementDrawer.computeHighlightRects(
+            for: match,
+            in: doc,
+            docxBlockYOffsets: docxBlockYOffsets
+        )
         if let first = rects.first {
             targetHighlightRect = rects.reduce(first) { $0.union($1) }
         } else {
@@ -621,18 +634,35 @@ private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
 
         // 绘制全文检索高亮（在文档未缩放坐标系下，由 ctx.scaleBy 统一放大）
         if !searchResults.isEmpty {
+            let docVisibleRect = CGRect(
+                x: visibleRect.minX / zoom,
+                y: visibleRect.minY / zoom,
+                width: visibleRect.width / zoom,
+                height: visibleRect.height / zoom
+            )
             ctx.saveGState()
             for (index, match) in searchResults.enumerated() {
                 if doc.kind == .xlsx && match.pageIndex != (currentPage - 1) {
                     continue
                 }
                 let isCurrent = (index == currentMatchIndex)
+                if !isCurrent {
+                    if doc.kind == .docx, let offsets = docxBlockYOffsets, match.elementIndex < offsets.count {
+                        let blockY = offsets[match.elementIndex]
+                        if blockY > docVisibleRect.maxY + 50 || blockY + 1200 < docVisibleRect.minY {
+                            continue
+                        }
+                    }
+                }
                 let rects = CGElementDrawer.computeHighlightRects(
                     for: match,
                     in: doc,
                     docxBlockYOffsets: docxBlockYOffsets
                 )
                 for r in rects {
+                    if !isCurrent && !r.intersects(docVisibleRect) {
+                        continue
+                    }
                     let path = CGPath(roundedRect: r, cornerWidth: 2, cornerHeight: 2, transform: nil)
                     if isCurrent {
                         ctx.setFillColor(CGColor(srgbRed: 1.0, green: 0.60, blue: 0.0, alpha: 0.75))

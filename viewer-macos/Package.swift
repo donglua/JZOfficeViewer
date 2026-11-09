@@ -4,14 +4,7 @@ import PackageDescription
 import Foundation
 
 var testSwiftSettings: [SwiftSetting] = []
-let cltTestingMacros = "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib"
-if FileManager.default.fileExists(atPath: cltTestingMacros) {
-    testSwiftSettings.append(.unsafeFlags([
-        "-Xfrontend", "-load-plugin-library",
-        "-Xfrontend", "\(cltTestingMacros)#TestingMacros"
-    ]))
-}
-
+// In modern Swift 6+, Swift Testing plugin is automatically discovered via toolchain.
 let package = Package(
     name: "JZOffice",
     platforms: [

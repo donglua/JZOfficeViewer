@@ -214,6 +214,50 @@ struct JZOfficeTests {
                 #expect(!pptxText.isEmpty)
             }
         }
+
+        // 7. 针对 PPTX 表格与两端对齐段落的文本空间索引与选区校验
+        let testPptxJson = """
+        {
+            "schemaVersion": 9,
+            "kind": "PPTX",
+            "width": 720,
+            "pages": [{
+                "width": 720,
+                "height": 405,
+                "elements": [
+                    {
+                        "type": "TABLE",
+                        "width": 300,
+                        "rows": [
+                            [[{"runs": [{"text": "PPTX表格文字1"}]}], [{"runs": [{"text": "PPTX表格文字2"}]}]]
+                        ]
+                    },
+                    {
+                        "type": "TEXT",
+                        "width": 120,
+                        "paragraphs": [
+                            {
+                                "alignment": 3,
+                                "runs": [{"text": "这是一个用于测试两端对齐排版以及末行不对齐行为的长文本测试段落。"}]
+                            }
+                        ]
+                    }
+                ]
+            }]
+        }
+        """.data(using: .utf8)!
+        let testPptxDoc = try JSONDecoder().decode(OfficeDocument.self, from: testPptxJson)
+        let testPptxLayout = DocumentTextLayout.build(from: testPptxDoc)
+        #expect(testPptxLayout.blocks.count >= 2)
+        #expect(testPptxLayout.blocks[0].fullText.contains("PPTX表格文字1"))
+        if let allSel = testPptxLayout.allTextRange() {
+            let rects = testPptxLayout.selectionRects(for: allSel)
+            #expect(!rects.isEmpty)
+            for r in rects {
+                #expect(r.width > 0)
+                #expect(r.height > 0)
+            }
+        }
     }
 
     @Test("NativeCore 全文检索接口支持 DOCX / PPTX / XLSX 并返回 UTF-16 偏移与摘要")

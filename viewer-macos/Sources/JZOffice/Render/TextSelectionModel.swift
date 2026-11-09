@@ -187,7 +187,6 @@ public final class DocumentTextLayout: @unchecked Sendable {
             for page in document.pages {
                 let pH = page.height > 0 ? page.height : 405
                 for el in page.elements {
-                    guard !el.paragraphs.isEmpty else { continue }
                     var positioned = el
                     if positioned.transform.count >= 6 {
                         var m = positioned.transform
@@ -196,9 +195,15 @@ public final class DocumentTextLayout: @unchecked Sendable {
                     } else {
                         positioned.y += curY
                     }
-                    if let layout = buildParagraphsBlock(element: positioned, blockIndex: blockIdx) {
-                        blocks.append(layout)
-                        blockIdx += 1
+                    if el.type == .table && !el.rows.isEmpty {
+                        let tableBlocks = buildTableBlocks(element: positioned, baseIndex: blockIdx)
+                        blocks.append(contentsOf: tableBlocks)
+                        blockIdx += tableBlocks.count
+                    } else if !positioned.paragraphs.isEmpty {
+                        if let layout = buildParagraphsBlock(element: positioned, blockIndex: blockIdx) {
+                            blocks.append(layout)
+                            blockIdx += 1
+                        }
                     }
                 }
                 curY += pH + 16
@@ -238,6 +243,7 @@ public final class DocumentTextLayout: @unchecked Sendable {
             let rightIndent: CGFloat
             let before: CGFloat
             let after: CGFloat
+            let isLast: Bool
             let localCharRange: NSRange
             let paraBaseOffset: Int
         }
@@ -289,6 +295,7 @@ public final class DocumentTextLayout: @unchecked Sendable {
                     rightIndent: rightIndent,
                     before: isFirst ? max(0, para.before) : 0,
                     after: isLast ? max(0, para.after) : 0,
+                    isLast: isLast,
                     localCharRange: NSRange(location: startIdx, length: count),
                     paraBaseOffset: paraBaseOffset
                 ))
@@ -328,15 +335,26 @@ public final class DocumentTextLayout: @unchecked Sendable {
             } else if raw.alignment == 2 {
                 lineX += lineAvailW - raw.width
             }
+
+            let effectiveLine: CTLine
+            let effectiveWidth: CGFloat
+            if raw.alignment == 3 && !raw.isLast, let justified = CTLineCreateJustifiedLine(raw.ctLine, 1.0, Double(lineAvailW)) {
+                effectiveLine = justified
+                effectiveWidth = lineAvailW
+            } else {
+                effectiveLine = raw.ctLine
+                effectiveWidth = raw.width
+            }
+
             let baselineY = curY + raw.ascent + max(0, (raw.height - (raw.ascent + raw.descent)) / 2.0)
-            let lineRect = CGRect(x: lineX, y: curY, width: max(1, raw.width), height: raw.height)
+            let lineRect = CGRect(x: lineX, y: curY, width: max(1, effectiveWidth), height: raw.height)
             let globalCharRange = NSRange(
                 location: raw.paraBaseOffset + raw.localCharRange.location,
                 length: raw.localCharRange.length
             )
 
             lines.append(TextLineLayout(
-                ctLine: raw.ctLine,
+                ctLine: effectiveLine,
                 rect: lineRect,
                 lineX: lineX,
                 baselineY: baselineY,
@@ -412,7 +430,7 @@ public final class DocumentTextLayout: @unchecked Sendable {
 
                 var dummyEl = element
                 dummyEl.paragraphs = cellParas
-                dummyEl.padding = 4
+                dummyEl.padding = 0
                 dummyEl.width = max(1, cellW - 10)
                 dummyEl.height = 0
                 dummyEl.transform = [1, 0, 0, 1, 0, 0]
