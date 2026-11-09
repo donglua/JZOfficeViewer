@@ -35,6 +35,8 @@ final class PptxTableChecks {
             bulletParagraphHighlightOffsets(context);
         });
         return "PASS PPTX table cell fills, transparent body cells and DOCX empty cellFills compatibility\n"
+            + "PASS DOCX merged table highlight skips covered cells\n"
+            + "PASS DOCX bullet paragraph search highlight offsets\n"
             + "SCREENSHOTS pptx-table-synthetic.png\n";
     }
 

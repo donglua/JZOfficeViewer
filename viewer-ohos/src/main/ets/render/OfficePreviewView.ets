@@ -609,7 +609,8 @@ struct DocxFlowView {
   // 使用普通属性替代 @Prop，避免对整棵文档 AST 进行深拷贝
   document: model.OfficeDocument | null = null;
   filePath: string = '';
-  searchMatches: model.SearchMatch[] = [];
+  // 检索结果与当前命中必须可观察，否则 LazyForEach 复用后子组件拿不到新值
+  @Prop searchMatches: model.SearchMatch[] = [];
   @Prop currentMatchIndex: number = -1;
   registerControls?: (
     jumpToPage: (pageNumber: number) => void,
@@ -722,6 +723,22 @@ struct DocxFlowView {
     this.syncSettledZoomPad();
   }
 
+  /** 当前命中的身份字符串，作为 @Prop 传给子组件以驱动高亮刷新 */
+  private currentMatchKey(): string {
+    const idx = this.currentMatchIndex;
+    if (idx < 0 || idx >= this.searchMatches.length) return '';
+    return searchMatchKey(this.searchMatches[idx]);
+  }
+
+  /** 取某个块上的命中；返回新数组，避免 @Prop 深拷贝共享引用 */
+  private matchesOfBlock(index: number): model.SearchMatch[] {
+    const result: model.SearchMatch[] = [];
+    for (const m of this.searchMatches) {
+      if (m.elementIndex === index) result.push(m);
+    }
+    return result;
+  }
+
   build() {
     if (this.document) {
       Stack() {
@@ -734,10 +751,8 @@ struct DocxFlowView {
                   if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
                     DocxTableView({
                       element: element,
-                      blockMatches: this.searchMatches ? this.searchMatches.filter(m => m.elementIndex === index) : [],
-                      currentMatch: (this.currentMatchIndex >= 0 && this.currentMatchIndex < this.searchMatches.length)
-                        ? this.searchMatches[this.currentMatchIndex]
-                        : null
+                      blockMatches: this.matchesOfBlock(index),
+                      currentMatchKey: this.currentMatchKey()
                     })
                   } else if (element.type === 'IMAGE') {
                     DocxImageView({ element: element, imageStore: this.imageStore })
@@ -746,10 +761,8 @@ struct DocxFlowView {
                   } else if (element.paragraphs && element.paragraphs.length > 0) {
                     DocxTextBlockView({
                       element: element,
-                      blockMatches: this.searchMatches ? this.searchMatches.filter(m => m.elementIndex === index) : [],
-                      currentMatch: (this.currentMatchIndex >= 0 && this.currentMatchIndex < this.searchMatches.length)
-                        ? this.searchMatches[this.currentMatchIndex]
-                        : null
+                      blockMatches: this.matchesOfBlock(index),
+                      currentMatchKey: this.currentMatchKey()
                     })
                   }
                 }
@@ -1159,10 +1172,19 @@ interface RunOverlap {
   isCur: boolean;
 }
 
+/**
+ * 搜索结果的身份字符串。ArkUI 的 @Prop 只能观察简单类型，普通属性在 LazyForEach 复用后
+ * 不会随父组件更新，因此用字符串承载「当前命中」驱动 DOCX 子组件刷新。
+ */
+export function searchMatchKey(match: model.SearchMatch | null): string {
+  if (!match) return '';
+  return `${match.pageIndex}|${match.elementIndex}|${match.paragraphIndex}|${match.row}|${match.column}|${match.startChar}|${match.endChar}`;
+}
+
 function buildHighlightedSpans(
   para: model.Paragraph,
   paraMatches: model.SearchMatch[] | undefined,
-  currentMatch: model.SearchMatch | null
+  currentMatchKey: string
 ): TextSpanItem[] {
   if (!para.runs || para.runs.length === 0) {
     return [];
@@ -1198,13 +1220,7 @@ function buildHighlightedSpans(
         const oStart = Math.max(0, m.startChar - runStart);
         const oEnd = Math.min(runLen, m.endChar - runStart);
         if (oEnd > oStart) {
-          const isCur = currentMatch !== null &&
-            currentMatch.pageIndex === m.pageIndex &&
-            currentMatch.elementIndex === m.elementIndex &&
-            currentMatch.paragraphIndex === m.paragraphIndex &&
-            currentMatch.row === m.row &&
-            currentMatch.column === m.column &&
-            currentMatch.startChar === m.startChar;
+          const isCur = currentMatchKey.length > 0 && searchMatchKey(m) === currentMatchKey;
           const overlap: RunOverlap = { start: oStart, end: oEnd, isCur: isCur };
           overlaps.push(overlap);
         }
@@ -1255,8 +1271,8 @@ function buildHighlightedSpans(
 @Component
 struct DocxParagraphView {
   para: model.Paragraph | null = null;
-  paraMatches: model.SearchMatch[] = [];
-  currentMatch: model.SearchMatch | null = null;
+  @Prop paraMatches: model.SearchMatch[] = [];
+  @Prop currentMatchKey: string = '';
 
   private calcLineHeight(): number | undefined {
     if (!this.para || !this.para.runs || this.para.runs.length === 0) return undefined;
@@ -1299,7 +1315,7 @@ struct DocxParagraphView {
             )
         }
         ForEach(
-          buildHighlightedSpans(this.para, this.paraMatches, this.currentMatch),
+          buildHighlightedSpans(this.para, this.paraMatches, this.currentMatchKey),
           (item: TextSpanItem, rIdx: number) => {
             Span(item.text)
               .fontSize(item.run.size || 14)
@@ -1358,8 +1374,8 @@ struct DocxParagraphView {
 @Component
 struct DocxTextBlockView {
   element: model.Element | null = null;
-  blockMatches: model.SearchMatch[] = [];
-  currentMatch: model.SearchMatch | null = null;
+  @Prop blockMatches: model.SearchMatch[] = [];
+  @Prop currentMatchKey: string = '';
   @State private reuseVersion: number = 0;
 
   aboutToReuse(params: Record<string, Object>): void {
@@ -1370,8 +1386,8 @@ struct DocxTextBlockView {
     if (params['blockMatches']) {
       this.blockMatches = params['blockMatches'] as model.SearchMatch[];
     }
-    if (params['currentMatch'] !== undefined) {
-      this.currentMatch = params['currentMatch'] as model.SearchMatch | null;
+    if (params['currentMatchKey'] !== undefined) {
+      this.currentMatchKey = params['currentMatchKey'] as string;
     }
   }
 
@@ -1384,10 +1400,11 @@ struct DocxTextBlockView {
             DocxParagraphView({
               para: para,
               paraMatches: this.blockMatches ? this.blockMatches.filter(m => m.paragraphIndex === pIdx) : [],
-              currentMatch: this.currentMatch
+              currentMatchKey: this.currentMatchKey
             })
           },
-          (_para: model.Paragraph, pIdx: number) => `p-${pIdx}-${this.reuseVersion}-${this.blockMatches.length}`
+          // key 带上当前命中，切换命中时仅重建受影响的段落
+          (_para: model.Paragraph, pIdx: number) => `p-${pIdx}-${this.reuseVersion}-${this.blockMatches.length}-${this.currentMatchKey.length > 0 ? 1 : 0}`
         )
       }
       .width('100%')
@@ -1400,8 +1417,9 @@ struct DocxTextBlockView {
 @Component
 struct DocxTableView {
   element: model.Element | null = null;
-  blockMatches: model.SearchMatch[] = [];
-  currentMatch: model.SearchMatch | null = null;
+  @Prop blockMatches: model.SearchMatch[] = [];
+  // Canvas 不会被 ArkUI 自动重绘，@Watch 保证「当前命中」变化时立即重画
+  @Prop @Watch('onCurrentMatchKeyChanged') currentMatchKey: string = '';
   @State private reuseVersion: number = 0;
   @State private measuredHeight: number = 60;
 
@@ -1413,6 +1431,10 @@ struct DocxTableView {
     this.updateHeight();
   }
 
+  onCurrentMatchKeyChanged(): void {
+    this.drawTable();
+  }
+
   aboutToReuse(params: Record<string, Object>): void {
     if (params['element']) {
       this.element = params['element'] as model.Element;
@@ -1420,8 +1442,8 @@ struct DocxTableView {
     if (params['blockMatches']) {
       this.blockMatches = params['blockMatches'] as model.SearchMatch[];
     }
-    if (params['currentMatch'] !== undefined) {
-      this.currentMatch = params['currentMatch'] as model.SearchMatch | null;
+    if (params['currentMatchKey'] !== undefined) {
+      this.currentMatchKey = params['currentMatchKey'] as string;
     }
     this.reuseVersion++;
     this.updateHeight();
@@ -1448,13 +1470,7 @@ struct DocxTableView {
     if (this.blockMatches && this.blockMatches.length > 0) {
       for (let mIdx = 0; mIdx < this.blockMatches.length; mIdx++) {
         const m = this.blockMatches[mIdx];
-        const isCurrent = this.currentMatch !== null &&
-          m.elementIndex === this.currentMatch.elementIndex &&
-          m.row === this.currentMatch.row &&
-          m.column === this.currentMatch.column &&
-          m.paragraphIndex === this.currentMatch.paragraphIndex &&
-          m.startChar === this.currentMatch.startChar &&
-          m.endChar === this.currentMatch.endChar;
+        const isCurrent = this.currentMatchKey.length > 0 && searchMatchKey(m) === this.currentMatchKey;
         const rects = CanvasElementDrawer.computeElementHighlightRects(ctx, this.element, m);
         for (let rIdx = 0; rIdx < rects.length; rIdx++) {
           const r = rects[rIdx];
