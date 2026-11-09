@@ -34,9 +34,10 @@ impl Styles {
                 &mut result.font,
                 defaults.child("rPrDefault").and_then(|n| n.child("rPr")),
             )?;
-            result
-                .paragraph
-                .apply(defaults.child("pPrDefault").and_then(|n| n.child("pPr")));
+            result.paragraph.apply(
+                defaults.child("pPrDefault").and_then(|n| n.child("pPr")),
+                result.font.run.size,
+            );
         }
         let mut count = 0;
         for node in root.children {
@@ -128,10 +129,13 @@ impl Styles {
             format.paragraph.before = 12.0;
         }
         for style in chain.iter().rev() {
-            format.apply(style.child("pPr"));
             format::font(&mut font, style.child("rPr"))?;
+            format.apply(style.child("pPr"), font.run.size);
         }
-        format.apply(properties);
+        if let Some(r_pr) = properties.and_then(|n| n.child("rPr")) {
+            format::font(&mut font, Some(r_pr))?;
+        }
+        format.apply(properties, font.run.size);
         if !format.number.is_empty() && format.number != "0" {
             format.paragraph.bullet = "\u{2022} ".to_owned();
             if !format.has_indent {

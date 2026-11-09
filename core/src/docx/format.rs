@@ -65,6 +65,19 @@ pub(super) fn points(value: &str, fallback: f32) -> f32 {
         .map_or(fallback, |n| (n / 20.0).clamp(0.0, MAX_COORDINATE))
 }
 
+pub(super) fn char_points(value: &str, font_size: f32, fallback: f32) -> f32 {
+    let em = if font_size > 0.0 && font_size.is_finite() {
+        font_size
+    } else {
+        12.0
+    };
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|n| n.is_finite())
+        .map_or(fallback, |n| (n / 100.0 * em).clamp(0.0, MAX_COORDINATE))
+}
+
 pub(super) fn font(font: &mut Font, properties: Option<&Node>) -> Result<()> {
     let Some(properties) = properties else {
         return Ok(());
@@ -150,7 +163,7 @@ impl ParagraphFormat {
         }
     }
 
-    pub fn apply(&mut self, properties: Option<&Node>) {
+    pub fn apply(&mut self, properties: Option<&Node>, font_size: f32) {
         let Some(properties) = properties else {
             return;
         };
@@ -185,26 +198,60 @@ impl ParagraphFormat {
                     }
                 }
                 "ind" => {
-                    let left = if node.attr("start").is_empty() {
-                        node.attr("left")
+                    let left_chars = if node.attr("startChars").is_empty() {
+                        node.attr("leftChars")
                     } else {
-                        node.attr("start")
+                        node.attr("startChars")
                     };
-                    if !left.is_empty() {
-                        self.paragraph.indent = points(left, self.paragraph.indent);
+                    if !left_chars.is_empty() {
+                        self.paragraph.indent =
+                            char_points(left_chars, font_size, self.paragraph.indent);
                         self.has_indent = true;
-                    }
-                    let right = if node.attr("end").is_empty() {
-                        node.attr("right")
                     } else {
-                        node.attr("end")
-                    };
-                    if !right.is_empty() {
-                        self.paragraph.right_indent = points(right, self.paragraph.right_indent);
+                        let left = if node.attr("start").is_empty() {
+                            node.attr("left")
+                        } else {
+                            node.attr("start")
+                        };
+                        if !left.is_empty() {
+                            self.paragraph.indent = points(left, self.paragraph.indent);
+                            self.has_indent = true;
+                        }
                     }
-                    if !node.attr("hanging").is_empty() {
+                    let right_chars = if node.attr("endChars").is_empty() {
+                        node.attr("rightChars")
+                    } else {
+                        node.attr("endChars")
+                    };
+                    if !right_chars.is_empty() {
+                        self.paragraph.right_indent =
+                            char_points(right_chars, font_size, self.paragraph.right_indent);
+                    } else {
+                        let right = if node.attr("end").is_empty() {
+                            node.attr("right")
+                        } else {
+                            node.attr("end")
+                        };
+                        if !right.is_empty() {
+                            self.paragraph.right_indent =
+                                points(right, self.paragraph.right_indent);
+                        }
+                    }
+                    if !node.attr("hangingChars").is_empty() {
+                        self.paragraph.first_line_indent = -char_points(
+                            node.attr("hangingChars"),
+                            font_size,
+                            -self.paragraph.first_line_indent,
+                        );
+                    } else if !node.attr("hanging").is_empty() {
                         self.paragraph.first_line_indent =
                             -points(node.attr("hanging"), -self.paragraph.first_line_indent);
+                    } else if !node.attr("firstLineChars").is_empty() {
+                        self.paragraph.first_line_indent = char_points(
+                            node.attr("firstLineChars"),
+                            font_size,
+                            self.paragraph.first_line_indent,
+                        );
                     } else if !node.attr("firstLine").is_empty() {
                         self.paragraph.first_line_indent =
                             points(node.attr("firstLine"), self.paragraph.first_line_indent);

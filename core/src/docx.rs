@@ -275,20 +275,6 @@ fn inspect(node: &Node, document: &mut Document) {
         {
             Some("Line-count paragraph spacing uses the viewer's default spacing.")
         }
-        "ind"
-            if [
-                "leftChars",
-                "rightChars",
-                "startChars",
-                "endChars",
-                "firstLineChars",
-                "hangingChars",
-            ]
-            .iter()
-            .any(|key| !node.attr(key).is_empty()) =>
-        {
-            Some("Character-unit paragraph indents use inherited point indents.")
-        }
         "pageBreakBefore" if format::enabled(node.attr("val")) => {
             Some("Paragraph page breaks are ignored in continuous flow.")
         }

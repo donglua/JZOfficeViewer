@@ -183,10 +183,10 @@ fn clamps_invalid_docx_spacing_and_indents_without_nan() -> TestResult {
 }
 
 #[test]
-fn warns_for_unsupported_line_count_spacing_and_character_indents() -> TestResult {
+fn warns_for_unsupported_line_count_spacing() -> TestResult {
     let body = text_paragraph(
         "unsupported units",
-        r#"<w:spacing w:beforeLines="100" w:afterLines="200"/><w:ind w:firstLineChars="200" w:hangingChars="100" w:startChars="200" w:endChars="100"/>"#,
+        r#"<w:spacing w:beforeLines="100" w:afterLines="200"/>"#,
     );
     let parts = layout_parts(&body, "");
 
@@ -195,10 +195,36 @@ fn warns_for_unsupported_line_count_spacing_and_character_indents() -> TestResul
     assert!(document.warnings.iter().any(
         |warning| warning == "Line-count paragraph spacing uses the viewer's default spacing."
     ));
-    assert!(document
+    Ok(())
+}
+
+#[test]
+fn character_unit_paragraph_indents_are_supported() -> TestResult {
+    let body = text_paragraph(
+        "character indents",
+        r#"<w:ind w:firstLineChars="200" w:startChars="150" w:endChars="100"/>"#,
+    );
+    let parts = layout_parts(&body, "");
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let paragraph = &document.blocks[0].paragraphs[0];
+    checks::near(paragraph.first_line_indent, 24.0);
+    checks::near(paragraph.indent, 18.0);
+    checks::near(paragraph.right_indent, 12.0);
+    assert!(!document
         .warnings
         .iter()
-        .any(|warning| warning == "Character-unit paragraph indents use inherited point indents."));
+        .any(|warning| warning.contains("Character-unit")));
+
+    let hanging_body = text_paragraph(
+        "hanging character indents",
+        r#"<w:ind w:hangingChars="100" w:leftChars="200" w:rightChars="50"/>"#,
+    );
+    let hanging_parts = layout_parts(&hanging_body, "");
+    let hanging_doc = parse_reader(Cursor::new(archive(&hanging_parts)?))?;
+    let hanging_paragraph = &hanging_doc.blocks[0].paragraphs[0];
+    checks::near(hanging_paragraph.first_line_indent, -12.0);
+    checks::near(hanging_paragraph.indent, 24.0);
+    checks::near(hanging_paragraph.right_indent, 6.0);
     Ok(())
 }
 
