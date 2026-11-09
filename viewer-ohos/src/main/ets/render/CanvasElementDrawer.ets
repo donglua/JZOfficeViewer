@@ -861,6 +861,9 @@ export class CanvasElementDrawer {
       const rowTops = geom.rowTops;
 
       const m = CanvasElementDrawer.findMerge(element.merges, targetR, targetC);
+      if (m && (m.startRow !== targetR || m.startColumn !== targetC)) {
+        return [];
+      }
       const anchorR = m ? m.startRow : targetR;
       const anchorC = m ? m.startColumn : targetC;
       const x1 = colX[anchorC];
