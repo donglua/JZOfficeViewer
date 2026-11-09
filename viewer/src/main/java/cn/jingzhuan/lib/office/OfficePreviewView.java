@@ -717,15 +717,16 @@ public final class OfficePreviewView extends View {
         canvas.save(); canvas.translate(left() - offsetX, top() - offsetY); canvas.scale(scale(), scale());
         float visibleTop = (offsetY - top()) / scale(), visibleBottom = visibleTop + getHeight() / scale();
         float visibleLeft = (offsetX - left()) / scale();
+        float visibleRight = visibleLeft + getWidth() / scale();
         if (isSpreadsheet()) {
-            sheetViewport.set(visibleLeft, visibleTop, visibleLeft + getWidth() / scale(), visibleBottom);
+            sheetViewport.set(visibleLeft, visibleTop, visibleRight, visibleBottom);
             sheetRenderer.draw(canvas, sheetViewport);
         } else {
-            images.request(renderer.visibleImages(visibleLeft, visibleTop, visibleLeft + getWidth() / scale(), visibleBottom, currentPage - 1));
+            images.request(renderer.visibleImages(visibleLeft, visibleTop, visibleRight, visibleBottom, currentPage - 1));
             renderer.draw(canvas, visibleTop, visibleBottom, images.bitmaps);
         }
         if (!searchMatches.isEmpty()) {
-            drawSearchHighlights(canvas);
+            drawSearchHighlights(canvas, visibleLeft, visibleTop, visibleRight, visibleBottom);
         }
         canvas.restore();
     }
@@ -1079,30 +1080,60 @@ public final class OfficePreviewView extends View {
         return rects;
     }
 
-    private void drawSearchHighlights(Canvas canvas) {
-        if (searchMatches.isEmpty()) return;
+    private void drawSearchHighlights(Canvas canvas, float visibleLeft, float visibleTop, float visibleRight, float visibleBottom) {
+        if (searchMatches.isEmpty() || document == null) return;
         highlightPaint.setStyle(Paint.Style.FILL);
         highlightStrokePaint.setStyle(Paint.Style.STROKE);
         highlightStrokePaint.setColor(0xffe65100);
         highlightStrokePaint.setStrokeWidth(1.5f / scale());
 
-        for (int i = 0; i < searchMatches.size(); i++) {
-            SearchMatch match = searchMatches.get(i);
-            if (isSpreadsheet() && match.pageIndex != (currentPage - 1)) {
-                continue;
-            }
-            boolean isCurrent = (i == currentMatchIndex);
-            List<RectF> rects = computeHighlightRects(match);
-            for (int r = 0; r < rects.size(); r++) {
-                RectF rect = rects.get(r);
-                if (isCurrent) {
-                    highlightPaint.setColor(0xbfFFA000);
-                    canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
-                    canvas.drawRoundRect(rect, 2f, 2f, highlightStrokePaint);
-                } else {
-                    highlightPaint.setColor(0x73FFEB3B);
-                    canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
+        boolean isSheet = isSpreadsheet();
+        if (isSheet) {
+            float bodyLeft = Math.max(SheetRenderer.HEADER_WIDTH, visibleLeft + SheetRenderer.HEADER_WIDTH);
+            float bodyTop = Math.max(SheetRenderer.HEADER_HEIGHT, visibleTop + SheetRenderer.HEADER_HEIGHT);
+            float bodyRight = Math.min(sheetRenderer.width, visibleRight);
+            float bodyBottom = Math.min(sheetRenderer.height, visibleBottom);
+            if (bodyRight <= bodyLeft || bodyBottom <= bodyTop) return;
+            canvas.save();
+            canvas.clipRect(bodyLeft, bodyTop, bodyRight, bodyBottom);
+        }
+
+        try {
+            for (int i = 0; i < searchMatches.size(); i++) {
+                SearchMatch match = searchMatches.get(i);
+                if (isSheet) {
+                    if (match.pageIndex != (currentPage - 1)) continue;
+                } else if (document.kind == OfficeDocument.Kind.PPTX) {
+                    if (match.pageIndex < 0 || match.pageIndex >= renderer.pages.size()) continue;
+                    OfficeRenderer.Page page = renderer.pages.get(match.pageIndex);
+                    if (page.y + page.height < visibleTop - 20 || page.y > visibleBottom + 20) continue;
+                } else if (document.kind == OfficeDocument.Kind.DOCX) {
+                    if (!renderer.pages.isEmpty()) {
+                        OfficeRenderer.Page page = renderer.pages.get(0);
+                        if (match.elementIndex >= 0 && match.elementIndex < page.elements.size()) {
+                            OfficeRenderer.Element d = page.elements.get(match.elementIndex);
+                            if (d.bounds.bottom < visibleTop - 20 || d.bounds.top > visibleBottom + 20) continue;
+                        }
+                    }
                 }
+
+                boolean isCurrent = (i == currentMatchIndex);
+                List<RectF> rects = computeHighlightRects(match);
+                for (int r = 0; r < rects.size(); r++) {
+                    RectF rect = rects.get(r);
+                    if (isCurrent) {
+                        highlightPaint.setColor(0xbfFFA000);
+                        canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
+                        canvas.drawRoundRect(rect, 2f, 2f, highlightStrokePaint);
+                    } else {
+                        highlightPaint.setColor(0x73FFEB3B);
+                        canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
+                    }
+                }
+            }
+        } finally {
+            if (isSheet) {
+                canvas.restore();
             }
         }
     }
