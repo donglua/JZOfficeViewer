@@ -104,15 +104,19 @@ impl Numbering {
         for lvl_idx in 1..=9 {
             let placeholder = format!("%{lvl_idx}");
             if result.contains(&placeholder) {
-                let val = if lvl_idx - 1 == ilvl {
+                let target_ilvl = (lvl_idx - 1) as u8;
+                let val = if target_ilvl == ilvl {
                     current_val
                 } else {
                     self.counters
-                        .get(&(num_id.to_owned(), lvl_idx - 1))
+                        .get(&(num_id.to_owned(), target_ilvl))
                         .copied()
                         .unwrap_or(1)
                 };
-                let formatted = crate::numbering::format_num(val, &level_def.num_fmt);
+                let num_fmt = levels
+                    .get(&target_ilvl)
+                    .map_or(level_def.num_fmt.as_str(), |d| d.num_fmt.as_str());
+                let formatted = crate::numbering::format_num(val, num_fmt);
                 result = result.replace(&placeholder, &formatted);
             }
         }
