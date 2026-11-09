@@ -14,6 +14,7 @@ pub(super) struct Styles {
     paragraph: ParagraphFormat,
     default_paragraph: String,
     pub default_character: String,
+    pub theme_fonts: super::theme::ThemeFonts,
 }
 
 impl Styles {
@@ -25,6 +26,13 @@ impl Styles {
             )
         });
         let mut result = Self::default();
+        let theme_part = package.related_by_type(main, "theme")?;
+        let theme_root = if let Some(path) = theme_part {
+            package.optional_xml(&path)?
+        } else {
+            None
+        };
+        result.theme_fonts = super::theme::ThemeFonts::parse(theme_root.as_ref());
         let Some(root) = package.optional_xml(&part)? else {
             return Ok(result);
         };
@@ -33,6 +41,7 @@ impl Styles {
             format::font(
                 &mut result.font,
                 defaults.child("rPrDefault").and_then(|n| n.child("rPr")),
+                Some(&result.theme_fonts),
             )?;
             result.paragraph.apply(
                 defaults.child("pPrDefault").and_then(|n| n.child("pPr")),
@@ -134,11 +143,11 @@ impl Styles {
             format.paragraph.before = 12.0;
         }
         for style in chain.iter().rev() {
-            format::font(&mut font, style.child("rPr"))?;
+            format::font(&mut font, style.child("rPr"), Some(&self.theme_fonts))?;
             format.apply(style.child("pPr"), font.run.size);
         }
         if let Some(r_pr) = properties.and_then(|n| n.child("rPr")) {
-            format::font(&mut font, Some(r_pr))?;
+            format::font(&mut font, Some(r_pr), Some(&self.theme_fonts))?;
         }
         format.apply(properties, font.run.size);
         if !format.number.is_empty() && format.number != "0" {

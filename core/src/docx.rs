@@ -5,6 +5,7 @@ mod paragraphs;
 mod section;
 mod styles;
 mod tables;
+pub(super) mod theme;
 
 use crate::model::{Document, Element, Kind};
 use crate::xml::{self, Node};

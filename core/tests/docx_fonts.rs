@@ -273,6 +273,41 @@ fn omits_font_when_no_names_are_saved() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn resolves_theme_font_when_theme_xml_is_present() -> TestResult {
+    let mut parts = docx::parts();
+    package::replace(
+        &mut parts,
+        "word/document.xml",
+        r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:r><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:eastAsiaTheme="minorEastAsia" w:cstheme="minorBidi"/></w:rPr><w:t>Themed text</w:t></w:r></w:p>
+</w:body></w:document>"#,
+    );
+    let theme_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">
+  <a:themeElements>
+    <a:fontScheme name="Office">
+      <a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface="DengXian Light"/><a:cs typeface="Times New Roman"/></a:majorFont>
+      <a:minorFont><a:latin typeface="Calibri"/><a:ea typeface="Calibri"/><a:cs typeface="Calibri"/></a:minorFont>
+    </a:fontScheme>
+  </a:themeElements>
+</a:theme>"#;
+    parts.push(package::xml("word/theme/theme1.xml", theme_xml));
+    package::replace(
+        &mut parts,
+        "word/_rels/document.xml.rels",
+        &package::relationships(&[
+            ("rStyles", "styles", "styles.xml"),
+            ("rTheme", "theme", "theme/theme1.xml"),
+        ]),
+    );
+    let doc = parse_reader(Cursor::new(package::archive(&parts)?))?;
+    let run = &doc.blocks[0].paragraphs[0].runs[0];
+    assert_eq!(run.font_face, "Calibri");
+    assert!(!doc.warnings.iter().any(|w| w.contains("Theme fonts")));
+    Ok(())
+}
+
 fn families(face: &str) -> String {
     format!(r#"<w:rFonts w:ascii="{face}" w:hAnsi="{face}" w:eastAsia="{face}" w:cs="{face}"/>"#)
 }

@@ -78,7 +78,11 @@ pub(super) fn char_points(value: &str, font_size: f32, fallback: f32) -> f32 {
         .map_or(fallback, |n| (n / 100.0 * em).clamp(0.0, MAX_COORDINATE))
 }
 
-pub(super) fn font(font: &mut Font, properties: Option<&Node>) -> Result<()> {
+pub(super) fn font(
+    font: &mut Font,
+    properties: Option<&Node>,
+    theme_fonts: Option<&super::theme::ThemeFonts>,
+) -> Result<()> {
     let Some(properties) = properties else {
         return Ok(());
     };
@@ -98,7 +102,17 @@ pub(super) fn font(font: &mut Font, properties: Option<&Node>) -> Result<()> {
                 .zip(&mut font.families)
                 {
                     if !node.attr(theme).trim().is_empty() {
-                        *family = FontFamily::Theme;
+                        let theme_key = node.attr(theme).trim();
+                        if let Some(resolved) = theme_fonts.and_then(|tf| tf.get(theme_key)) {
+                            if resolved.len() > 256 {
+                                return Err(Error::Limit(
+                                    "DOCX font family name exceeds 256 bytes",
+                                ));
+                            }
+                            *family = FontFamily::Explicit(resolved.to_owned());
+                        } else {
+                            *family = FontFamily::Theme;
+                        }
                     } else if !node.attr(name).trim().is_empty() {
                         let face = node.attr(name).trim();
                         if face.len() > 256 {

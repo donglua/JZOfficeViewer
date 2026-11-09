@@ -27,7 +27,11 @@ impl Parser<'_> {
         self.inline(node, &font, &mut flow)?;
         if flow.elements.is_empty() && flow.current.runs.is_empty() {
             let mut mark = font;
-            format::font(&mut mark, node.child("pPr").and_then(|n| n.child("rPr")))?;
+            format::font(
+                &mut mark,
+                node.child("pPr").and_then(|n| n.child("rPr")),
+                Some(&self.styles.theme_fonts),
+            )?;
             flow.text(mark.run("", &mut self.document))?;
         }
         if !flow.current.runs.is_empty() || flow.elements.is_empty() {
@@ -47,9 +51,13 @@ impl Parser<'_> {
                         .and_then(|n| n.child("rStyle"))
                         .map_or(self.styles.default_character.as_str(), |n| n.attr("val"));
                     for style in self.styles.chain(id, &mut self.document).iter().rev() {
-                        format::font(&mut font, style.child("rPr"))?;
+                        format::font(
+                            &mut font,
+                            style.child("rPr"),
+                            Some(&self.styles.theme_fonts),
+                        )?;
                     }
-                    format::font(&mut font, properties)?;
+                    format::font(&mut font, properties, Some(&self.styles.theme_fonts))?;
                     if font.hidden {
                         continue;
                     }
