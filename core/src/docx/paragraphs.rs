@@ -5,7 +5,9 @@ use crate::{Error, Result};
 
 impl Parser<'_> {
     pub(super) fn paragraph(&mut self, node: &Node, in_cell: bool) -> Result<Vec<Element>> {
-        let (paragraph, font) = self.styles.paragraph(node, &mut self.document)?;
+        let (paragraph, font) =
+            self.styles
+                .paragraph(node, &mut self.numbering, &mut self.document)?;
         let mut flow = Flow {
             current: paragraph.clone(),
             template: paragraph,

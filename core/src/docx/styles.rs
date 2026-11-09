@@ -89,7 +89,12 @@ impl Styles {
         chain
     }
 
-    pub fn paragraph(&self, node: &Node, document: &mut Document) -> Result<(Paragraph, Font)> {
+    pub fn paragraph(
+        &self,
+        node: &Node,
+        numbering: &mut super::numbering::Numbering,
+        document: &mut Document,
+    ) -> Result<(Paragraph, Font)> {
         let mut format = self.paragraph.clone();
         let mut font = self.font.clone();
         let properties = node.child("pPr");
@@ -137,13 +142,10 @@ impl Styles {
         }
         format.apply(properties, font.run.size);
         if !format.number.is_empty() && format.number != "0" {
-            format.paragraph.bullet = "\u{2022} ".to_owned();
+            format.paragraph.bullet = numbering.bullet(&format.number, format.level);
             if !format.has_indent {
                 format.paragraph.indent = 18.0 * (f32::from(format.level) + 1.0);
             }
-            document.warn(
-                "Numbering uses fallback bullets; number formats and restarts are not preserved.",
-            );
         }
         Ok((format.paragraph, font))
     }

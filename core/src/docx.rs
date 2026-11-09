@@ -1,5 +1,6 @@
 mod drawings;
 mod format;
+pub(super) mod numbering;
 mod paragraphs;
 mod section;
 mod styles;
@@ -8,6 +9,7 @@ mod tables;
 use crate::model::{Document, Element, Kind};
 use crate::xml::{self, Node};
 use crate::{Error, Package, Result};
+use numbering::Numbering;
 use std::collections::HashMap;
 use styles::Styles;
 
@@ -71,11 +73,19 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
     inspect(body, &mut document);
     let relationships = package.relationships(main_part)?;
     let styles = Styles::load(package, main_part, &mut document)?;
+    let numbering_part = package.related_by_type(main_part, "numbering")?;
+    let numbering_root = if let Some(path) = numbering_part {
+        package.optional_xml(&path)?
+    } else {
+        None
+    };
+    let numbering = Numbering::parse(numbering_root.as_ref());
     let mut parser = Parser {
         package,
         document,
         relationships,
         styles,
+        numbering,
         cells: 0,
         text_bytes: 0,
         block_limit: FLOW_LIMIT,
@@ -94,6 +104,7 @@ struct Parser<'a> {
     document: Document,
     relationships: HashMap<String, String>,
     styles: Styles,
+    pub(super) numbering: Numbering,
     cells: usize,
     text_bytes: usize,
     block_limit: BlockLimit,

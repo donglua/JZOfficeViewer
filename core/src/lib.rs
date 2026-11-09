@@ -1,5 +1,6 @@
 mod docx;
 pub mod model;
+pub(crate) mod numbering;
 mod package;
 mod package_cache;
 mod pptx;
