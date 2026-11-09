@@ -145,6 +145,65 @@ struct JZOfficeTests {
         #expect(pngData.count > 256)
     }
 
+    @Test("DocumentTextLayout 空间索引、命中测试与选区计算")
+    func documentTextLayoutAndSelection() throws {
+        let docxURL = samplePath("sample.docx")
+        guard FileManager.default.fileExists(atPath: docxURL.path) else { return }
+
+        let doc = try NativeCore.parseDocument(at: docxURL.path)
+        let layout = DocumentTextLayout.build(from: doc)
+        #expect(!layout.blocks.isEmpty)
+
+        // 验证至少有一个 block 包含有效行与文本
+        guard let firstBlock = layout.blocks.first(where: { !$0.lines.isEmpty && !$0.fullText.isEmpty }) else {
+            Issue.record("未在 sample.docx 中解析出任何文本块")
+            return
+        }
+        #expect(!firstBlock.fullText.isEmpty)
+
+        // 1. 命中测试：取第一行的中心点
+        let firstLine = firstBlock.lines[0]
+        let hitPoint = CGPoint(
+            x: firstBlock.bounds.minX + firstLine.rect.midX,
+            y: firstBlock.bounds.minY + firstLine.rect.midY
+        )
+        let hitPos = layout.hitTest(docPoint: hitPoint)
+        #expect(hitPos != nil)
+        #expect(hitPos?.blockIndex == firstBlock.blockIndex)
+
+        // 2. 选区与文本提取：选取该 block 的前几个字符
+        let selEndChar = min(5, (firstBlock.fullText as NSString).length)
+        let sel = TextSelection(
+            anchor: TextPosition(blockIndex: firstBlock.blockIndex, charIndex: 0),
+            focus: TextPosition(blockIndex: firstBlock.blockIndex, charIndex: selEndChar)
+        )
+        #expect(!sel.isEmpty)
+        let extracted = layout.selectedText(for: sel)
+        #expect(!extracted.isEmpty)
+        #expect(extracted.count <= selEndChar)
+
+        // 3. 高亮矩形计算
+        let rects = layout.selectionRects(for: sel)
+        #expect(!rects.isEmpty)
+        for r in rects {
+            #expect(r.width > 0)
+            #expect(r.height > 0)
+        }
+
+        // 4. 双击选词
+        if let wordSel = layout.wordRange(at: TextPosition(blockIndex: firstBlock.blockIndex, charIndex: 0)) {
+            #expect(!wordSel.isEmpty)
+            #expect(wordSel.start.charIndex <= wordSel.end.charIndex)
+        }
+
+        // 5. 全选
+        if let allSel = layout.allTextRange() {
+            #expect(!allSel.isEmpty)
+            let allText = layout.selectedText(for: allSel)
+            #expect(!allText.isEmpty)
+        }
+    }
+
     private func hasNonWhitePixel(_ image: CGImage) -> Bool {
         let w = image.width
         let h = image.height

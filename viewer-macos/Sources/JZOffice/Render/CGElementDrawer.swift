@@ -250,7 +250,7 @@ public enum CGElementDrawer {
         return totalY
     }
 
-    private static func resolveColumnWidths(element: OfficeElement, cols: Int) -> [CGFloat] {
+    public static func resolveColumnWidths(element: OfficeElement, cols: Int) -> [CGFloat] {
         let raw = element.columnWidths
         let totalWeight = raw.reduce(0) { $0 + max(1, $1) }
         let tableW = element.width > 0 ? element.width : 500
@@ -477,7 +477,7 @@ public enum CGElementDrawer {
         return result
     }
 
-    private static func buildAttributedString(for para: OfficeParagraph) -> NSMutableAttributedString {
+    public static func buildAttributedString(for para: OfficeParagraph) -> NSMutableAttributedString {
         let attr = NSMutableAttributedString()
         var allRuns: [OfficeRun] = []
         if !para.bullet.isEmpty {
@@ -541,7 +541,7 @@ public enum CGElementDrawer {
         return resolved
     }
 
-    private static func computeLineHeight(para: OfficeParagraph, naturalHeight: CGFloat) -> CGFloat {
+    public static func computeLineHeight(para: OfficeParagraph, naturalHeight: CGFloat) -> CGFloat {
         switch para.lineSpacingRule {
         case .exact:
             return max(1, para.lineSpacing > 0 ? para.lineSpacing : naturalHeight)
