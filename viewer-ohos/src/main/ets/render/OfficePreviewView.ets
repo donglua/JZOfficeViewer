@@ -1582,8 +1582,8 @@ function buildSlideAccessibilityLabel(page: model.Page | null, slideNumber: numb
 struct PptxSlidesView {
   document: model.OfficeDocument | null = null;
   filePath: string = '';
-  searchMatches: model.SearchMatch[] = [];
-  @Prop currentMatchIndex: number = -1;
+  @Prop @Watch('onSearchChanged') searchMatches: model.SearchMatch[] = [];
+  @Prop @Watch('onSearchChanged') currentMatchIndex: number = -1;
   onSlideChange?: (pageNumber: number, pageCount: number) => void;
   registerControls?: (
     jumpToPage: (pageNumber: number) => void,
@@ -1645,6 +1645,12 @@ struct PptxSlidesView {
   private redrawTimer: number = -1;
   private readonly loadingParts: Set<string> = new Set();
   private loadGeneration: number = 0;
+
+  private onSearchChanged(): void {
+    if (this.isReady) {
+      this.redraw();
+    }
+  }
 
   aboutToAppear(): void {
     this.isDisappeared = false;

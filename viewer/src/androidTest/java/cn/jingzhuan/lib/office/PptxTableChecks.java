@@ -28,6 +28,7 @@ final class PptxTableChecks {
     static String run(OfficeInstrumentation instrumentation) throws Exception {
         Context context = instrumentation.getTargetContext();
         decoderCellFills(context);
+        xlsxSearchAndHighlightRetainsFile(context);
         instrumentation.runOnMainChecked(() -> {
             capturePptx(context);
             emptyDocxCellFillsStayTransparent();
@@ -37,6 +38,7 @@ final class PptxTableChecks {
         return "PASS PPTX table cell fills, transparent body cells and DOCX empty cellFills compatibility\n"
             + "PASS DOCX merged table highlight skips covered cells\n"
             + "PASS DOCX bullet paragraph search highlight offsets\n"
+            + "PASS XLSX search and highlight retains cache file\n"
             + "SCREENSHOTS pptx-table-synthetic.png\n";
     }
 
@@ -362,6 +364,58 @@ final class PptxTableChecks {
         check(!bulletRects.isEmpty(), "Highlight rects for bullet text should not be empty");
         check(bulletRects.get(0).right <= hiRects.get(0).left + 1f,
             "Bullet highlight should precede run text highlight horizontally");
+    }
+
+    private static void xlsxSearchAndHighlightRetainsFile(Context context) throws Exception {
+        File cacheDir = context.getCacheDir();
+        File sampleFile = new File(cacheDir, "test_search.xlsx");
+        try (java.io.InputStream in = context.getAssets().open("sample.xlsx");
+             FileOutputStream out = new FileOutputStream(sampleFile)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+        }
+        check(sampleFile.exists() && sampleFile.length() > 0, "sampleFile should exist and be non-empty, len=" + sampleFile.length());
+        final OfficePreviewView[] previewHolder = new OfficePreviewView[1];
+        final java.util.concurrent.CountDownLatch loadLatch = new java.util.concurrent.CountDownLatch(1);
+        final Throwable[] loadErr = new Throwable[1];
+        final Throwable[] searchErr = new Throwable[1];
+        final android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+        mainHandler.post(() -> {
+            OfficePreviewView preview = new OfficePreviewView(context);
+            previewHolder[0] = preview;
+            preview.open(Uri.fromFile(sampleFile), new OfficePreviewView.Listener() {
+                @Override public void onLoaded(OfficePreviewView.Info info) { loadLatch.countDown(); }
+                @Override public void onError(Exception error) {
+                    loadErr[0] = error;
+                    loadLatch.countDown();
+                }
+            });
+        });
+        check(loadLatch.await(5, java.util.concurrent.TimeUnit.SECONDS), "XLSX document should load within 5s");
+        if (loadErr[0] != null) throw new AssertionError("Load failed: " + loadErr[0].getMessage(), loadErr[0]);
+        final java.util.concurrent.CountDownLatch searchLatch = new java.util.concurrent.CountDownLatch(1);
+        final List<OfficePreviewView.SearchMatch>[] resultHolder = new List[1];
+        mainHandler.post(() -> {
+            previewHolder[0].search("Amount", new OfficePreviewView.SearchCallback() {
+                @Override public void onResult(List<OfficePreviewView.SearchMatch> matches) {
+                    resultHolder[0] = matches;
+                    searchLatch.countDown();
+                }
+                @Override public void onError(Exception error) {
+                    searchErr[0] = error;
+                    searchLatch.countDown();
+                }
+            });
+        });
+        check(searchLatch.await(5, java.util.concurrent.TimeUnit.SECONDS), "XLSX search should complete within 5s");
+        if (searchErr[0] != null) throw new AssertionError("Search failed: " + searchErr[0].getMessage(), searchErr[0]);
+        check(resultHolder[0] != null && !resultHolder[0].isEmpty(), "XLSX search should return matches for 'Amount'");
+        mainHandler.post(() -> {
+            check(previewHolder[0].getSearchMatches().size() == resultHolder[0].size(), "preview.getSearchMatches should match search results");
+            check(previewHolder[0].getCurrentMatchIndex() == 0, "Current match index should be 0");
+            previewHolder[0].clear();
+        });
     }
 
     private static List<OfficeDocument.Paragraph> makeParagraph(String text) {

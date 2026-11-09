@@ -255,8 +255,8 @@ interface CachedCellWrap {
 export struct SpreadsheetView {
   // 使用普通属性避免 @Prop 对大型电子表格 AST 结构进行递归深拷贝造成卡顿或属性丢失
   document: model.OfficeDocument | null = null;
-  searchMatches: model.SearchMatch[] = [];
-  currentMatchIndex: number = -1;
+  @Prop @Watch('onSearchChanged') searchMatches: model.SearchMatch[] = [];
+  @Prop @Watch('onSearchChanged') currentMatchIndex: number = -1;
   onSheetChange?: (sheetNumber: number, sheetCount: number) => void;
   registerControls?: (
     selectSheet: (sheetNumber: number) => void,
@@ -334,6 +334,12 @@ export struct SpreadsheetView {
     return `工作表 ${name}，第 ${this.currentSheetIndex + 1} 个，共 ${sheets.length} 个工作表，数据区域 ${rows} 行 × ${columns} 列`;
   }
 
+  private onSearchChanged(): void {
+    if (this.isReady) {
+      this.redraw();
+    }
+  }
+
   aboutToAppear(): void {
     this.currentSheetIndex = 0;
     this.offsetX = 0;
@@ -364,8 +370,9 @@ export struct SpreadsheetView {
     if (match.pageIndex !== this.currentSheetIndex) {
       this.switchSheet(match.pageIndex);
     }
-    const layout = this.cachedLayout;
-    if (!layout) return;
+    const sheet = this.document?.sheets?.[this.currentSheetIndex];
+    if (!sheet) return;
+    const layout = this.ensureSheetLayout(sheet);
     const r = match.row !== undefined && match.row >= 0 ? match.row : 0;
     const c = match.column !== undefined && match.column >= 0 ? match.column : 0;
     let unscaledX = 0;

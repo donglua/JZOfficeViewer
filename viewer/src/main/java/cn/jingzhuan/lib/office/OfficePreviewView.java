@@ -130,6 +130,7 @@ public final class OfficePreviewView extends View {
     private int generation;
     private OfficeDocument document;
     private OfficeImages images;
+    private OfficePackage spreadsheetPackage;
     private final OfficeRenderer renderer = new OfficeRenderer();
     private final SheetRenderer sheetRenderer = new SheetRenderer();
     private final RectF sheetViewport = new RectF();
@@ -238,8 +239,6 @@ public final class OfficePreviewView extends View {
                 final SheetLayout preparedSheet;
                 final OfficeRenderer preparedRenderer;
                 if (loaded.kind == OfficeDocument.Kind.XLSX) {
-                    closePackage(opened);
-                    opened = null;
                     preparedSheet = new SheetLayout(loaded.sheets.get(0), SheetRenderer.HEADER_WIDTH, SheetRenderer.HEADER_HEIGHT);
                     preparedRenderer = null;
                 } else {
@@ -255,6 +254,8 @@ public final class OfficePreviewView extends View {
                     clearSearch();
                     document = loaded; status = ""; currentPage = 1;
                     if (isSpreadsheet()) {
+                        releaseSpreadsheetPackage();
+                        spreadsheetPackage = source;
                         if (hasRestoredState && restoredPage > 1 && restoredPage <= loaded.sheets.size()) {
                             sheetRenderer.setSheet(loaded.sheets.get(restoredPage - 1), loaded.cellStyles);
                             currentPage = restoredPage;
@@ -509,6 +510,14 @@ public final class OfficePreviewView extends View {
 
     private void releaseImages() {
         if (images != null) { images.close(); images = null; }
+        releaseSpreadsheetPackage();
+    }
+
+    private void releaseSpreadsheetPackage() {
+        if (spreadsheetPackage != null) {
+            closePackage(spreadsheetPackage);
+            spreadsheetPackage = null;
+        }
     }
 
     private static void closePackage(OfficePackage source) {
