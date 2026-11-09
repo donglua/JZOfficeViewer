@@ -32,9 +32,11 @@ impl Parser<'_> {
                 node.child("pPr").and_then(|n| n.child("rPr")),
                 Some(&self.styles.theme_fonts),
             )?;
-            flow.text(mark.run("", &mut self.document))?;
+            if !mark.hidden {
+                flow.text(mark.run("", &mut self.document))?;
+            }
         }
-        if !flow.current.runs.is_empty() || flow.elements.is_empty() {
+        if !flow.current.runs.is_empty() {
             flow.flush()?;
         }
         self.text_bytes = flow.text_bytes;

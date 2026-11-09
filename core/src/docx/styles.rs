@@ -146,9 +146,6 @@ impl Styles {
             format::font(&mut font, style.child("rPr"), Some(&self.theme_fonts))?;
             format.apply(style.child("pPr"), font.run.size);
         }
-        if let Some(r_pr) = properties.and_then(|n| n.child("rPr")) {
-            format::font(&mut font, Some(r_pr), Some(&self.theme_fonts))?;
-        }
         format.apply(properties, font.run.size);
         if !format.number.is_empty() && format.number != "0" {
             format.paragraph.bullet = numbering.bullet(&format.number, format.level);

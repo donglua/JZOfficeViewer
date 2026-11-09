@@ -364,3 +364,58 @@ fn hidden_runs_and_ruby_rt_are_omitted_from_document_flow() -> TestResult {
     assert!(!all_text.contains(')'));
     Ok(())
 }
+
+#[test]
+fn paragraph_mark_rpr_does_not_leak_to_runs_or_hide_paragraph() -> TestResult {
+    let mut parts = docx::parts();
+    let body = r#"<w:p>
+        <w:pPr>
+            <w:rPr>
+                <w:vanish/>
+                <w:b/>
+                <w:sz w:val="72"/>
+            </w:rPr>
+        </w:pPr>
+        <w:r><w:t>Visible run in paragraph with vanish mark</w:t></w:r>
+    </w:p>
+    <w:p>
+        <w:pPr>
+            <w:rPr>
+                <w:vanish/>
+            </w:rPr>
+        </w:pPr>
+    </w:p>"#;
+    replace(
+        &mut parts,
+        "word/document.xml",
+        &docx::DOCUMENT.replace(
+            r#"<w:p><w:pPr><w:pStyle w:val="FixtureTitle"/></w:pPr>"#,
+            &format!("{body}<w:p><w:pPr><w:pStyle w:val=\"FixtureTitle\"/></w:pPr>"),
+        ),
+    );
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let all_text = checks::text(&document.blocks[0].paragraphs);
+    assert!(all_text.contains("Visible run in paragraph with vanish mark"));
+
+    let target_run = document.blocks[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.runs)
+        .find(|r| r.text == "Visible run in paragraph with vanish mark")
+        .ok_or("target run must exist")?;
+    assert!(
+        !target_run.bold,
+        "pPr/rPr bold should not leak to regular run"
+    );
+    assert!(
+        target_run.size < 36.0,
+        "pPr/rPr sz=72 (36pt) should not leak to regular run"
+    );
+
+    // Count paragraphs in blocks[0]:
+    // The original template had 5 paragraphs (FixtureTitle + 4 paragraphs).
+    // Replacing FixtureTitle with body + FixtureTitle adds 1 visible paragraph (the empty vanish one is omitted).
+    // So total should be 6 paragraphs.
+    assert_eq!(document.blocks.len(), 5);
+    Ok(())
+}
