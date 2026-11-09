@@ -271,7 +271,7 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> OfficeDocumentNSView {
         let view = OfficeDocumentNSView()
-        view.document = document
+        view.setDocument(document)
         view.images = images
         view.currentPage = currentPage
         view.zoom = zoom
@@ -279,7 +279,7 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: OfficeDocumentNSView, context: Context) {
-        nsView.document = document
+        nsView.setDocument(document)
         nsView.images = images
         nsView.currentPage = currentPage
         nsView.zoom = zoom
@@ -287,13 +287,56 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
     }
 }
 
-private final class OfficeDocumentNSView: NSView {
-    var document: OfficeDocument?
+private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
+    private(set) var document: OfficeDocument?
     var images: [String: CGImage] = [:]
     var currentPage: Int = 1
-    var zoom: CGFloat = 1.0
+    var zoom: CGFloat = 1.0 {
+        didSet {
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    private var textLayout: DocumentTextLayout?
+    private var selection: TextSelection?
 
     override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+
+    func setDocument(_ newDoc: OfficeDocument) {
+        // 当文档切换时清空旧选区与空间索引
+        document = newDoc
+        textLayout = nil
+        selection = nil
+        window?.invalidateCursorRects(for: self)
+    }
+
+    private func ensureTextLayout() -> DocumentTextLayout? {
+        guard let doc = document else { return nil }
+        if let existing = textLayout {
+            return existing
+        }
+        let layout = DocumentTextLayout.build(from: doc)
+        textLayout = layout
+        window?.invalidateCursorRects(for: self)
+        return layout
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let layout = ensureTextLayout() else { return }
+        for block in layout.blocks {
+            let viewRect = CGRect(
+                x: block.bounds.minX * zoom,
+                y: block.bounds.minY * zoom,
+                width: block.bounds.width * zoom,
+                height: block.bounds.height * zoom
+            )
+            addCursorRect(viewRect, cursor: .iBeam)
+        }
+    }
+
+    // MARK: - 绘制管线
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext,
@@ -371,5 +414,168 @@ private final class OfficeDocumentNSView: NSView {
                 viewport: viewport
             )
         }
+
+        // 绘制选区高亮（在文档未缩放坐标系下，由 ctx.scaleBy 统一放大）
+        if let sel = selection, !sel.isEmpty, let layout = ensureTextLayout() {
+            let rects = layout.selectionRects(for: sel)
+            if !rects.isEmpty {
+                ctx.saveGState()
+                let highlightColor = NSColor.selectedTextBackgroundColor.withAlphaComponent(0.35).cgColor
+                ctx.setFillColor(highlightColor)
+                for r in rects {
+                    let path = CGPath(roundedRect: r, cornerWidth: 2, cornerHeight: 2, transform: nil)
+                    ctx.addPath(path)
+                    ctx.fillPath()
+                }
+                ctx.restoreGState()
+            }
+        }
+    }
+
+    // MARK: - 鼠标手势与文本框选
+
+    private func documentPoint(for event: NSEvent) -> CGPoint {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let z = max(0.01, zoom)
+        return CGPoint(x: viewPoint.x / z, y: viewPoint.y / z)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        let docPoint = documentPoint(for: event)
+        guard let layout = ensureTextLayout() else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        if event.clickCount == 2 {
+            // 双击：选词
+            if let pos = layout.hitTest(docPoint: docPoint),
+               let word = layout.wordRange(at: pos) {
+                selection = word
+                needsDisplay = true
+                return
+            }
+        } else if event.clickCount >= 3 {
+            // 三击：选整行/段落
+            if let pos = layout.hitTest(docPoint: docPoint),
+               let line = layout.lineRange(at: pos) {
+                selection = line
+                needsDisplay = true
+                return
+            }
+        }
+
+        // 单击：设置选区起点
+        if let pos = layout.hitTest(docPoint: docPoint) {
+            selection = TextSelection(position: pos)
+            needsDisplay = true
+        } else {
+            if selection != nil {
+                selection = nil
+                needsDisplay = true
+            }
+            super.mouseDown(with: event)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        _ = autoscroll(with: event)
+        let docPoint = documentPoint(for: event)
+        guard let layout = ensureTextLayout() else {
+            super.mouseDragged(with: event)
+            return
+        }
+
+        if let pos = layout.hitTest(docPoint: docPoint) {
+            if let current = selection {
+                selection = TextSelection(anchor: current.anchor, focus: pos)
+            } else {
+                selection = TextSelection(position: pos)
+            }
+            needsDisplay = true
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if let sel = selection, sel.isEmpty {
+            selection = nil
+            needsDisplay = true
+        }
+        super.mouseUp(with: event)
+    }
+
+    // MARK: - 快捷键与剪贴板
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command {
+            if event.charactersIgnoringModifiers == "c" {
+                copy(nil)
+                return true
+            } else if event.charactersIgnoringModifiers == "a" {
+                selectAll(nil)
+                return true
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    @objc func copy(_ sender: Any?) {
+        guard let sel = selection, !sel.isEmpty, let layout = ensureTextLayout() else { return }
+        let text = layout.selectedText(for: sel)
+        guard !text.isEmpty else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    @objc override func selectAll(_ sender: Any?) {
+        if let all = ensureTextLayout()?.allTextRange() {
+            selection = all
+            needsDisplay = true
+        }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(copy(_:)) {
+            return selection != nil && !selection!.isEmpty
+        }
+        if menuItem.action == #selector(selectAll(_:)) {
+            return !(ensureTextLayout()?.blocks.isEmpty ?? true)
+        }
+        return true
+    }
+
+    // MARK: - 右键上下文菜单
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu(title: "Context Menu")
+
+        // 若右键时未选中文本，尝试智能选词
+        if selection == nil || selection!.isEmpty {
+            let docPoint = documentPoint(for: event)
+            if let layout = ensureTextLayout(),
+               let pos = layout.hitTest(docPoint: docPoint),
+               let word = layout.wordRange(at: pos) {
+                selection = word
+                needsDisplay = true
+            }
+        }
+
+        let hasSel = selection != nil && !selection!.isEmpty
+        let copyItem = NSMenuItem(title: "拷贝", action: #selector(copy(_:)), keyEquivalent: "c")
+        copyItem.target = self
+        copyItem.isEnabled = hasSel
+        menu.addItem(copyItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let selectAllItem = NSMenuItem(title: "全选", action: #selector(selectAll(_:)), keyEquivalent: "a")
+        selectAllItem.target = self
+        selectAllItem.isEnabled = !(ensureTextLayout()?.blocks.isEmpty ?? true)
+        menu.addItem(selectAllItem)
+
+        return menu
     }
 }
