@@ -1,6 +1,7 @@
 import { displaySync } from '@kit.ArkGraphics2D';
 import * as model from '../core/OfficeModel';
 import { RenderUtils } from './RenderUtils';
+import { OfficeRect } from './CanvasElementDrawer';
 
 const HEADER_WIDTH = 42;
 const HEADER_HEIGHT = 22;
@@ -254,11 +255,14 @@ interface CachedCellWrap {
 export struct SpreadsheetView {
   // 使用普通属性避免 @Prop 对大型电子表格 AST 结构进行递归深拷贝造成卡顿或属性丢失
   document: model.OfficeDocument | null = null;
+  searchMatches: model.SearchMatch[] = [];
+  currentMatchIndex: number = -1;
   onSheetChange?: (sheetNumber: number, sheetCount: number) => void;
   registerControls?: (
     selectSheet: (sheetNumber: number) => void,
     getZoom: () => number,
-    setZoom: (value: number) => void
+    setZoom: (value: number) => void,
+    scrollToMatch?: (match: model.SearchMatch) => void
   ) => void;
   @State currentSheetIndex: number = 0;
 
@@ -348,9 +352,85 @@ export struct SpreadsheetView {
           // 外部按钮缩放走同一套补间，避免放大缩小两步之间出现瞬跳
           this.startZoomTween(reset ? 1.0 : value, this.canvasWidth / 2, this.canvasHeight / 2,
             ZOOM_TWEEN_MS, reset);
+        },
+        (match: model.SearchMatch): void => {
+          this.scrollToMatch(match);
         }
       );
     }
+  }
+
+  public scrollToMatch(match: model.SearchMatch): void {
+    if (match.pageIndex !== this.currentSheetIndex) {
+      this.switchSheet(match.pageIndex);
+    }
+    const layout = this.cachedLayout;
+    if (!layout) return;
+    const r = match.row !== undefined && match.row >= 0 ? match.row : 0;
+    const c = match.column !== undefined && match.column >= 0 ? match.column : 0;
+    let unscaledX = 0;
+    let unscaledY = 0;
+    let unscaledW = 40;
+    let unscaledH = 20;
+
+    let foundMerge = false;
+    for (const m of layout.merges) {
+      if (m.anchor && m.anchor.row === r && m.anchor.column === c) {
+        unscaledX = m.left;
+        unscaledY = m.top;
+        unscaledW = m.right - m.left;
+        unscaledH = m.bottom - m.top;
+        foundMerge = true;
+        break;
+      }
+    }
+    if (!foundMerge && r < layout.rows.offsets.length - 1 && c < layout.columns.offsets.length - 1) {
+      unscaledX = layout.columns.offsets[c];
+      unscaledY = layout.rows.offsets[r];
+      unscaledW = layout.columns.offsets[c + 1] - unscaledX;
+      unscaledH = layout.rows.offsets[r + 1] - unscaledY;
+    }
+
+    const s = this.scaleVal;
+    const targetOx = (this.canvasWidth - HEADER_WIDTH) / 2 - (unscaledX * s + (unscaledW * s) / 2);
+    const targetOy = (this.canvasHeight - HEADER_HEIGHT) / 2 - (unscaledY * s + (unscaledH * s) / 2);
+
+    this.offsetX = targetOx;
+    this.offsetY = targetOy;
+    this.clampOffsets();
+    this.redraw();
+  }
+
+  private computeMatchRect(
+    match: model.SearchMatch,
+    layout: SheetLayoutData,
+    s: number,
+    ox: number,
+    oy: number
+  ): OfficeRect | null {
+    const r = match.row !== undefined && match.row >= 0 ? match.row : 0;
+    const c = match.column !== undefined && match.column >= 0 ? match.column : 0;
+
+    if (layout.merges && layout.merges.length > 0) {
+      for (const m of layout.merges) {
+        if (m.anchor && m.anchor.row === r && m.anchor.column === c) {
+          const left = HEADER_WIDTH + ox + m.left * s;
+          const top = HEADER_HEIGHT + oy + m.top * s;
+          const right = HEADER_WIDTH + ox + m.right * s;
+          const bottom = HEADER_HEIGHT + oy + m.bottom * s;
+          return { x: left, y: top, width: Math.max(2, right - left), height: Math.max(2, bottom - top) };
+        }
+      }
+    }
+
+    if (r >= layout.rows.offsets.length - 1 || c >= layout.columns.offsets.length - 1) {
+      return null;
+    }
+    const left = HEADER_WIDTH + ox + layout.columns.offsets[c] * s;
+    const top = HEADER_HEIGHT + oy + layout.rows.offsets[r] * s;
+    const right = HEADER_WIDTH + ox + layout.columns.offsets[c + 1] * s;
+    const bottom = HEADER_HEIGHT + oy + layout.rows.offsets[r + 1] * s;
+    return { x: left, y: top, width: Math.max(2, right - left), height: Math.max(2, bottom - top) };
   }
 
   private switchSheet(idx: number): void {
@@ -820,6 +900,28 @@ export struct SpreadsheetView {
           const right = HEADER_WIDTH + ox + m.right * s;
           const bottom = HEADER_HEIGHT + oy + m.bottom * s;
           this.drawCellBorders(ctx, left, top, right, bottom, style);
+        }
+
+        // 1.6 绘制全文检索高亮 (普通淡黄，当前亮橙色+边框)
+        if (this.searchMatches && this.searchMatches.length > 0) {
+          for (let mIdx = 0; mIdx < this.searchMatches.length; mIdx++) {
+            const match = this.searchMatches[mIdx];
+            if (match.pageIndex !== this.currentSheetIndex) continue;
+            const isCurrent = (mIdx === this.currentMatchIndex);
+            const rect = this.computeMatchRect(match, layout, s, ox, oy);
+            if (!rect) continue;
+
+            if (isCurrent) {
+              ctx.fillStyle = 'rgba(255, 160, 0, 0.75)';
+              ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+              ctx.strokeStyle = '#e65100';
+              ctx.lineWidth = 1.5;
+              ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+            } else {
+              ctx.fillStyle = 'rgba(255, 235, 59, 0.45)';
+              ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+            }
+          }
         }
 
         ctx.restore();

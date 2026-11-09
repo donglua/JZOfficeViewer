@@ -26,6 +26,13 @@ interface CachedParagraphEntry {
 
 export type OfficeCanvasContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
+export interface OfficeRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export class CanvasElementDrawer {
   // 缓存已构建的 Path2D，避免滑动时每帧重复解析成百上千条矢量指令
   private static readonly pathCache: WeakMap<model.Path, Path2D> = new WeakMap();
@@ -590,5 +597,319 @@ export class CanvasElementDrawer {
     }
     const factor = para.lineSpacing && para.lineSpacing > 0 ? para.lineSpacing : 1;
     return Math.max(1, natural * factor);
+  }
+
+  // MARK: - 全文检索高亮位置计算
+
+  public static computeParagraphHighlightRects(
+    ctx: OfficeCanvasContext | null,
+    para: model.Paragraph,
+    startChar: number,
+    endChar: number,
+    startX: number,
+    startY: number,
+    availableWidth: number,
+    wrap: boolean = true
+  ): OfficeRect[] {
+    if (startChar >= endChar) return [];
+    let lines: WrappedLine[];
+    if (ctx) {
+      lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
+    } else {
+      const cached = CanvasElementDrawer.paragraphCache.get(para);
+      if (cached && cached.length > 0) {
+        lines = cached[0].lines;
+      } else {
+        return [{
+          x: startX,
+          y: startY,
+          width: Math.max(10, (endChar - startChar) * 12),
+          height: 16
+        }];
+      }
+    }
+
+    const rightIndent = Math.max(0, para.rightIndent || 0);
+    const baseIndent = Math.max(0, para.indent || 0);
+    const firstIndent = Math.max(0, baseIndent + (para.firstLineIndent || 0));
+
+    const rects: OfficeRect[] = [];
+    let curY = startY;
+    let globalCharOffset = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const leftIndent = i === 0 ? firstIndent : baseIndent;
+      const lineAvailWidth = Math.max(1, availableWidth - leftIndent - rightIndent);
+
+      let lineX = startX + leftIndent;
+      if (para.alignment === 1) {
+        lineX += (lineAvailWidth - line.width) / 2;
+      } else if (para.alignment === 2) {
+        lineX += lineAvailWidth - line.width;
+      }
+
+      let segX = lineX;
+      let lineHighlightMinX = -1;
+      let lineHighlightMaxX = -1;
+
+      for (const seg of line.segments) {
+        const segLen = seg.text.length;
+        const segStart = globalCharOffset;
+        const segEnd = globalCharOffset + segLen;
+
+        if (endChar > segStart && startChar < segEnd) {
+          const matchStartInSeg = Math.max(0, startChar - segStart);
+          const matchEndInSeg = Math.min(segLen, endChar - segStart);
+
+          let x1 = 0;
+          let x2 = seg.width;
+          if (ctx && segLen > 0) {
+            ctx.font = seg.font;
+            if (matchStartInSeg > 0) {
+              x1 = ctx.measureText(seg.text.substring(0, matchStartInSeg)).width;
+            }
+            if (matchEndInSeg < segLen) {
+              x2 = ctx.measureText(seg.text.substring(0, matchEndInSeg)).width;
+            }
+          } else if (segLen > 0) {
+            x1 = (matchStartInSeg / segLen) * seg.width;
+            x2 = (matchEndInSeg / segLen) * seg.width;
+          }
+
+          const hLeft = segX + x1;
+          const hRight = segX + x2;
+
+          if (lineHighlightMinX < 0 || hLeft < lineHighlightMinX) {
+            lineHighlightMinX = hLeft;
+          }
+          if (lineHighlightMaxX < 0 || hRight > lineHighlightMaxX) {
+            lineHighlightMaxX = hRight;
+          }
+        }
+
+        segX += seg.width;
+        globalCharOffset += segLen;
+      }
+
+      if (lineHighlightMinX >= 0 && lineHighlightMaxX > lineHighlightMinX) {
+        rects.push({
+          x: lineHighlightMinX,
+          y: curY,
+          width: Math.max(2, lineHighlightMaxX - lineHighlightMinX),
+          height: line.height
+        });
+      }
+
+      curY += line.height;
+    }
+
+    return rects;
+  }
+
+  public static computeElementHighlightRects(
+    ctx: OfficeCanvasContext | null,
+    element: model.Element,
+    match: model.SearchMatch
+  ): OfficeRect[] {
+    const rawRects: OfficeRect[] = [];
+
+    if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
+      const rows = element.rows;
+      let cols = 0;
+      for (const r of rows) {
+        cols = Math.max(cols, r.length);
+      }
+      if (cols === 0) return [];
+
+      const colWidths = element.columnWidths ?? [];
+      let totalWeight = 0;
+      for (const cw of colWidths) {
+        totalWeight += Math.max(1, cw);
+      }
+
+      const targetR = match.row !== undefined && match.row >= 0 ? match.row : 0;
+      const targetC = match.column !== undefined && match.column >= 0 ? match.column : 0;
+
+      let currentY = 0;
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r];
+        const computedColWidths: number[] = [];
+        let rowHeight = 20;
+
+        for (let c = 0; c < cols; c++) {
+          const colW =
+            colWidths.length === cols && totalWeight > 0
+              ? (Math.abs(totalWeight - element.width) < 0.5
+                  ? Math.max(1, colWidths[c])
+                  : (element.width * Math.max(1, colWidths[c])) / totalWeight)
+              : element.width / cols;
+          computedColWidths.push(colW);
+
+          const cellParas = c < row.length ? row[c] : [];
+          if (cellParas && cellParas.length > 0) {
+            const availW = Math.max(1, colW - 10);
+            let cellTextH = 0;
+            for (const para of cellParas) {
+              cellTextH += Math.max(0, para.before || 0);
+              const lines = ctx
+                ? CanvasElementDrawer.layoutParagraph(ctx, para, availW, true)
+                : [];
+              for (const line of lines) {
+                cellTextH += line.height;
+              }
+              cellTextH += Math.max(0, para.after || 0);
+            }
+            rowHeight = Math.max(rowHeight, cellTextH + 10);
+          }
+        }
+
+        if (r === targetR) {
+          let currentX = 0;
+          for (let c = 0; c < cols; c++) {
+            const colW = computedColWidths[c];
+            if (c === targetC) {
+              const cellParas = c < row.length ? row[c] : [];
+              if (cellParas && match.paragraphIndex < cellParas.length) {
+                const availW = Math.max(1, colW - 10);
+                let paraY = currentY + 5;
+                for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
+                  const para = cellParas[pIdx];
+                  paraY += Math.max(0, para.before || 0);
+                  if (pIdx === match.paragraphIndex) {
+                    const pRects = CanvasElementDrawer.computeParagraphHighlightRects(
+                      ctx,
+                      para,
+                      match.startChar,
+                      match.endChar,
+                      currentX + 5,
+                      paraY,
+                      availW,
+                      true
+                    );
+                    rawRects.push(...pRects);
+                    break;
+                  }
+                  if (ctx) {
+                    const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
+                    for (const line of lines) {
+                      paraY += line.height;
+                    }
+                  } else {
+                    paraY += 16;
+                  }
+                  paraY += Math.max(0, para.after || 0);
+                }
+              }
+              break;
+            }
+            currentX += colW;
+          }
+          break;
+        }
+
+        currentY += rowHeight;
+      }
+    } else if (element.paragraphs && element.paragraphs.length > 0) {
+      if (match.paragraphIndex >= 0 && match.paragraphIndex < element.paragraphs.length) {
+        const padding = Math.max(0, element.padding ?? 4);
+        const availableWidth = Math.max(1, element.width - padding * 2);
+        const wrap = element.textWrap !== false;
+
+        let totalTextHeight = 0;
+        const paraHeights: number[] = [];
+        for (const para of element.paragraphs) {
+          let h = Math.max(0, para.before || 0);
+          if (ctx) {
+            const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
+            for (const l of lines) {
+              h += l.height;
+            }
+          } else {
+            h += 16;
+          }
+          h += Math.max(0, para.after || 0);
+          paraHeights.push(h);
+          totalTextHeight += h;
+        }
+
+        let offsetY = padding;
+        const remaining = Math.max(0, element.height - padding * 2 - totalTextHeight);
+        if (element.verticalAlignment === 'CENTER') {
+          offsetY += remaining / 2;
+        } else if (element.verticalAlignment === 'BOTTOM') {
+          offsetY += remaining;
+        }
+
+        for (let i = 0; i < element.paragraphs.length; i++) {
+          const para = element.paragraphs[i];
+          offsetY += Math.max(0, para.before || 0);
+          if (i === match.paragraphIndex) {
+            const pRects = CanvasElementDrawer.computeParagraphHighlightRects(
+              ctx,
+              para,
+              match.startChar,
+              match.endChar,
+              padding,
+              offsetY,
+              availableWidth,
+              wrap
+            );
+            rawRects.push(...pRects);
+            break;
+          }
+          offsetY += (paraHeights[i] - Math.max(0, para.before || 0));
+        }
+      }
+    }
+
+    if (element.transform && element.transform.length >= 6) {
+      return rawRects.map((r: OfficeRect): OfficeRect => CanvasElementDrawer.applyAffineTransform(r, element.transform));
+    } else if (element.x !== 0 || element.y !== 0) {
+      return rawRects.map((r: OfficeRect): OfficeRect => {
+        const shifted: OfficeRect = {
+          x: r.x + element.x,
+          y: r.y + element.y,
+          width: r.width,
+          height: r.height
+        };
+        return shifted;
+      });
+    }
+    return rawRects;
+  }
+
+  public static applyAffineTransform(
+    rect: OfficeRect,
+    m: [number, number, number, number, number, number]
+  ): OfficeRect {
+    const x1 = rect.x;
+    const y1 = rect.y;
+    const x2 = rect.x + rect.width;
+    const y2 = rect.y + rect.height;
+
+    const p1x = m[0] * x1 + m[2] * y1 + m[4];
+    const p1y = m[1] * x1 + m[3] * y1 + m[5];
+
+    const p2x = m[0] * x2 + m[2] * y1 + m[4];
+    const p2y = m[1] * x2 + m[3] * y1 + m[5];
+
+    const p3x = m[0] * x1 + m[2] * y2 + m[4];
+    const p3y = m[1] * x1 + m[3] * y2 + m[5];
+
+    const p4x = m[0] * x2 + m[2] * y2 + m[4];
+    const p4y = m[1] * x2 + m[3] * y2 + m[5];
+
+    const minX = Math.min(p1x, p2x, p3x, p4x);
+    const maxX = Math.max(p1x, p2x, p3x, p4x);
+    const minY = Math.min(p1y, p2y, p3y, p4y);
+    const maxY = Math.max(p1y, p2y, p3y, p4y);
+
+    return {
+      x: minX,
+      y: minY,
+      width: Math.max(1, maxX - minX),
+      height: Math.max(1, maxY - minY)
+    };
   }
 }

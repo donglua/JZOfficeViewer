@@ -123,6 +123,17 @@ struct Index {
             .onClick(() => {
               this.controller.resetZoom();
             })
+
+          Button('🔍')
+            .width(36)
+            .height(32)
+            .fontSize(14)
+            .padding(0)
+            .backgroundColor('#f1f3f4')
+            .fontColor('#202124')
+            .onClick(() => {
+              this.controller.showSearchBar();
+            })
         }
         .width('100%')
         .alignItems(VerticalAlign.Center)

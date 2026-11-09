@@ -5,10 +5,12 @@ export {
   OfficePreviewView,
   OfficePreviewController,
   OfficePreviewInfo,
-  OfficePreviewActions
+  OfficePreviewActions,
+  SearchListener
 } from './src/main/ets/render/OfficePreviewView';
+export { OfficeSearchBar } from './src/main/ets/render/OfficeSearchBar';
 export { OfficeSheetTabs } from './src/main/ets/render/OfficeSheetTabs';
 export { renderOfficeThumbnail } from './src/main/ets/render/OfficeThumbnail';
 export { SpreadsheetView } from './src/main/ets/render/SpreadsheetView';
-export { CanvasElementDrawer, OfficeCanvasContext } from './src/main/ets/render/CanvasElementDrawer';
+export { CanvasElementDrawer, OfficeCanvasContext, OfficeRect } from './src/main/ets/render/CanvasElementDrawer';
 export { RenderUtils } from './src/main/ets/render/RenderUtils';

@@ -3,9 +3,10 @@ import { displaySync } from '@kit.ArkGraphics2D';
 import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
 import { RenderUtils } from './RenderUtils';
-import { CanvasElementDrawer } from './CanvasElementDrawer';
+import { CanvasElementDrawer, OfficeRect } from './CanvasElementDrawer';
 import { ImageStore } from './ImageStore';
 import { SpreadsheetView } from './SpreadsheetView';
+import { OfficeSearchBar } from './OfficeSearchBar';
 
 class ArrayDataSource<T> implements IDataSource {
   private readonly items: T[];
@@ -42,6 +43,14 @@ export interface OfficePreviewInfo {
   readonly sheetNames: string[];
 }
 
+/**
+ * 全文检索监听回调接口（对齐 Android 端 OfficePreviewView.SearchListener）
+ */
+export interface SearchListener {
+  onSearchResults?: (query: string, count: number) => void;
+  onCurrentMatchChanged?: (index: number, count: number, currentMatch: model.SearchMatch | null) => void;
+}
+
 export interface OfficePreviewActions {
   getPageCount: () => number;
   getCurrentPage: () => number;
@@ -51,6 +60,16 @@ export interface OfficePreviewActions {
   resetZoom: () => void;
   jumpToPage: (pageNumber: number) => void;
   selectSheet: (sheetNumber: number) => void;
+  search: (query: string, callback?: (matches: model.SearchMatch[]) => void) => void;
+  findNext: () => boolean;
+  findPrevious: () => boolean;
+  clearSearch: () => void;
+  getSearchMatches: () => model.SearchMatch[];
+  getCurrentMatchIndex: () => number;
+  isSearching: () => boolean;
+  showSearchBar: () => void;
+  hideSearchBar: () => void;
+  isSearchBarVisible: () => boolean;
 }
 
 /**
@@ -60,13 +79,18 @@ export interface OfficePreviewActions {
 export class OfficePreviewController {
   private actions: OfficePreviewActions | null = null;
   private readonly pageListeners: Set<(pageNumber: number, pageCount: number) => void> = new Set();
+  private readonly searchListeners: Set<SearchListener> = new Set();
 
   bind(actions: OfficePreviewActions | null): void {
     this.actions = actions;
     if (actions) {
       this.notifyPageListeners(actions.getCurrentPage(), actions.getPageCount());
+      const matches = actions.getSearchMatches();
+      const idx = actions.getCurrentMatchIndex();
+      this.notifyCurrentMatchChanged(idx, matches.length, idx >= 0 && idx < matches.length ? matches[idx] : null);
     } else {
       this.notifyPageListeners(0, 0);
+      this.notifyCurrentMatchChanged(-1, 0, null);
     }
   }
 
@@ -85,6 +109,39 @@ export class OfficePreviewController {
     const snapshot: Array<(pageNumber: number, pageCount: number) => void> = Array.from(this.pageListeners);
     for (const listener of snapshot) {
       listener(pageNumber, pageCount);
+    }
+  }
+
+  public addSearchListener(listener: SearchListener): void {
+    if (!listener) return;
+    this.searchListeners.add(listener);
+    const matches = this.getSearchMatches();
+    const idx = this.getCurrentMatchIndex();
+    if (listener.onCurrentMatchChanged) {
+      listener.onCurrentMatchChanged(idx, matches.length, idx >= 0 && idx < matches.length ? matches[idx] : null);
+    }
+  }
+
+  public removeSearchListener(listener: SearchListener): void {
+    if (!listener) return;
+    this.searchListeners.delete(listener);
+  }
+
+  public notifySearchResults(query: string, count: number): void {
+    const snapshot = Array.from(this.searchListeners);
+    for (const l of snapshot) {
+      if (l.onSearchResults) {
+        l.onSearchResults(query, count);
+      }
+    }
+  }
+
+  public notifyCurrentMatchChanged(index: number, count: number, match: model.SearchMatch | null): void {
+    const snapshot = Array.from(this.searchListeners);
+    for (const l of snapshot) {
+      if (l.onCurrentMatchChanged) {
+        l.onCurrentMatchChanged(index, count, match);
+      }
     }
   }
 
@@ -119,6 +176,46 @@ export class OfficePreviewController {
   public selectSheet(sheetNumber: number): void {
     this.actions?.selectSheet(sheetNumber);
   }
+
+  public search(query: string, callback?: (matches: model.SearchMatch[]) => void): void {
+    this.actions?.search(query, callback);
+  }
+
+  public findNext(): boolean {
+    return this.actions ? this.actions.findNext() : false;
+  }
+
+  public findPrevious(): boolean {
+    return this.actions ? this.actions.findPrevious() : false;
+  }
+
+  public clearSearch(): void {
+    this.actions?.clearSearch();
+  }
+
+  public getSearchMatches(): model.SearchMatch[] {
+    return this.actions ? this.actions.getSearchMatches() : [];
+  }
+
+  public getCurrentMatchIndex(): number {
+    return this.actions ? this.actions.getCurrentMatchIndex() : -1;
+  }
+
+  public isSearching(): boolean {
+    return this.actions ? this.actions.isSearching() : false;
+  }
+
+  public showSearchBar(): void {
+    this.actions?.showSearchBar();
+  }
+
+  public hideSearchBar(): void {
+    this.actions?.hideSearchBar();
+  }
+
+  public isSearchBarVisible(): boolean {
+    return this.actions ? this.actions.isSearchBarVisible() : false;
+  }
 }
 
 /**
@@ -147,6 +244,13 @@ export struct OfficePreviewView {
   private childSetZoom: ((value: number) => void) | null = null;
   private childJumpToPage: ((pageNumber: number) => void) | null = null;
   private childSelectSheet: ((sheetNumber: number) => void) | null = null;
+  private childScrollToMatch: ((match: model.SearchMatch) => void) | null = null;
+
+  @State searchMatches: model.SearchMatch[] = [];
+  @State currentMatchIndex: number = -1;
+  @State isSearching: boolean = false;
+  @State searchQuery: string = '';
+  @State isSearchBarShown: boolean = false;
 
   private bindController(): void {
     if (!this.controller) return;
@@ -175,8 +279,88 @@ export struct OfficePreviewView {
         const count = this.computePageCount(this.rawDocument);
         if (sheetNumber < 1 || sheetNumber > count) return;
         if (this.childSelectSheet) this.childSelectSheet(sheetNumber);
-      }
+      },
+      search: (query: string, callback?: (matches: model.SearchMatch[]) => void): void => {
+        this.search(query, callback);
+      },
+      findNext: (): boolean => this.findNext(),
+      findPrevious: (): boolean => this.findPrevious(),
+      clearSearch: (): void => this.clearSearch(),
+      getSearchMatches: (): model.SearchMatch[] => this.searchMatches,
+      getCurrentMatchIndex: (): number => this.currentMatchIndex,
+      isSearching: (): boolean => this.isSearching,
+      showSearchBar: (): void => {
+        this.isSearchBarShown = true;
+      },
+      hideSearchBar: (): void => {
+        this.isSearchBarShown = false;
+        this.clearSearch();
+      },
+      isSearchBarVisible: (): boolean => this.isSearchBarShown
     });
+  }
+
+  public async search(query: string, callback?: (matches: model.SearchMatch[]) => void): Promise<void> {
+    const trimmed = query ? query.trim() : '';
+    this.searchQuery = trimmed;
+    if (!trimmed || !this.filePath || !this.rawDocument) {
+      this.clearSearch();
+      if (callback) callback([]);
+      return;
+    }
+    this.isSearching = true;
+    const token = this.loadGeneration;
+    try {
+      const matches = await NativeCore.searchDocumentAsync(this.filePath, trimmed);
+      if (token !== this.loadGeneration) return;
+      this.isSearching = false;
+      this.searchMatches = matches;
+      this.currentMatchIndex = matches.length > 0 ? 0 : -1;
+      this.onCurrentMatchUpdated();
+      this.controller?.notifySearchResults(trimmed, matches.length);
+      if (callback) callback(matches);
+    } catch (e) {
+      if (token !== this.loadGeneration) return;
+      this.isSearching = false;
+      this.searchMatches = [];
+      this.currentMatchIndex = -1;
+      this.onCurrentMatchUpdated();
+      this.controller?.notifySearchResults(trimmed, 0);
+      if (callback) callback([]);
+    }
+  }
+
+  public findNext(): boolean {
+    if (this.searchMatches.length === 0) return false;
+    this.currentMatchIndex = (this.currentMatchIndex + 1) % this.searchMatches.length;
+    this.onCurrentMatchUpdated();
+    return true;
+  }
+
+  public findPrevious(): boolean {
+    if (this.searchMatches.length === 0) return false;
+    this.currentMatchIndex = (this.currentMatchIndex - 1 + this.searchMatches.length) % this.searchMatches.length;
+    this.onCurrentMatchUpdated();
+    return true;
+  }
+
+  public clearSearch(): void {
+    this.searchQuery = '';
+    this.searchMatches = [];
+    this.currentMatchIndex = -1;
+    this.isSearching = false;
+    this.onCurrentMatchUpdated();
+    this.controller?.notifySearchResults('', 0);
+  }
+
+  private onCurrentMatchUpdated(): void {
+    const cur = (this.currentMatchIndex >= 0 && this.currentMatchIndex < this.searchMatches.length)
+      ? this.searchMatches[this.currentMatchIndex]
+      : null;
+    this.controller?.notifyCurrentMatchChanged(this.currentMatchIndex, this.searchMatches.length, cur);
+    if (cur && this.childScrollToMatch) {
+      this.childScrollToMatch(cur);
+    }
   }
 
   private computePageCount(doc: model.OfficeDocument | null): number {
@@ -242,6 +426,8 @@ export struct OfficePreviewView {
     this.childSetZoom = null;
     this.childJumpToPage = null;
     this.childSelectSheet = null;
+    this.childScrollToMatch = null;
+    this.clearSearch();
     this.controller?.bind(null);
   }
 
@@ -261,6 +447,8 @@ export struct OfficePreviewView {
     this.childSetZoom = null;
     this.childJumpToPage = null;
     this.childSelectSheet = null;
+    this.childScrollToMatch = null;
+    this.clearSearch();
     this.notifyPageChanged(0, 0);
     try {
       const parsed = await NativeCore.parseDocumentAsync(path);
@@ -281,7 +469,7 @@ export struct OfficePreviewView {
   }
 
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.Top }) {
       if (this.isLoading) {
         Column({ space: 12 }) {
           LoadingProgress().width(48).height(48).color('#0a59f7')
@@ -309,14 +497,18 @@ export struct OfficePreviewView {
           DocxFlowView({
             document: this.rawDocument,
             filePath: this.filePath,
+            searchMatches: this.searchMatches,
+            currentMatchIndex: this.currentMatchIndex,
             registerControls: (
               jumpToPage: (pageNumber: number) => void,
               getZoom: () => number,
-              setZoom: (value: number) => void
+              setZoom: (value: number) => void,
+              scrollToMatch?: (match: model.SearchMatch) => void
             ): void => {
               this.childJumpToPage = jumpToPage;
               this.childGetZoom = getZoom;
               this.childSetZoom = setZoom;
+              this.childScrollToMatch = scrollToMatch ?? null;
             }
           })
             .id(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
@@ -326,17 +518,21 @@ export struct OfficePreviewView {
           PptxSlidesView({
             document: this.rawDocument,
             filePath: this.filePath,
+            searchMatches: this.searchMatches,
+            currentMatchIndex: this.currentMatchIndex,
             onSlideChange: (pageNumber: number, pageCount: number): void => {
               this.notifyPageChanged(pageNumber, pageCount);
             },
             registerControls: (
               jumpToPage: (pageNumber: number) => void,
               getZoom: () => number,
-              setZoom: (value: number) => void
+              setZoom: (value: number) => void,
+              scrollToMatch?: (match: model.SearchMatch) => void
             ): void => {
               this.childJumpToPage = jumpToPage;
               this.childGetZoom = getZoom;
               this.childSetZoom = setZoom;
+              this.childScrollToMatch = scrollToMatch ?? null;
             }
           })
             .id(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
@@ -345,17 +541,21 @@ export struct OfficePreviewView {
         } else if (this.rawDocument.kind === 'XLSX') {
           SpreadsheetView({
             document: this.rawDocument,
+            searchMatches: this.searchMatches,
+            currentMatchIndex: this.currentMatchIndex,
             onSheetChange: (sheetNumber: number, sheetCount: number): void => {
               this.notifyPageChanged(sheetNumber, sheetCount);
             },
             registerControls: (
               selectSheet: (sheetNumber: number) => void,
               getZoom: () => number,
-              setZoom: (value: number) => void
+              setZoom: (value: number) => void,
+              scrollToMatch?: (match: model.SearchMatch) => void
             ): void => {
               this.childSelectSheet = selectSheet;
               this.childGetZoom = getZoom;
               this.childSetZoom = setZoom;
+              this.childScrollToMatch = scrollToMatch ?? null;
             }
           })
             .id(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
@@ -364,6 +564,38 @@ export struct OfficePreviewView {
         }
       }
 
+      if (this.isSearchBarShown) {
+        Row() {
+          OfficeSearchBar({
+            query: this.searchQuery,
+            currentIndex: this.currentMatchIndex,
+            totalMatches: this.searchMatches.length,
+            isSearching: this.isSearching,
+            onQueryChange: (q: string) => {
+              this.search(q);
+            },
+            onSearchSubmit: (q: string) => {
+              this.search(q);
+            },
+            onNext: () => {
+              this.findNext();
+            },
+            onPrevious: () => {
+              this.findPrevious();
+            },
+            onClose: () => {
+              this.isSearchBarShown = false;
+              this.clearSearch();
+            }
+          })
+            .width('92%')
+            .constraintSize({ maxWidth: 460 })
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
+        .padding({ top: 12 })
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
     }
     .width('100%')
     .height('100%')
@@ -377,10 +609,13 @@ struct DocxFlowView {
   // 使用普通属性替代 @Prop，避免对整棵文档 AST 进行深拷贝
   document: model.OfficeDocument | null = null;
   filePath: string = '';
+  searchMatches: model.SearchMatch[] = [];
+  @Prop currentMatchIndex: number = -1;
   registerControls?: (
     jumpToPage: (pageNumber: number) => void,
     getZoom: () => number,
-    setZoom: (value: number) => void
+    setZoom: (value: number) => void,
+    scrollToMatch?: (match: model.SearchMatch) => void
   ) => void;
   private imageStore: ImageStore = new ImageStore('');
   private blockSource: ArrayDataSource<model.Element> = new ArrayDataSource([]);
@@ -414,6 +649,11 @@ struct DocxFlowView {
         (value: number): void => {
           this.isGesturing = false;
           this.setZoom(value, this.viewportWidth / 2, this.viewportHeight / 2);
+        },
+        (match: model.SearchMatch): void => {
+          if (match.elementIndex >= 0 && match.elementIndex < this.blockSource.totalCount()) {
+            this.scroller.scrollToIndex(match.elementIndex, true, ScrollAlign.CENTER);
+          }
         }
       );
     }
@@ -492,13 +732,25 @@ struct DocxFlowView {
               (element: model.Element, index: number) => {
                 ListItem() {
                   if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
-                    DocxTableView({ element: element })
+                    DocxTableView({
+                      element: element,
+                      blockMatches: this.searchMatches ? this.searchMatches.filter(m => m.elementIndex === index) : [],
+                      currentMatch: (this.currentMatchIndex >= 0 && this.currentMatchIndex < this.searchMatches.length)
+                        ? this.searchMatches[this.currentMatchIndex]
+                        : null
+                    })
                   } else if (element.type === 'IMAGE') {
                     DocxImageView({ element: element, imageStore: this.imageStore })
                   } else if (element.type === 'RECT' || element.type === 'ELLIPSE' || element.type === 'LINE' || element.type === 'PATH') {
                     DocxShapeView({ element: element, imageStore: this.imageStore })
                   } else if (element.paragraphs && element.paragraphs.length > 0) {
-                    DocxTextBlockView({ element: element })
+                    DocxTextBlockView({
+                      element: element,
+                      blockMatches: this.searchMatches ? this.searchMatches.filter(m => m.elementIndex === index) : [],
+                      currentMatch: (this.currentMatchIndex >= 0 && this.currentMatchIndex < this.searchMatches.length)
+                        ? this.searchMatches[this.currentMatchIndex]
+                        : null
+                    })
                   }
                 }
                 .reuseId(element.type)
@@ -894,9 +1146,117 @@ struct DocxShapeView {
   }
 }
 
+interface TextSpanItem {
+  text: string;
+  run: model.Run;
+  isHighlight: boolean;
+  isCurrent: boolean;
+}
+
+interface RunOverlap {
+  start: number;
+  end: number;
+  isCur: boolean;
+}
+
+function buildHighlightedSpans(
+  para: model.Paragraph,
+  paraMatches: model.SearchMatch[] | undefined,
+  currentMatch: model.SearchMatch | null
+): TextSpanItem[] {
+  if (!para.runs || para.runs.length === 0) {
+    return [];
+  }
+  if (!paraMatches || paraMatches.length === 0) {
+    return para.runs.map((r): TextSpanItem => {
+      const item: TextSpanItem = {
+        text: r.text,
+        run: r,
+        isHighlight: false,
+        isCurrent: false
+      };
+      return item;
+    });
+  }
+
+  const bulletLen = para.bullet ? para.bullet.length : 0;
+  let charCursor = bulletLen;
+  const result: TextSpanItem[] = [];
+
+  for (const run of para.runs) {
+    const runText = run.text;
+    const runLen = runText.length;
+    if (runLen === 0) continue;
+
+    const runStart = charCursor;
+    const runEnd = runStart + runLen;
+    charCursor = runEnd;
+
+    const overlaps: RunOverlap[] = [];
+    for (const m of paraMatches) {
+      if (m.endChar > runStart && m.startChar < runEnd) {
+        const oStart = Math.max(0, m.startChar - runStart);
+        const oEnd = Math.min(runLen, m.endChar - runStart);
+        if (oEnd > oStart) {
+          const isCur = currentMatch !== null &&
+            currentMatch.pageIndex === m.pageIndex &&
+            currentMatch.elementIndex === m.elementIndex &&
+            currentMatch.paragraphIndex === m.paragraphIndex &&
+            currentMatch.row === m.row &&
+            currentMatch.column === m.column &&
+            currentMatch.startChar === m.startChar;
+          const overlap: RunOverlap = { start: oStart, end: oEnd, isCur: isCur };
+          overlaps.push(overlap);
+        }
+      }
+    }
+
+    if (overlaps.length === 0) {
+      const normalItem: TextSpanItem = { text: runText, run: run, isHighlight: false, isCurrent: false };
+      result.push(normalItem);
+      continue;
+    }
+
+    let localIdx = 0;
+    while (localIdx < runLen) {
+      const activeOverlap = overlaps.find((o: RunOverlap): boolean => localIdx >= o.start && localIdx < o.end);
+      if (activeOverlap) {
+        const segEnd = activeOverlap.end;
+        const hlItem: TextSpanItem = {
+          text: runText.substring(localIdx, segEnd),
+          run: run,
+          isHighlight: true,
+          isCurrent: activeOverlap.isCur
+        };
+        result.push(hlItem);
+        localIdx = segEnd;
+      } else {
+        let nextStart = runLen;
+        for (const o of overlaps) {
+          if (o.start > localIdx && o.start < nextStart) {
+            nextStart = o.start;
+          }
+        }
+        const nonHlItem: TextSpanItem = {
+          text: runText.substring(localIdx, nextStart),
+          run: run,
+          isHighlight: false,
+          isCurrent: false
+        };
+        result.push(nonHlItem);
+        localIdx = nextStart;
+      }
+    }
+  }
+
+  return result;
+}
+
 @Component
 struct DocxParagraphView {
   para: model.Paragraph | null = null;
+  paraMatches: model.SearchMatch[] = [];
+  currentMatch: model.SearchMatch | null = null;
 
   private calcLineHeight(): number | undefined {
     if (!this.para || !this.para.runs || this.para.runs.length === 0) return undefined;
@@ -939,20 +1299,36 @@ struct DocxParagraphView {
             )
         }
         ForEach(
-          this.para.runs,
-          (run: model.Run) => {
-            Span(run.text)
-              .fontSize(run.size || 14)
-              .fontFamily(RenderUtils.resolveFontFamily(run.fontFace, false))
-              .fontColor(RenderUtils.argbToCss(run.color) ?? '#202124')
-              .fontWeight(RenderUtils.resolveFontBold(run.fontFace, run.bold) ? FontWeight.Bold : FontWeight.Normal)
-              .fontStyle(run.italic ? FontStyle.Italic : FontStyle.Normal)
+          buildHighlightedSpans(this.para, this.paraMatches, this.currentMatch),
+          (item: TextSpanItem, rIdx: number) => {
+            Span(item.text)
+              .fontSize(item.run.size || 14)
+              .fontFamily(RenderUtils.resolveFontFamily(item.run.fontFace, false))
+              .fontColor(
+                item.isCurrent
+                  ? '#000000'
+                  : (RenderUtils.argbToCss(item.run.color) ?? '#202124')
+              )
+              .fontWeight(
+                item.isCurrent
+                  ? FontWeight.Bolder
+                  : (RenderUtils.resolveFontBold(item.run.fontFace, item.run.bold) ? FontWeight.Bold : FontWeight.Normal)
+              )
+              .fontStyle(item.run.italic ? FontStyle.Italic : FontStyle.Normal)
+              .textBackgroundStyle(
+                item.isHighlight
+                  ? {
+                      color: item.isCurrent ? '#FFA726' : '#FFF59D',
+                      radius: '2vp'
+                    }
+                  : undefined
+              )
               .decoration({
-                type: run.underline ? TextDecorationType.Underline : TextDecorationType.None,
-                color: RenderUtils.argbToCss(run.color) ?? '#202124'
+                type: item.run.underline ? TextDecorationType.Underline : TextDecorationType.None,
+                color: RenderUtils.argbToCss(item.run.color) ?? '#202124'
               })
           },
-          (_run: model.Run, rIdx: number) => `r-${rIdx}`
+          (item: TextSpanItem, rIdx: number) => `span-${rIdx}-${item.text.length}-${item.isHighlight ? (item.isCurrent ? 2 : 1) : 0}`
         )
       }
       .width('100%')
@@ -982,12 +1358,20 @@ struct DocxParagraphView {
 @Component
 struct DocxTextBlockView {
   element: model.Element | null = null;
+  blockMatches: model.SearchMatch[] = [];
+  currentMatch: model.SearchMatch | null = null;
   @State private reuseVersion: number = 0;
 
   aboutToReuse(params: Record<string, Object>): void {
     if (params['element']) {
       this.element = params['element'] as model.Element;
       this.reuseVersion++;
+    }
+    if (params['blockMatches']) {
+      this.blockMatches = params['blockMatches'] as model.SearchMatch[];
+    }
+    if (params['currentMatch'] !== undefined) {
+      this.currentMatch = params['currentMatch'] as model.SearchMatch | null;
     }
   }
 
@@ -996,10 +1380,14 @@ struct DocxTextBlockView {
       Column({ space: 4 }) {
         ForEach(
           this.element.paragraphs,
-          (para: model.Paragraph) => {
-            DocxParagraphView({ para: para })
+          (para: model.Paragraph, pIdx: number) => {
+            DocxParagraphView({
+              para: para,
+              paraMatches: this.blockMatches ? this.blockMatches.filter(m => m.paragraphIndex === pIdx) : [],
+              currentMatch: this.currentMatch
+            })
           },
-          (_para: model.Paragraph, pIdx: number) => `p-${pIdx}-${this.reuseVersion}`
+          (_para: model.Paragraph, pIdx: number) => `p-${pIdx}-${this.reuseVersion}-${this.blockMatches.length}`
         )
       }
       .width('100%')
@@ -1012,12 +1400,20 @@ struct DocxTextBlockView {
 @Component
 struct DocxTableView {
   element: model.Element | null = null;
+  blockMatches: model.SearchMatch[] = [];
+  currentMatch: model.SearchMatch | null = null;
   @State private reuseVersion: number = 0;
 
   aboutToReuse(params: Record<string, Object>): void {
     if (params['element']) {
       this.element = params['element'] as model.Element;
       this.reuseVersion++;
+    }
+    if (params['blockMatches']) {
+      this.blockMatches = params['blockMatches'] as model.SearchMatch[];
+    }
+    if (params['currentMatch'] !== undefined) {
+      this.currentMatch = params['currentMatch'] as model.SearchMatch | null;
     }
   }
 
@@ -1034,10 +1430,16 @@ struct DocxTableView {
                   Column({ space: 2 }) {
                     ForEach(
                       cellParas,
-                      (para: model.Paragraph) => {
-                        DocxParagraphView({ para: para })
+                      (para: model.Paragraph, pIdx: number) => {
+                        DocxParagraphView({
+                          para: para,
+                          paraMatches: this.blockMatches
+                            ? this.blockMatches.filter(m => m.row === rIdx && m.column === cIdx && m.paragraphIndex === pIdx)
+                            : [],
+                          currentMatch: this.currentMatch
+                        })
                       },
-                      (_p: model.Paragraph, pIdx: number) => `cp-${pIdx}-${this.reuseVersion}`
+                      (_p: model.Paragraph, pIdx: number) => `cp-${pIdx}-${this.reuseVersion}-${this.blockMatches.length}`
                     )
                   }
                   .layoutWeight(Math.max(1, this.element?.columnWidths?.[cIdx] ?? 1))
@@ -1097,11 +1499,14 @@ function buildSlideAccessibilityLabel(page: model.Page | null, slideNumber: numb
 struct PptxSlidesView {
   document: model.OfficeDocument | null = null;
   filePath: string = '';
+  searchMatches: model.SearchMatch[] = [];
+  @Prop currentMatchIndex: number = -1;
   onSlideChange?: (pageNumber: number, pageCount: number) => void;
   registerControls?: (
     jumpToPage: (pageNumber: number) => void,
     getZoom: () => number,
-    setZoom: (value: number) => void
+    setZoom: (value: number) => void,
+    scrollToMatch?: (match: model.SearchMatch) => void
   ) => void;
 
   private imageStore: ImageStore = new ImageStore('');
@@ -1170,9 +1575,55 @@ struct PptxSlidesView {
         (): number => this.zoom,
         (value: number): void => {
           this.startZoomTween(value, this.canvasWidth / 2, this.canvasHeight / 2, RenderUtils.ZOOM_ANIMATION_MS);
+        },
+        (match: model.SearchMatch): void => {
+          this.scrollToMatch(match);
         }
       );
     }
+  }
+
+  public scrollToMatch(match: model.SearchMatch): void {
+    if (match.pageIndex < 0 || match.pageIndex >= this.pageLayouts.length) return;
+    const targetPage = match.pageIndex + 1;
+    if (this.currentPage !== targetPage) {
+      this.jumpToPage(targetPage);
+    }
+    const layout = this.pageLayouts[match.pageIndex];
+    if (!layout.page.elements || match.elementIndex >= layout.page.elements.length) {
+      return;
+    }
+    const element = layout.page.elements[match.elementIndex];
+    const rects = CanvasElementDrawer.computeElementHighlightRects(this.ctx, element, match);
+    const slideLeft = (this.contentWidth - layout.width) / 2;
+
+    let targetX = slideLeft + layout.width / 2;
+    let targetY = layout.y + layout.height / 2;
+    if (rects.length > 0) {
+      let minX = rects[0].x;
+      let maxX = rects[0].x + rects[0].width;
+      let minY = rects[0].y;
+      let maxY = rects[0].y + rects[0].height;
+      for (let k = 1; k < rects.length; k++) {
+        minX = Math.min(minX, rects[k].x);
+        maxX = Math.max(maxX, rects[k].x + rects[k].width);
+        minY = Math.min(minY, rects[k].y);
+        maxY = Math.max(maxY, rects[k].y + rects[k].height);
+      }
+      targetX = slideLeft + (minX + maxX) / 2;
+      targetY = layout.y + (minY + maxY) / 2;
+    }
+
+    const s = this.getScale();
+    const targetOx = targetX * s + this.getLeft() - this.canvasWidth / 2;
+    const targetOy = targetY * s + this.getTop() - this.canvasHeight / 2;
+
+    this.stopFling();
+    this.stopZoomTween();
+    this.offsetX = Math.max(0, Math.min(this.maxX(), Math.round(targetOx)));
+    this.offsetY = Math.max(0, Math.min(this.maxY(), Math.round(targetOy)));
+    this.updateCurrentPage();
+    this.redraw();
   }
 
   aboutToDisappear(): void {
@@ -1564,6 +2015,30 @@ struct PptxSlidesView {
             neededImageParts.push(element.image);
           }
           CanvasElementDrawer.drawElement(ctx, element, this.imageStore.cache);
+        }
+      }
+
+      // 4. 绘制全文检索高亮 (普通淡黄，当前亮橙色+边框)
+      if (this.searchMatches && this.searchMatches.length > 0) {
+        for (let mIdx = 0; mIdx < this.searchMatches.length; mIdx++) {
+          const m = this.searchMatches[mIdx];
+          if (m.pageIndex !== i) continue;
+          if (!layout.page.elements || m.elementIndex >= layout.page.elements.length) continue;
+          const element = layout.page.elements[m.elementIndex];
+          const rects = CanvasElementDrawer.computeElementHighlightRects(ctx, element, m);
+          const isCurrent = (mIdx === this.currentMatchIndex);
+          for (const r of rects) {
+            if (isCurrent) {
+              ctx.fillStyle = 'rgba(255, 160, 0, 0.75)';
+              ctx.fillRect(r.x, r.y, r.width, r.height);
+              ctx.strokeStyle = '#e65100';
+              ctx.lineWidth = 1.5;
+              ctx.strokeRect(r.x, r.y, r.width, r.height);
+            } else {
+              ctx.fillStyle = 'rgba(255, 235, 59, 0.45)';
+              ctx.fillRect(r.x, r.y, r.width, r.height);
+            }
+          }
         }
       }
 

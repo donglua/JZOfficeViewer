@@ -51,15 +51,15 @@ export declare function parse(path: string): string
 /** 异步解析接口（使用鸿蒙底层 libuv Worker 线程池，不阻塞 ArkUI 主线程） */
 export declare function parseAsync(path: string, abortSignal?: AbortSignal | undefined | null): Promise<string>
 
-/** 同步全文检索接口（对齐 Android NativeCore.search） */
-export declare function search(path: string, query: string): string
-
-/** 异步全文检索接口（使用鸿蒙底层 libuv Worker 线程池，不阻塞 ArkUI 主线程） */
-export declare function searchAsync(path: string, query: string, abortSignal?: AbortSignal | undefined | null): Promise<string>
-
 /** 同步读取文档 ZIP 包内指定部件字节流 */
 export declare function readPart(path: string, part: string): ArrayBuffer
 
 /** 异步读取文档 ZIP 包内指定部件字节流（用于按需加载内嵌图片） */
 export declare function readPartAsync(path: string, part: string, abortSignal?: AbortSignal | undefined | null): Promise<ArrayBuffer>
+
+/** 同步全文检索接口（对齐 Android NativeCore.search） */
+export declare function search(path: string, query: string): string
+
+/** 异步全文检索接口（使用鸿蒙底层 libuv Worker 线程池，不阻塞 ArkUI 主线程） */
+export declare function searchAsync(path: string, query: string, abortSignal?: AbortSignal | undefined | null): Promise<string>
 
