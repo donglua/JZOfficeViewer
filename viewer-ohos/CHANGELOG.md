@@ -1,5 +1,42 @@
 # 更新日志
 
+## 0.11.0
+
+发布页面：[v0.11.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.11.0)。
+
+本版本主要新增 macOS 原生平台支持、三端跨平台全文检索与搜索交互组件、DOCX 编号列表与表格合并排版增强，以及多项端侧渲染与稳定性优化。
+
+### 平台与架构
+
+- **macOS 原生平台支持（`viewer-macos`）**：
+  - 新增基于 CoreGraphics / CoreText / ImageIO / SwiftUI 的原生预览组件，提供纯 Swift API 与标准预览控制接口。
+  - 支持编译生成 Apple Silicon（`arm64`）与 Intel（`x86_64`）通用静态库及 XCFramework，并接入 GitHub Actions 自动化归档与发布。
+  - 支持按页缩略图绘制、幻灯片跳转滚动以及矢量 PDF / PNG 导出能力。
+  - 引入空间索引与文本选择模型（`DocumentTextLayout`），支持鼠标拖拽选区、连续多击选词/选行、光标适配与快捷键复制（⌘C）。
+- **三端全文检索与搜索组件（`core` / `viewer` / `viewer-macos` / `viewer-ohos`）**：
+  - Rust 核心下沉跨平台全文检索协议，支持 DOCX、PPTX、XLSX 跨 run 文本匹配与 UTF-16 偏移精确计算。
+  - Android、macOS 与 HarmonyOS NEXT 三端支持检索关键词高亮绘制、命中项视口居中平滑滚动以及开箱即用的搜索交互栏组件。
+  - 优化 XLSX 表格全量检索命中绘制性能，避免高亮覆盖冻结表头与跨合并单元格错位。
+
+### DOCX 排版与特性
+
+- **编号与多级列表**：解析 `numbering.xml` 自动编号与多级列表，正确继承外层占位符引用及数字格式。
+- **单元格合并**：支持表格横向跨列（`gridSpan`）与纵向跨行（`vMerge`）合并，完善缺列闭合与覆盖单元格边界处理。
+- **排版对齐与缩进**：支持字符单位段落缩进（`leftChars` / `firstLineChars`）与三端两端对齐（justified）拉伸排版。
+- **主题字体解析**：支持从 `word/theme/theme1.xml` 解析 EastAsia 主题字体，优先匹配中文字体避免日文字体抢占。
+
+### 渲染与修复
+
+- **DOCX 属性与符号修复**：修复段落标记 `rPr` 泄漏至所有 run 以及隐藏段尾符致整段消失的问题；修复带 bullet 段落搜索高亮重复累加偏移的问题。
+- **HarmonyOS 端检索交互**：修复检索命中样式在列表复用后不刷新、关键词变更后高亮未刷新以及 bullet 匹配渲染问题。
+- **macOS 端坐标与选区**：修复 DOCX 检索高亮坐标转换、段尾两端对齐及表格文本框选问题。
+
+### 工程与文档
+
+- 升级 Android 构建插件至 9.5.1。
+- 将 Android 无障碍设备测试移出常规 Push/PR CI，转为独立按需手动触发工作流。
+- 新增英文版 `README.en.md` 并提供中英文互链。
+
 ## 0.10.0
 
 发布页面：[v0.10.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.10.0)。

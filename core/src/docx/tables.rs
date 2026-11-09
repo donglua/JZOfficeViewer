@@ -111,7 +111,7 @@ impl Parser<'_> {
                 }
             }
             let mut uncontinued = Vec::new();
-            for (&c, _) in &active_v_merges {
+            for &c in active_v_merges.keys() {
                 if !continued_in_row.contains(&c) {
                     uncontinued.push(c);
                 }
