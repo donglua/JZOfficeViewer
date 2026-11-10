@@ -172,8 +172,11 @@ fn docx_table_cell_contains_drawing_image() -> TestResult {
   </w:tr>
 </w:tbl>
 "#;
-    support::package::replace(&mut parts, "word/document.xml", &format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    support::package::replace(
+        &mut parts,
+        "word/document.xml",
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
@@ -181,7 +184,8 @@ fn docx_table_cell_contains_drawing_image() -> TestResult {
  xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
   <w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body>
 </w:document>"#
-    ));
+        ),
+    );
     let doc = parse_reader(Cursor::new(archive(&parts)?))?;
     let table = &doc.blocks[0];
     assert_eq!(table.rows.len(), 1);
@@ -192,7 +196,10 @@ fn docx_table_cell_contains_drawing_image() -> TestResult {
     assert_eq!(para.image.as_deref(), Some("word/media/pixel.png"));
     assert_eq!(para.image_width, Some(72.0));
     assert_eq!(para.image_height, Some(36.0));
-    assert!(!doc.warnings.iter().any(|w| w.contains("Images inside table cells are omitted")));
+    assert!(!doc
+        .warnings
+        .iter()
+        .any(|w| w.contains("Images inside table cells are omitted")));
     Ok(())
 }
 
@@ -218,4 +225,3 @@ fn docx_table_parses_tbl_borders() -> TestResult {
     assert_eq!(table.stroke_width, 1.0);
     Ok(())
 }
-
