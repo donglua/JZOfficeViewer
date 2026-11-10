@@ -77,6 +77,9 @@ final class OfficeDocument {
         LineSpacingRule lineSpacingRule = LineSpacingRule.AUTO;
         float lineSpacing = 1;
         String bullet = "";
+        String image;
+        Float imageWidth;
+        Float imageHeight;
     }
 
     static final class Run {

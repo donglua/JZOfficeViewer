@@ -35,10 +35,14 @@ final class OfficeTextLayout {
                 float extra = Math.max(1, (int) width) - block.layout.getWidth();
                 block.x += paragraph.alignment == 1 ? extra / 2 : paragraph.alignment == 2 ? extra : 0;
             }
-            out.add(block);
+            if (out != null) out.add(block);
             y += block.layout.getHeight() + Math.max(0, paragraph.after);
         }
         return y;
+    }
+
+    static float measure(List<OfficeDocument.Paragraph> paragraphs, float width, boolean pptx) {
+        return append(paragraphs, 0, 0, width, null, pptx, true);
     }
 
     static StaticLayout paragraph(OfficeDocument.Paragraph paragraph, float width) {

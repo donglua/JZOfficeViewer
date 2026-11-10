@@ -871,6 +871,20 @@ final class DocumentDecoder {
                         if (c.peekNull()) { c.nextNull(); p.bullet = ""; }
                         else p.bullet = c.nextString();
                         break;
+                    case "image":
+                        if (c.peekNull()) { c.nextNull(); p.image = null; }
+                        else p.image = c.nextString();
+                        break;
+                    case "imageWidth":
+                    case "image_width":
+                        if (c.peekNull()) { c.nextNull(); p.imageWidth = null; }
+                        else p.imageWidth = (float) c.nextDouble();
+                        break;
+                    case "imageHeight":
+                    case "image_height":
+                        if (c.peekNull()) { c.nextNull(); p.imageHeight = null; }
+                        else p.imageHeight = (float) c.nextDouble();
+                        break;
                     case "runs":
                         c.beginArray();
                         while (c.hasNext()) p.runs.add(run(c));

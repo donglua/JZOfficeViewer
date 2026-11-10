@@ -16,10 +16,16 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 final class OfficeRenderer {
+    static final class CellImage {
+        String image;
+        final RectF rect = new RectF();
+    }
+
     static final class Element {
         OfficeDocument.Element source;
         final List<OfficeTextLayout.Block> texts = new ArrayList<>();
         final List<RectF> cells = new ArrayList<>();
+        final List<CellImage> cellImages = new ArrayList<>();
         float x, y, width, height;
         final Matrix transform = new Matrix();
         final RectF bounds = new RectF();
@@ -188,25 +194,92 @@ final class OfficeRenderer {
                     float cellW = Math.max(1, x2 - x1);
                     List<OfficeDocument.Paragraph> cell = c < row.size() ? row.get(c) : Collections.emptyList();
                     if (!cell.isEmpty()) {
-                        rowHeight = Math.max(rowHeight, OfficeTextLayout.append(cell, x1 + 5, y + 5, Math.max(1, cellW - 10), d.texts, !flow) - y + 5);
+                        float availW = Math.max(1, cellW - 10);
+                        float cellContentH = 0;
+                        for (OfficeDocument.Paragraph para : cell) {
+                            if (para.image != null && para.imageWidth != null && para.imageHeight != null
+                                    && para.imageWidth > 0 && para.imageHeight > 0) {
+                                float fitW = Math.min(availW, para.imageWidth);
+                                float fitH = para.imageHeight * (fitW / para.imageWidth);
+                                cellContentH += fitH + Math.max(0, para.before) + Math.max(0, para.after);
+                            }
+                        }
+                        List<OfficeDocument.Paragraph> textParas = new ArrayList<>();
+                        for (OfficeDocument.Paragraph p : cell) {
+                            if (p.image == null) textParas.add(p);
+                        }
+                        if (!textParas.isEmpty()) {
+                            cellContentH += OfficeTextLayout.measure(textParas, availW, !flow);
+                        }
+                        rowHeight = Math.max(rowHeight, cellContentH + 10);
                     }
                 }
                 y += rowHeight;
             }
             rowTops[numRows] = y;
             for (int r = 0; r < numRows; r++) {
+                List<List<OfficeDocument.Paragraph>> row = source.rows.get(r);
                 for (int c = 0; c < cols; c++) {
                     SpreadsheetDocument.CellRange m = findMerge(source.merges, r, c);
+                    float x1, x2, y1, y2;
                     if (m != null) {
-                        if (m.startRow == r && m.startColumn == c) {
-                            float x1 = colX[c];
-                            float x2 = colX[Math.min(cols, (int) m.endColumn + 1)];
-                            float y1 = rowTops[r];
-                            float y2 = rowTops[Math.min(numRows, (int) m.endRow + 1)];
-                            d.cells.add(new RectF(x1, y1, x2, y2));
-                        }
+                        if (m.startRow != r || m.startColumn != c) continue;
+                        x1 = colX[c];
+                        x2 = colX[Math.min(cols, (int) m.endColumn + 1)];
+                        y1 = rowTops[r];
+                        y2 = rowTops[Math.min(numRows, (int) m.endRow + 1)];
+                        d.cells.add(new RectF(x1, y1, x2, y2));
                     } else {
-                        d.cells.add(new RectF(colX[c], rowTops[r], colX[c + 1], rowTops[r + 1]));
+                        x1 = colX[c];
+                        x2 = colX[c + 1];
+                        y1 = rowTops[r];
+                        y2 = rowTops[r + 1];
+                        d.cells.add(new RectF(x1, y1, x2, y2));
+                    }
+                    float cellW = Math.max(1, x2 - x1);
+                    float cellH = Math.max(1, y2 - y1);
+                    List<OfficeDocument.Paragraph> cell = c < row.size() ? row.get(c) : Collections.emptyList();
+                    if (!cell.isEmpty()) {
+                        float availW = Math.max(1, cellW - 10);
+                        float cellContentH = 0;
+                        for (OfficeDocument.Paragraph para : cell) {
+                            if (para.image != null && para.imageWidth != null && para.imageHeight != null
+                                    && para.imageWidth > 0 && para.imageHeight > 0) {
+                                float fitW = Math.min(availW, para.imageWidth);
+                                float fitH = para.imageHeight * (fitW / para.imageWidth);
+                                cellContentH += fitH + Math.max(0, para.before) + Math.max(0, para.after);
+                            }
+                        }
+                        List<OfficeDocument.Paragraph> textParas = new ArrayList<>();
+                        for (OfficeDocument.Paragraph p : cell) {
+                            if (p.image == null) textParas.add(p);
+                        }
+                        if (!textParas.isEmpty()) {
+                            cellContentH += OfficeTextLayout.measure(textParas, availW, !flow);
+                        }
+                        float vOffset = cellH > cellContentH + 10 ? Math.max(5, (cellH - cellContentH) / 2.0f) : 5;
+                        float curY = y1 + vOffset;
+                        for (OfficeDocument.Paragraph para : cell) {
+                            if (para.image != null && para.imageWidth != null && para.imageHeight != null
+                                    && para.imageWidth > 0 && para.imageHeight > 0) {
+                                curY += Math.max(0, para.before);
+                                float fitW = Math.min(availW, para.imageWidth);
+                                float fitH = para.imageHeight * (fitW / para.imageWidth);
+                                float imgX = x1 + 5;
+                                if (para.alignment == 1) {
+                                    imgX += Math.max(0, (availW - fitW) / 2.0f);
+                                } else if (para.alignment == 2) {
+                                    imgX += Math.max(0, availW - fitW);
+                                }
+                                CellImage ci = new CellImage();
+                                ci.image = para.image;
+                                ci.rect.set(imgX, curY, imgX + fitW, curY + fitH);
+                                d.cellImages.add(ci);
+                                curY += fitH + Math.max(0, para.after);
+                            } else {
+                                curY = OfficeTextLayout.append(Collections.singletonList(para), x1 + 5, curY, availW, d.texts, !flow);
+                            }
+                        }
                     }
                 }
             }
@@ -267,10 +340,14 @@ final class OfficeRenderer {
             // Frontmost images on the current slide get spare decode budget before backgrounds.
             for (int element = page.elements.size() - 1; element >= 0; element--) {
                 Element e = page.elements.get(element);
-                if (e.source.image == null) continue;
-                RectF bounds = e.bounds;
-                if (bounds.right > clippedLeft && bounds.left < clippedRight
-                    && page.y + bounds.bottom > clippedTop && page.y + bounds.top < clippedBottom) parts.add(e.source.image);
+                if (e.source.image != null) {
+                    RectF bounds = e.bounds;
+                    if (bounds.right > clippedLeft && bounds.left < clippedRight
+                        && page.y + bounds.bottom > clippedTop && page.y + bounds.top < clippedBottom) parts.add(e.source.image);
+                }
+                for (CellImage ci : e.cellImages) {
+                    parts.add(ci.image);
+                }
             }
         }
         return parts;
@@ -343,8 +420,18 @@ final class OfficeRenderer {
         }
         if (e.type == OfficeDocument.Type.TABLE) {
             drawTableCellFills(canvas, e, d.cells);
-            paint.setColor(0xffb7bec7); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(0.6f);
+            paint.setColor(e.stroke != 0 ? e.stroke : 0xffb7bec7);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(e.strokeWidth > 0 ? e.strokeWidth : 0.6f);
             for (RectF cell : d.cells) canvas.drawRect(cell, paint);
+            for (CellImage ci : d.cellImages) {
+                Bitmap bitmap = images.get(ci.image);
+                if (bitmap != null) {
+                    paint.setColor(0xffffffff);
+                    paint.setStyle(Paint.Style.FILL);
+                    canvas.drawBitmap(bitmap, null, ci.rect, paint);
+                }
+            }
         }
         for (OfficeTextLayout.Block block : d.texts) {
             canvas.save(); canvas.translate(block.x, block.y); block.layout.draw(canvas); canvas.restore();
