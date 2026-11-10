@@ -67,7 +67,23 @@ public final class OfficePreviewController: ObservableObject {
 
     private var pageListeners: [UUID: (Int, Int) -> Void] = [:]
 
+    internal struct ScrollRequest: Equatable {
+        let id = UUID()
+        let page: Int
+        init(page: Int) {
+            self.page = page
+        }
+    }
+    @Published internal var scrollRequest: ScrollRequest? = nil
+    private var programmaticScrollTarget: Int? = nil
+    private var clearScrollTargetTask: Task<Void, Never>? = nil
+
     nonisolated public init() {}
+
+    deinit {
+        clearScrollTargetTask?.cancel()
+        activeSearchTask?.cancel()
+    }
 
     @discardableResult
     public func addOnPageChangeListener(_ listener: @escaping (Int, Int) -> Void) -> UUID {
@@ -92,10 +108,37 @@ public final class OfficePreviewController: ObservableObject {
 
     public func jumpToPage(_ pageNumber: Int) {
         guard pageNumber >= 1 && pageNumber <= pageCount else { return }
+        clearScrollTargetTask?.cancel()
+        programmaticScrollTarget = pageNumber
         if currentPage != pageNumber {
             currentPage = pageNumber
             notifyPageListeners()
         }
+        scrollRequest = ScrollRequest(page: pageNumber)
+        clearScrollTargetTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            self?.programmaticScrollTarget = nil
+        }
+    }
+
+    public func onPageScrollDetected(page: Int) {
+        guard page >= 1 && page <= pageCount else { return }
+        if let target = programmaticScrollTarget {
+            if page == target {
+                programmaticScrollTarget = nil
+                clearScrollTargetTask?.cancel()
+            } else {
+                return
+            }
+        }
+        guard page != currentPage else { return }
+        currentPage = page
+        notifyPageListeners()
+    }
+
+    public func onPageScrollDetected(_ page: Int) {
+        onPageScrollDetected(page: page)
     }
 
     public func selectSheet(_ sheetNumber: Int) {
@@ -272,7 +315,10 @@ public struct OfficePreviewView: View {
                                 onPresentSearch: { controller.presentSearch() },
                                 onDismissSearch: { controller.dismissSearch() },
                                 onFindNext: { _ = controller.findNext() },
-                                onFindPrevious: { _ = controller.findPrevious() }
+                                onFindPrevious: { _ = controller.findPrevious() },
+                                onPageDetected: { detectedPage in
+                                    controller.onPageScrollDetected(page: detectedPage)
+                                }
                             )
                             .frame(
                                 width: canvasContentSize(for: doc).width * controller.zoom,
@@ -293,10 +339,10 @@ public struct OfficePreviewView: View {
                         }
                         .padding(16)
                     }
-                    .onChange(of: controller.currentPage) { _, newPage in
-                        if doc.kind == .pptx, newPage >= 1 {
+                    .onChange(of: controller.scrollRequest) { _, req in
+                        if let req = req, doc.kind == .pptx, req.page >= 1 {
                             withAnimation(.easeInOut(duration: 0.2)) {
-                                scrollProxy.scrollTo("slide-\(newPage)", anchor: .top)
+                                scrollProxy.scrollTo("slide-\(req.page)", anchor: .top)
                             }
                         }
                     }
@@ -320,6 +366,10 @@ public struct OfficePreviewView: View {
         }
         .onChange(of: controller.currentPage) { _, newPage in
             onPageChange?(newPage, controller.pageCount)
+        }
+        .onDisappear {
+            controller.imageLoader?.close()
+            controller.imageLoader = nil
         }
     }
 
@@ -422,6 +472,7 @@ struct OfficeCanvasRepresentable: NSViewRepresentable {
     let onDismissSearch: () -> Void
     let onFindNext: () -> Void
     let onFindPrevious: () -> Void
+    var onPageDetected: ((Int) -> Void)? = nil
 
     func makeNSView(context: Context) -> OfficeDocumentNSView {
         let view = OfficeDocumentNSView()
@@ -430,6 +481,7 @@ struct OfficeCanvasRepresentable: NSViewRepresentable {
         view.images = images
         view.currentPage = currentPage
         view.zoom = zoom
+        view.onPageDetected = onPageDetected
         view.onPresentSearch = onPresentSearch
         view.onDismissSearch = onDismissSearch
         view.onFindNext = onFindNext
@@ -444,6 +496,7 @@ struct OfficeCanvasRepresentable: NSViewRepresentable {
         nsView.images = images
         nsView.currentPage = currentPage
         nsView.zoom = zoom
+        nsView.onPageDetected = onPageDetected
         nsView.onPresentSearch = onPresentSearch
         nsView.onDismissSearch = onDismissSearch
         nsView.onFindNext = onFindNext
@@ -451,6 +504,10 @@ struct OfficeCanvasRepresentable: NSViewRepresentable {
         nsView.updateSearchResults(searchResults, currentIndex: currentMatchIndex, targetRect: targetHighlightRect)
         nsView.needsDisplay = true
         nsView.evaluateViewport()
+    }
+
+    static func dismantleNSView(_ nsView: OfficeDocumentNSView, coordinator: ()) {
+        nsView.teardown()
     }
 }
 
@@ -480,6 +537,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
 
     var searchResults: [OfficeSearchMatch] = []
     var currentMatchIndex: Int = -1
+    var onPageDetected: ((Int) -> Void)?
     var onPresentSearch: (() -> Void)?
     var onDismissSearch: (() -> Void)?
     var onFindNext: (() -> Void)?
@@ -495,19 +553,43 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     override var acceptsFirstResponder: Bool { true }
 
     deinit {
+        teardown()
+    }
+
+    func teardown() {
+        if let clip = observedClipView {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.boundsDidChangeNotification,
+                object: clip
+            )
+            observedClipView = nil
+        }
         NotificationCenter.default.removeObserver(self)
+        imageLoader?.close()
+        imageLoader = nil
+        textLayout = nil
+        selection = nil
     }
 
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
-        setupScrollViewObservation()
-        evaluateViewport()
+        if superview == nil && window == nil {
+            teardown()
+        } else if superview != nil {
+            setupScrollViewObservation()
+            evaluateViewport()
+        }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        setupScrollViewObservation()
-        evaluateViewport()
+        if window == nil {
+            teardown()
+        } else {
+            setupScrollViewObservation()
+            evaluateViewport()
+        }
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -547,6 +629,10 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             document?.pages.count != newDoc.pages.count ||
             document?.sheets.count != newDoc.sheets.count ||
             document?.blocks.count != newDoc.blocks.count)
+        if isDocChanged && document != nil {
+            textLayout = nil
+            selection = nil
+        }
         document = newDoc
         if isDocChanged || docxBlockYOffsets == nil {
             docxBlockYOffsets = newDoc.kind == .docx ? CGElementDrawer.computeDocxBlockYOffsets(in: newDoc) : nil
@@ -646,10 +732,41 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     }
 
     func evaluateViewport() {
-        guard let loader = imageLoader else { return }
         guard let (docVisible, prefetch) = updateVisibleAndPrefetchRects() else { return }
-        let (visibleImages, prefetchImages) = collectWantedParts(in: docVisible, prefetch: prefetch)
-        loader.request(visibleParts: visibleImages, prefetchParts: prefetchImages)
+
+        if let loader = imageLoader {
+            let (visibleImages, prefetchImages) = collectWantedParts(in: docVisible, prefetch: prefetch)
+            loader.request(visibleParts: visibleImages, prefetchParts: prefetchImages)
+        }
+
+        // 动态计算当前页码 (PPTX)
+        if let doc = document, doc.kind == .pptx, !doc.pages.isEmpty {
+            let midY = docVisible.midY
+            var detectedPage: Int = 1
+            let totalDocHeight = doc.pages.reduce(CGFloat(0)) { $0 + ($1.height > 0 ? $1.height : 405) + 16 }
+            if docVisible.minY <= 2 {
+                detectedPage = 1
+            } else if docVisible.maxY >= totalDocHeight - 4 {
+                detectedPage = doc.pages.count
+            } else {
+                var curY: CGFloat = 0
+                for (index, page) in doc.pages.enumerated() {
+                    let pH = page.height > 0 ? page.height : 405
+                    let slideTop = curY
+                    let slideBottom = curY + pH + 16
+                    if midY >= slideTop && midY < slideBottom {
+                        detectedPage = index + 1
+                        break
+                    }
+                    curY += pH + 16
+                }
+            }
+
+            if detectedPage != currentPage {
+                currentPage = detectedPage
+                onPageDetected?(detectedPage)
+            }
+        }
     }
 
     func updateSearchResults(_ results: [OfficeSearchMatch], currentIndex: Int, targetRect: CGRect?) {
