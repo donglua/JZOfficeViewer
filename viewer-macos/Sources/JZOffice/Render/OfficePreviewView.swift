@@ -409,7 +409,7 @@ public struct OfficePreviewView: View {
     }
 }
 
-private struct OfficeCanvasRepresentable: NSViewRepresentable {
+struct OfficeCanvasRepresentable: NSViewRepresentable {
     let document: OfficeDocument
     let images: [String: CGImage]
     let imageLoader: OfficeImageLoader?
@@ -450,17 +450,31 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
         nsView.onFindPrevious = onFindPrevious
         nsView.updateSearchResults(searchResults, currentIndex: currentMatchIndex, targetRect: targetHighlightRect)
         nsView.needsDisplay = true
+        nsView.evaluateViewport()
     }
 }
 
-private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
+final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     private(set) var document: OfficeDocument?
-    weak var imageLoader: OfficeImageLoader?
+    weak var imageLoader: OfficeImageLoader? {
+        didSet {
+            if imageLoader !== oldValue {
+                evaluateViewport()
+            }
+        }
+    }
     var images: [String: CGImage] = [:]
-    var currentPage: Int = 1
+    var currentPage: Int = 1 {
+        didSet {
+            if currentPage != oldValue {
+                evaluateViewport()
+            }
+        }
+    }
     var zoom: CGFloat = 1.0 {
         didSet {
             window?.invalidateCursorRects(for: self)
+            evaluateViewport()
         }
     }
 
@@ -475,9 +489,57 @@ private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     private var lastScrolledMatchIndex: Int = -1
     private var textLayout: DocumentTextLayout?
     private var selection: TextSelection?
+    private weak var observedClipView: NSClipView?
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        setupScrollViewObservation()
+        evaluateViewport()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        setupScrollViewObservation()
+        evaluateViewport()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        evaluateViewport()
+    }
+
+    private func setupScrollViewObservation() {
+        let currentClip = enclosingScrollView?.contentView
+        if observedClipView === currentClip { return }
+        if let oldClip = observedClipView {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.boundsDidChangeNotification,
+                object: oldClip
+            )
+        }
+        observedClipView = currentClip
+        if let clip = currentClip {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(clipViewBoundsDidChange(_:)),
+                name: NSView.boundsDidChangeNotification,
+                object: clip
+            )
+        }
+    }
+
+    @objc private func clipViewBoundsDidChange(_ notification: Notification) {
+        evaluateViewport()
+    }
 
     func setDocument(_ newDoc: OfficeDocument) {
         let isDocChanged = (document?.kind != newDoc.kind ||
@@ -492,6 +554,102 @@ private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             selection = nil
             window?.invalidateCursorRects(for: self)
         }
+        evaluateViewport()
+    }
+
+    // MARK: - 视口监听与图片按需收集
+
+    func updateVisibleAndPrefetchRects() -> (visible: CGRect, prefetch: CGRect)? {
+        let safeZoom = max(0.1, zoom)
+        let visible = visibleRect
+        guard visible.width > 0, visible.height > 0 else { return nil }
+
+        let docVisible = CGRect(
+            x: visible.minX / safeZoom,
+            y: visible.minY / safeZoom,
+            width: visible.width / safeZoom,
+            height: visible.height / safeZoom
+        )
+        let prefetch = docVisible.insetBy(dx: 0, dy: -docVisible.height * 0.75)
+        return (docVisible, prefetch)
+    }
+
+    func collectWantedParts(in docVisible: CGRect, prefetch: CGRect) -> (visible: [String], prefetch: [String]) {
+        guard let doc = document else { return ([], []) }
+        var visibleImages: [String] = []
+        var prefetchImages: [String] = []
+
+        switch doc.kind {
+        case .pptx:
+            var curY: CGFloat = 0
+            for page in doc.pages {
+                let pW = page.width > 0 ? page.width : 720
+                let pH = page.height > 0 ? page.height : 405
+                let slideRect = CGRect(x: 0, y: curY, width: pW, height: pH)
+                let isVisible = slideRect.intersects(docVisible)
+                let isPrefetch = slideRect.intersects(prefetch)
+
+                if isVisible || isPrefetch {
+                    for el in page.elements where el.type == .image {
+                        if let part = el.image {
+                            if isVisible { visibleImages.append(part) }
+                            else { prefetchImages.append(part) }
+                        }
+                    }
+                }
+                curY += pH + 16
+            }
+
+        case .docx:
+            guard let offsets = docxBlockYOffsets else { return ([], []) }
+            let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
+            let docW = doc.width > 0 ? doc.width : 595
+            for (i, block) in allBlocks.enumerated() where i < offsets.count {
+                let bY = offsets[i]
+                let bH: CGFloat
+                if block.height > 0 {
+                    bH = block.height
+                } else if i + 1 < offsets.count {
+                    bH = max(80, offsets[i + 1] - bY - 8)
+                } else {
+                    bH = 80
+                }
+                let blockRect = CGRect(x: doc.marginLeft, y: bY, width: docW, height: bH)
+                let isVisible = blockRect.intersects(docVisible)
+                let isPrefetch = blockRect.intersects(prefetch)
+
+                if isVisible || isPrefetch {
+                    if block.type == .image, let part = block.image {
+                        if isVisible { visibleImages.append(part) }
+                        else { prefetchImages.append(part) }
+                    }
+                    if block.type == .table {
+                        for row in block.rows {
+                            for cell in row {
+                                for p in cell {
+                                    if let part = p.image {
+                                        if isVisible { visibleImages.append(part) }
+                                        else { prefetchImages.append(part) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        case .xlsx:
+            break
+        }
+
+        return (visibleImages, prefetchImages)
+    }
+
+    func evaluateViewport() {
+        guard let loader = imageLoader else { return }
+        guard let (docVisible, prefetch) = updateVisibleAndPrefetchRects() else { return }
+        let (visibleImages, prefetchImages) = collectWantedParts(in: docVisible, prefetch: prefetch)
+        loader.request(visibleParts: visibleImages, prefetchParts: prefetchImages)
     }
 
     func updateSearchResults(_ results: [OfficeSearchMatch], currentIndex: Int, targetRect: CGRect?) {
