@@ -52,6 +52,9 @@ export interface Paragraph {
   lineSpacingRule: LineSpacingRule;
   lineSpacing: number;
   bullet?: string;
+  image?: string;
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 export interface Element {

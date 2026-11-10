@@ -142,7 +142,7 @@ export class CanvasElementDrawer {
 
     // 5. 绘制表格 (TABLE)
     if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
-      CanvasElementDrawer.drawTable(ctx, element);
+      CanvasElementDrawer.drawTable(ctx, element, imageCache);
     }
 
     // 6. 绘制文本段落 (TEXT 或形状内文字)
@@ -277,7 +277,11 @@ export class CanvasElementDrawer {
           for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
             const para = cellParas[pIdx];
             cellTextH += Math.max(0, para.before || 0);
-            if (ctx) {
+            if (para.image && para.imageWidth && para.imageHeight && para.imageWidth > 0 && para.imageHeight > 0) {
+              const fitW = Math.min(availW, para.imageWidth);
+              const fitH = para.imageHeight * (fitW / para.imageWidth);
+              cellTextH += fitH;
+            } else if (ctx) {
               const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
               for (let lIdx = 0; lIdx < lines.length; lIdx++) {
                 cellTextH += lines[lIdx].height;
@@ -321,7 +325,11 @@ export class CanvasElementDrawer {
     return geom.rowTops[geom.rowTops.length - 1] ?? 0;
   }
 
-  public static drawTable(ctx: OfficeCanvasContext, element: model.Element): void {
+  public static drawTable(
+    ctx: OfficeCanvasContext,
+    element: model.Element,
+    imageCache?: Map<string, image.PixelMap>
+  ): void {
     const rows = element.rows ?? [];
     let cols = 0;
     for (let i = 0; i < rows.length; i++) {
@@ -334,6 +342,8 @@ export class CanvasElementDrawer {
     const colX = geom.colX;
     const rowTops = geom.rowTops;
     const cellFills = element.cellFills ?? [];
+    const strokeCss = element.stroke ? (RenderUtils.argbToCss(element.stroke) || '#b7bec7') : '#b7bec7';
+    const strokeWidth = element.strokeWidth > 0 ? element.strokeWidth : 0.6;
 
     for (let r = 0; r < numRows; r++) {
       const row = rows[r];
@@ -369,8 +379,8 @@ export class CanvasElementDrawer {
           ctx.fillRect(x1, y1, cellW, cellH);
         }
 
-        ctx.strokeStyle = '#b7bec7';
-        ctx.lineWidth = 0.6;
+        ctx.strokeStyle = strokeCss;
+        ctx.lineWidth = strokeWidth;
         ctx.strokeRect(x1, y1, cellW, cellH);
 
         const cellParas = c < row.length ? row[c] : [];
@@ -379,10 +389,47 @@ export class CanvasElementDrawer {
           ctx.beginPath();
           ctx.rect(x1, y1, cellW, cellH);
           ctx.clip();
-          let paraY = y1 + 5;
+
           const availW = Math.max(1, cellW - 10);
+          let cellContentH = 0;
           for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
             const para = cellParas[pIdx];
+            cellContentH += Math.max(0, para.before || 0);
+            if (para.image && para.imageWidth && para.imageHeight && para.imageWidth > 0 && para.imageHeight > 0) {
+              const fitW = Math.min(availW, para.imageWidth);
+              const fitH = para.imageHeight * (fitW / para.imageWidth);
+              cellContentH += fitH;
+            } else {
+              const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
+              for (let lIdx = 0; lIdx < lines.length; lIdx++) {
+                cellContentH += lines[lIdx].height;
+              }
+            }
+            cellContentH += Math.max(0, para.after || 0);
+          }
+
+          const vOffset = cellH > cellContentH + 10 ? Math.max(5, (cellH - cellContentH) / 2) : 5;
+          let paraY = y1 + vOffset;
+
+          for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
+            const para = cellParas[pIdx];
+            if (para.image && imageCache) {
+              const pixelMap = imageCache.get(para.image);
+              if (pixelMap && para.imageWidth && para.imageHeight && para.imageWidth > 0 && para.imageHeight > 0) {
+                paraY += Math.max(0, para.before || 0);
+                const fitW = Math.min(availW, para.imageWidth);
+                const fitH = para.imageHeight * (fitW / para.imageWidth);
+                let imgX = x1 + 5;
+                if (para.alignment === 1) {
+                  imgX += Math.max(0, (availW - fitW) / 2);
+                } else if (para.alignment === 2) {
+                  imgX += Math.max(0, availW - fitW);
+                }
+                ctx.drawImage(pixelMap, imgX, paraY, fitW, fitH);
+                paraY += fitH + Math.max(0, para.after || 0);
+                continue;
+              }
+            }
             paraY += Math.max(0, para.before || 0);
             const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
             const h = CanvasElementDrawer.drawParagraphLines(
@@ -1030,13 +1077,33 @@ export class CanvasElementDrawer {
       const x2 = m ? colX[Math.min(cols, m.endColumn + 1)] : colX[anchorC + 1];
       const availW = Math.max(1, x2 - x1 - 10);
       const cellY = rowTops[anchorR];
+      const cellH = Math.max(1, (m ? rowTops[Math.min(numRows, m.endRow + 1)] : rowTops[anchorR + 1]) - cellY);
 
       // 文字始终存放在合并区域的起始单元格，坐标一律以 anchor 为准
       const cellParas = (anchorR < rows.length && anchorC < rows[anchorR].length)
         ? rows[anchorR][anchorC]
         : [];
       if (cellParas && match.paragraphIndex >= 0 && match.paragraphIndex < cellParas.length) {
-        let paraY = cellY + 5;
+        let cellContentH = 0;
+        for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
+          const para = cellParas[pIdx];
+          cellContentH += Math.max(0, para.before || 0);
+          if (para.image && para.imageWidth && para.imageHeight && para.imageWidth > 0 && para.imageHeight > 0) {
+            const fitW = Math.min(availW, para.imageWidth);
+            const fitH = para.imageHeight * (fitW / para.imageWidth);
+            cellContentH += fitH;
+          } else if (ctx) {
+            const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
+            for (let lIdx = 0; lIdx < lines.length; lIdx++) {
+              cellContentH += lines[lIdx].height;
+            }
+          } else {
+            cellContentH += 16;
+          }
+          cellContentH += Math.max(0, para.after || 0);
+        }
+        const vOffset = cellH > cellContentH + 10 ? Math.max(5, (cellH - cellContentH) / 2) : 5;
+        let paraY = cellY + vOffset;
         for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
           const para = cellParas[pIdx];
           paraY += Math.max(0, para.before || 0);

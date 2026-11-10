@@ -772,6 +772,7 @@ struct DocxFlowView {
                   if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
                     DocxTableView({
                       element: element,
+                      imageStore: this.imageStore,
                       blockMatches: this.matchesOfBlock(index),
                       currentMatchKey: this.currentMatchKey()
                     })
@@ -1449,6 +1450,7 @@ struct DocxTextBlockView {
 @Component
 struct DocxTableView {
   element: model.Element | null = null;
+  imageStore: ImageStore = new ImageStore('');
   @Prop @Watch('onMatchesChanged') blockMatches: model.SearchMatch[] = [];
   // Canvas 不会被 ArkUI 自动重绘，@Watch 保证「当前命中」变化时立即重画
   @Prop @Watch('onCurrentMatchKeyChanged') currentMatchKey: string = '';
@@ -1461,6 +1463,11 @@ struct DocxTableView {
 
   aboutToAppear(): void {
     this.updateHeight();
+    this.preloadImages();
+  }
+
+  aboutToDisappear(): void {
+    this.releaseImages();
   }
 
   onCurrentMatchKeyChanged(): void {
@@ -1472,8 +1479,12 @@ struct DocxTableView {
   }
 
   aboutToReuse(params: Record<string, Object>): void {
+    this.releaseImages();
     if (params['element']) {
       this.element = params['element'] as model.Element;
+    }
+    if (params['imageStore']) {
+      this.imageStore = params['imageStore'] as ImageStore;
     }
     if (params['blockMatches']) {
       this.blockMatches = params['blockMatches'] as model.SearchMatch[];
@@ -1483,8 +1494,41 @@ struct DocxTableView {
     }
     this.reuseVersion++;
     this.updateHeight();
+    this.preloadImages();
     if (this.isReady) {
       this.drawTable();
+    }
+  }
+
+  private preloadImages(): void {
+    if (!this.element?.rows) return;
+    for (const row of this.element.rows) {
+      for (const cell of row) {
+        for (const p of cell) {
+          if (p.image) {
+            this.imageStore.acquire(p.image);
+            if (!this.imageStore.cache.has(p.image)) {
+              this.imageStore.load(p.image).then(() => {
+                this.updateHeight();
+                if (this.isReady) this.drawTable();
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private releaseImages(): void {
+    if (!this.element?.rows) return;
+    for (const row of this.element.rows) {
+      for (const cell of row) {
+        for (const p of cell) {
+          if (p.image) {
+            this.imageStore.releasePart(p.image);
+          }
+        }
+      }
     }
   }
 
@@ -1502,7 +1546,7 @@ struct DocxTableView {
     if (w <= 0 || h <= 0) return;
     const ctx = this.ctx;
     ctx.clearRect(0, 0, w, h);
-    CanvasElementDrawer.drawTable(ctx, this.element);
+    CanvasElementDrawer.drawTable(ctx, this.element, this.imageStore.cache);
 
     if (this.blockMatches && this.blockMatches.length > 0) {
       for (let mIdx = 0; mIdx < this.blockMatches.length; mIdx++) {

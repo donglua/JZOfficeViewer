@@ -115,6 +115,17 @@ async function renderDocxThumbnail(
       if (block.type === 'IMAGE' && block.image) {
         imageStore.acquire(block.image);
         await imageStore.load(block.image, pixelBudget);
+      } else if (block.type === 'TABLE' && block.rows) {
+        for (const row of block.rows) {
+          for (const cell of row) {
+            for (const p of cell) {
+              if (p.image) {
+                imageStore.acquire(p.image);
+                await imageStore.load(p.image, pixelBudget);
+              }
+            }
+          }
+        }
       }
     }
 
