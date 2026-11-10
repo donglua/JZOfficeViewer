@@ -521,9 +521,10 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         }
     }
     var images: [String: CGImage] = [:]
+    private var isEvaluatingViewport = false
     var currentPage: Int = 1 {
         didSet {
-            if currentPage != oldValue {
+            if currentPage != oldValue && !isEvaluatingViewport {
                 evaluateViewport()
             }
         }
@@ -566,7 +567,6 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             observedClipView = nil
         }
         NotificationCenter.default.removeObserver(self)
-        imageLoader?.close()
         imageLoader = nil
         textLayout = nil
         selection = nil
@@ -690,6 +690,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             guard let offsets = docxBlockYOffsets else { return ([], []) }
             let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
             let docW = doc.width > 0 ? doc.width : 595
+            let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
             for (i, block) in allBlocks.enumerated() where i < offsets.count {
                 let bY = offsets[i]
                 let bH: CGFloat
@@ -700,7 +701,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 } else {
                     bH = 80
                 }
-                let blockRect = CGRect(x: doc.marginLeft, y: bY, width: docW, height: bH)
+                let blockRect = CGRect(x: marginX, y: bY, width: docW, height: bH)
                 let isVisible = blockRect.intersects(docVisible)
                 let isPrefetch = blockRect.intersects(prefetch)
 
@@ -732,6 +733,10 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     }
 
     func evaluateViewport() {
+        guard !isEvaluatingViewport else { return }
+        isEvaluatingViewport = true
+        defer { isEvaluatingViewport = false }
+
         guard let (docVisible, prefetch) = updateVisibleAndPrefetchRects() else { return }
 
         if let loader = imageLoader {

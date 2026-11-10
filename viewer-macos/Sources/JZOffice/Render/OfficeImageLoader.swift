@@ -89,8 +89,8 @@ public final class OfficeImageLoader: @unchecked Sendable {
     }
 
     private func trimLocked() {
+        let wantedSet = Set(wanted)
         while images.count > maxCachedImages || totalPixels > maxTotalPixels {
-            let wantedSet = Set(wanted)
             if let candidate = accessOrder.first(where: { !wantedSet.contains($0) }) {
                 accessOrder.removeAll { $0 == candidate }
                 if let _ = images.removeValue(forKey: candidate) {
