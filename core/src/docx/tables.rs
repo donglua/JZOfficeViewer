@@ -217,10 +217,12 @@ impl Parser<'_> {
                 "tbl" => self.document.warn("Nested tables are omitted."),
                 "drawing" => {
                     for image in self.drawings(node)? {
-                        let mut img_para = Paragraph::default();
-                        img_para.image = image.image;
-                        img_para.image_width = Some(image.width);
-                        img_para.image_height = Some(image.height);
+                        let img_para = Paragraph {
+                            image: image.image,
+                            image_width: Some(image.width),
+                            image_height: Some(image.height),
+                            ..Default::default()
+                        };
                         paragraphs.push(img_para);
                     }
                 }

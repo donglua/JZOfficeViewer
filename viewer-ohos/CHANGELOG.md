@@ -1,5 +1,40 @@
 # 更新日志
 
+## 0.12.0
+
+发布页面：[v0.12.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.12.0)。
+
+本版本主要支持 DOCX 表格单元格内图片解析与全端渲染对齐、表格边框样式支持，以及 macOS 原生预览端重大架构重构（接入 `OfficeImageLoader` 异步按需解码、视口裁剪虚拟化渲染与滚动页码感知）。
+
+### 平台与架构
+
+- **macOS 端视口虚拟化与异步解码架构（`viewer-macos`）**：
+  - **解耦预加载**：新增 `OfficeImageLoader`，文档打开阶段彻底解耦整篇图片预加载，采用异步队列按需解码与 LRU 内存预算管理。
+  - **滚动视口监听**：监听 `NSClipView` 滚动视口边界，动态计算可见区域并按需触发当前页及邻近页图片解码。
+  - **绘制层视口裁剪**：PPTX 幻灯片与 DOCX 页面接入视口可见区域裁剪，非视口内的元素直接跳过绘制，大幅降低长文档渲染与合成开销。
+  - **动态页码与资源释放**：支持基于视口滚动几何中心动态感知当前页码与跨页通知；离开视口的离屏图片资源受 LRU 内存预算管控并优雅释放。
+  - **演示工程重构**：规范 macOS Demo 入口为 `JZOfficeMacDemoApp.swift`，清理冗余 benchmark 文件。
+
+### DOCX 排版与特性
+
+- **表格单元格图片解析与排版（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - **解析核心（`core`）**：支持提取 DOCX 表格单元格内嵌入的图形图片（`w:drawing` / `pic:pic`），计算原始/建议宽高，并在数据模型中安全透出。
+  - **Android 端（`viewer`）**：`OfficeRenderer` 支持单元格图片异步加载、水平居中排版与上下内边距自适应，保持文本与图片混排稳定。
+  - **HarmonyOS NEXT 端（`viewer-ohos`）**：支持单元格图片异步读取与 Canvas 居中绘制，图片加载完成后触发局部脏重绘。
+  - **macOS 端（`viewer-macos`）**：支持单元格图片按需加载、自适应高宽比缩放与居中排版。
+- **表格边框样式支持**：
+  - Rust 核心与三端渲染层完善 DOCX 表格边框样式（`top` / `bottom` / `left` / `right` / `insideH` / `insideV`）解析与粗细/颜色渲染。
+
+### 稳定性与修复
+
+- **macOS 端图片缓存与生命周期修复**：
+  - 修复连续快速翻页时，前序页面图片被 LRU 缓存自我淘汰导致返回后出现灰块占位的问题。
+  - 修复 `OfficePreviewView` 在 teardown 析构时越权关闭外部注入的共享 `imageLoader` 的问题。
+  - 优化视口快速重入时的取消与请求队列复用，避免多线程竞态与无效重解。
+  - 补充 `OfficeImageLoader` 视口虚拟化、预算超限淘汰及与 `OfficePeek` 的集成兼容性测试用例。
+- **代码规范**：
+  - 格式化 Rust 核心 `docx_tables.rs`，确保通过 `cargo fmt` 检查。
+
 ## 0.11.0
 
 发布页面：[v0.11.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.11.0)。
