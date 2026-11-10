@@ -736,37 +736,71 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         defer { ctx.restoreGState() }
         ctx.scaleBy(x: zoom, y: zoom)
 
+        let safeZoom = max(0.1, zoom)
+        let docVisible: CGRect
+        if visibleRect.width > 0, visibleRect.height > 0 {
+            docVisible = CGRect(
+                x: visibleRect.minX / safeZoom,
+                y: visibleRect.minY / safeZoom,
+                width: visibleRect.width / safeZoom,
+                height: visibleRect.height / safeZoom
+            )
+        } else {
+            docVisible = CGRect(
+                x: bounds.minX / safeZoom,
+                y: bounds.minY / safeZoom,
+                width: bounds.width / safeZoom,
+                height: bounds.height / safeZoom
+            )
+        }
+        let activeImages = imageLoader?.snapshot ?? images
+
         switch doc.kind {
         case .pptx:
             var curY: CGFloat = 0
             for page in doc.pages {
                 let pW = page.width > 0 ? page.width : 720
                 let pH = page.height > 0 ? page.height : 405
+                let slideRect = CGRect(x: 0, y: curY, width: pW, height: pH)
+
+                // 视口裁剪：若幻灯片与当前视口不相交，直接跳过全量绘制
+                if !slideRect.intersects(docVisible) {
+                    curY += pH + 16
+                    continue
+                }
+
                 ctx.saveGState()
                 ctx.translateBy(x: 0, y: curY)
-                let slideRect = CGRect(x: 0, y: 0, width: pW, height: pH)
+                let localRect = CGRect(x: 0, y: 0, width: pW, height: pH)
                 let bg = CGElementDrawer.argbToCGColor(page.background) ?? CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
                 ctx.setFillColor(bg)
-                ctx.fill(slideRect)
-                ctx.clip(to: slideRect)
+                ctx.fill(localRect)
+                ctx.clip(to: localRect)
                 for el in page.elements {
-                    CGElementDrawer.drawElement(in: ctx, element: el, images: images)
+                    CGElementDrawer.drawElement(in: ctx, element: el, images: activeImages)
                 }
                 ctx.restoreGState()
                 curY += pH + 16
             }
         case .docx:
             let docW = doc.width > 0 ? doc.width : 595
-            let docH = bounds.height / max(0.1, zoom)
+            let docH = bounds.height / safeZoom
             ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
             ctx.fill(CGRect(x: 0, y: 0, width: docW, height: docH))
             let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
             let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
             let availW = max(100, docW - marginX - marginR)
             var curY: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
-            for block in (doc.headerBlocks + doc.blocks + doc.footerBlocks) {
+            let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
+            for (i, block) in allBlocks.enumerated() {
                 let elW = block.width > 0 ? min(availW, block.width) : availW
                 var elH = block.height
+                if let offsets = docxBlockYOffsets, i < offsets.count {
+                    curY = offsets[i]
+                    if elH <= 0 && i + 1 < offsets.count {
+                        elH = max(0, offsets[i + 1] - offsets[i] - 8)
+                    }
+                }
                 if elH <= 0 {
                     if block.type == .table && !block.rows.isEmpty {
                         var tbl = block
@@ -778,6 +812,11 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                         elH = 80
                     }
                 }
+                let blockRect = CGRect(x: marginX, y: curY, width: elW, height: elH)
+                if !blockRect.intersects(docVisible) {
+                    curY += elH + 8
+                    continue
+                }
                 var positioned = block
                 positioned.x = marginX
                 positioned.y = curY
@@ -785,7 +824,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 positioned.height = elH
                 positioned.transform = [1, 0, 0, 1, marginX, curY]
                 positioned.textWrap = true
-                CGElementDrawer.drawElement(in: ctx, element: positioned, images: images)
+                CGElementDrawer.drawElement(in: ctx, element: positioned, images: activeImages)
                 curY += elH + 8
             }
         case .xlsx:
@@ -794,8 +833,8 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             let viewport = CGRect(
                 x: 0,
                 y: 0,
-                width: bounds.width / max(0.1, zoom),
-                height: bounds.height / max(0.1, zoom)
+                width: bounds.width / safeZoom,
+                height: bounds.height / safeZoom
             )
             CGElementDrawer.drawSpreadsheet(
                 in: ctx,
@@ -807,12 +846,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
 
         // 绘制全文检索高亮（在文档未缩放坐标系下，由 ctx.scaleBy 统一放大）
         if !searchResults.isEmpty {
-            let docVisibleRect = CGRect(
-                x: visibleRect.minX / zoom,
-                y: visibleRect.minY / zoom,
-                width: visibleRect.width / zoom,
-                height: visibleRect.height / zoom
-            )
+            let docVisibleRect = docVisible
             ctx.saveGState()
             for (index, match) in searchResults.enumerated() {
                 if doc.kind == .xlsx && match.pageIndex != (currentPage - 1) {
@@ -863,6 +897,9 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 let highlightColor = NSColor.selectedTextBackgroundColor.withAlphaComponent(0.35).cgColor
                 ctx.setFillColor(highlightColor)
                 for r in rects {
+                    if !r.intersects(docVisible) {
+                        continue
+                    }
                     let path = CGPath(roundedRect: r, cornerWidth: 2, cornerHeight: 2, transform: nil)
                     ctx.addPath(path)
                     ctx.fillPath()
