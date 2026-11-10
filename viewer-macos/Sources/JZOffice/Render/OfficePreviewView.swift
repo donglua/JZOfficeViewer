@@ -25,6 +25,8 @@ public final class OfficePreviewController: ObservableObject {
     @Published public internal(set) var sheetNames: [String] = []
     @Published public internal(set) var zoom: CGFloat = 1.0
     @Published public internal(set) var metadata: OfficeMetadata?
+    @Published public internal(set) var imageLoader: OfficeImageLoader?
+    @Published internal var imageVersion: UInt = 0
 
     @Published internal var document: OfficeDocument? {
         didSet {
@@ -39,6 +41,17 @@ public final class OfficePreviewController: ObservableObject {
     @Published internal var imageCache: [String: CGImage] = [:]
     @Published internal var isLoading: Bool = true
     @Published internal var errorMessage: String?
+
+    @MainActor
+    internal func notifyImageDecoded() {
+        self.imageVersion &+= 1
+        self.imageCache = self.imageLoader?.snapshot ?? [:]
+    }
+
+    @MainActor
+    internal func onImageDecoded() {
+        notifyImageDecoded()
+    }
 
     // MARK: - 全文检索状态与控制器 API
 
@@ -250,6 +263,7 @@ public struct OfficePreviewView: View {
                             OfficeCanvasRepresentable(
                                 document: doc,
                                 images: controller.imageCache,
+                                imageLoader: controller.imageLoader,
                                 currentPage: controller.currentPage,
                                 zoom: controller.zoom,
                                 searchResults: controller.searchResults,
@@ -351,6 +365,8 @@ public struct OfficePreviewView: View {
 
     @MainActor
     private func loadDocument(from url: URL) async {
+        controller.imageLoader?.close()
+        controller.imageLoader = nil
         controller.isLoading = true
         controller.errorMessage = nil
         controller.document = nil
@@ -362,35 +378,15 @@ public struct OfficePreviewView: View {
 
         let path = url.path
         do {
-            let (parsed, loadedImages) = try await Task.detached(priority: .userInitiated) {
-                let doc = try NativeCore.parseDocument(at: path)
-                let store = ImageStore(filePath: path)
-                defer { store.release() }
-                // 整篇文档一次性渲染，工作集必须整体驻留，交由 preload 按预算等比降采样
-                var parts: [String] = []
-                for page in doc.pages {
-                    for el in page.elements where el.type == .image {
-                        if let part = el.image { parts.append(part) }
-                    }
-                }
-                for block in (doc.headerBlocks + doc.blocks + doc.footerBlocks) {
-                    if block.type == .image, let part = block.image { parts.append(part) }
-                    if block.type == .table {
-                        for row in block.rows {
-                            for cell in row {
-                                for p in cell {
-                                    if let part = p.image { parts.append(part) }
-                                }
-                            }
-                        }
-                    }
-                }
-                store.preload(parts: parts)
-                return (doc, store.snapshot)
+            let parsed = try await Task.detached(priority: .userInitiated) {
+                return try NativeCore.parseDocument(at: path)
             }.value
 
+            let loader = OfficeImageLoader(filePath: path) { [weak controller] in
+                controller?.notifyImageDecoded()
+            }
+            controller.imageLoader = loader
             controller.document = parsed
-            controller.imageCache = loadedImages
             controller.isLoading = false
 
             let meta = OfficeMetadata.fromDocument(parsed)
@@ -416,6 +412,7 @@ public struct OfficePreviewView: View {
 private struct OfficeCanvasRepresentable: NSViewRepresentable {
     let document: OfficeDocument
     let images: [String: CGImage]
+    let imageLoader: OfficeImageLoader?
     let currentPage: Int
     let zoom: CGFloat
     let searchResults: [OfficeSearchMatch]
@@ -428,6 +425,7 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> OfficeDocumentNSView {
         let view = OfficeDocumentNSView()
+        view.imageLoader = imageLoader
         view.setDocument(document)
         view.images = images
         view.currentPage = currentPage
@@ -441,6 +439,7 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: OfficeDocumentNSView, context: Context) {
+        nsView.imageLoader = imageLoader
         nsView.setDocument(document)
         nsView.images = images
         nsView.currentPage = currentPage
@@ -456,6 +455,7 @@ private struct OfficeCanvasRepresentable: NSViewRepresentable {
 
 private final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     private(set) var document: OfficeDocument?
+    weak var imageLoader: OfficeImageLoader?
     var images: [String: CGImage] = [:]
     var currentPage: Int = 1
     var zoom: CGFloat = 1.0 {
