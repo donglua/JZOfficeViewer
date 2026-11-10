@@ -426,18 +426,31 @@ public final class DocumentTextLayout: @unchecked Sendable {
                 let cellW = max(1, x2 - x1)
                 let cellH = max(1, y2 - y1)
                 let cellParas = c < row.count ? row[c] : []
-                if cellParas.isEmpty { continue }
+                let textParas = cellParas.filter { $0.image == nil }
+                if textParas.isEmpty { continue }
 
                 var dummyEl = element
-                dummyEl.paragraphs = cellParas
+                dummyEl.paragraphs = textParas
                 dummyEl.padding = 0
                 dummyEl.width = max(1, cellW - 10)
                 dummyEl.height = 0
                 dummyEl.transform = [1, 0, 0, 1, 0, 0]
                 dummyEl.textWrap = true
 
+                var contentHeight: CGFloat = 0
+                let availCellW = max(1, cellW - 10)
+                for p in cellParas {
+                    if let _ = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
+                        let fitW = min(availCellW, w)
+                        let fitH = h * (fitW / w)
+                        contentHeight += fitH + max(0, p.before) + max(0, p.after)
+                    }
+                }
+                contentHeight += CGElementDrawer.measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
+                let vOffset: CGFloat = cellH > contentHeight + 10 ? max(5, (cellH - contentHeight) / 2.0) : 5
+
                 if let blk = buildParagraphsBlock(element: dummyEl, blockIndex: curIdx) {
-                    let cellLocalOrigin = CGPoint(x: x1 + 5, y: y1 + 5)
+                    let cellLocalOrigin = CGPoint(x: x1 + 5, y: y1 + vOffset)
                     let cellTransform = tableAffine.concatenating(
                         CGAffineTransform(translationX: cellLocalOrigin.x, y: cellLocalOrigin.y)
                     )

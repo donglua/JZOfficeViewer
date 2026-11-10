@@ -136,7 +136,7 @@ public enum CGElementDrawer {
 
         // 5. 绘制表格 (TABLE)
         if element.type == .table && !element.rows.isEmpty {
-            drawTable(in: ctx, element: element)
+            drawTable(in: ctx, element: element, images: images)
         }
 
         // 6. 绘制段落文本 (TEXT 或形状内文字)
@@ -279,8 +279,20 @@ public enum CGElementDrawer {
                 let cellW = max(1, x2 - x1)
                 let cellParas = c < row.count ? row[c] : []
                 if !cellParas.isEmpty {
-                    let h = measureParagraphsHeight(cellParas, availableWidth: max(1, cellW - 10), wrap: true)
-                    rowHeight = max(rowHeight, h + 10)
+                    var cellContentH: CGFloat = 0
+                    let availW = max(1, cellW - 10)
+                    for para in cellParas {
+                        if let _ = para.image, let w = para.imageWidth, let h = para.imageHeight, w > 0, h > 0 {
+                            let fitW = min(availW, w)
+                            let fitH = h * (fitW / w)
+                            cellContentH += fitH + max(0, para.before) + max(0, para.after)
+                        }
+                    }
+                    let textParas = cellParas.filter { $0.image == nil }
+                    if !textParas.isEmpty {
+                        cellContentH += measureParagraphsHeight(textParas, availableWidth: availW, wrap: true)
+                    }
+                    rowHeight = max(rowHeight, cellContentH + 10)
                 }
             }
             y += rowHeight
@@ -294,7 +306,11 @@ public enum CGElementDrawer {
         return geom.rowTops.last ?? 0
     }
 
-    private static func drawTable(in ctx: CGContext, element: OfficeElement) {
+    private static func drawTable(
+        in ctx: CGContext,
+        element: OfficeElement,
+        images: [String: CGImage]
+    ) {
         let rows = element.rows
         let geom = computeTableGeometry(element: element)
         let cols = geom.cols
@@ -303,7 +319,8 @@ public enum CGElementDrawer {
         let numRows = rows.count
         guard cols > 0 && numRows > 0 else { return }
 
-        let borderColor = argbToCGColor(0xffb7bec7)
+        let borderColor = element.stroke != 0 ? (argbToCGColor(element.stroke) ?? argbToCGColor(0xffb7bec7)) : argbToCGColor(0xffb7bec7)
+        let borderWidth = element.strokeWidth > 0 ? element.strokeWidth : 0.6
 
         for r in 0..<numRows {
             let row = rows[r]
@@ -338,26 +355,72 @@ public enum CGElementDrawer {
                 }
                 if let borderColor {
                     ctx.setStrokeColor(borderColor)
-                    ctx.setLineWidth(0.6)
+                    ctx.setLineWidth(borderWidth)
                     ctx.stroke(cellRect)
                 }
 
                 let cellParas = c < row.count ? row[c] : []
                 if !cellParas.isEmpty {
                     let availW = max(1, cellRect.width - 10)
-                    let lines = layoutParagraphs(cellParas, availableWidth: availW, wrap: true)
+                    var contentHeight: CGFloat = 0
+                    for p in cellParas {
+                        if let _ = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
+                            let fitW = min(availW, w)
+                            let fitH = h * (fitW / w)
+                            contentHeight += fitH + max(0, p.before) + max(0, p.after)
+                        }
+                    }
+                    let textParas = cellParas.filter { $0.image == nil }
+                    let lines = textParas.isEmpty ? [] : layoutParagraphs(textParas, availableWidth: availW, wrap: true)
+                    for line in lines {
+                        contentHeight += line.before + line.height + line.after
+                    }
+
+                    let vOffset: CGFloat
+                    if cellRect.height > contentHeight + 10 {
+                        vOffset = max(5, (cellRect.height - contentHeight) / 2.0)
+                    } else {
+                        vOffset = 5
+                    }
+
+                    ctx.saveGState()
+                    ctx.clip(to: cellRect)
+
+                    var curCellY = y1 + vOffset
+                    for p in cellParas {
+                        if let part = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
+                            curCellY += max(0, p.before)
+                            let fitW = min(availW, w)
+                            let fitH = h * (fitW / w)
+                            var imgX = x1 + 5
+                            if p.alignment == 1 {
+                                imgX += (availW - fitW) / 2.0
+                            } else if p.alignment == 2 {
+                                imgX += availW - fitW
+                            }
+                            let imgRect = CGRect(x: imgX, y: curCellY, width: fitW, height: fitH)
+                            if let cgImg = images[part] {
+                                drawCGImageTopDown(in: ctx, image: cgImg, rect: imgRect)
+                            } else {
+                                if let placeholder = argbToCGColor(0xffe8eaed) {
+                                    ctx.setFillColor(placeholder)
+                                    ctx.fill(imgRect)
+                                }
+                            }
+                            curCellY += fitH + max(0, p.after)
+                        }
+                    }
+
                     if !lines.isEmpty {
-                        ctx.saveGState()
-                        ctx.clip(to: cellRect)
                         drawLaidOutLines(
                             in: ctx,
                             lines: lines,
                             originX: x1 + 5,
-                            originY: y1 + 5,
+                            originY: curCellY,
                             availableWidth: availW
                         )
-                        ctx.restoreGState()
                     }
+                    ctx.restoreGState()
                 }
             }
         }
@@ -688,7 +751,21 @@ public enum CGElementDrawer {
                 let cellX = marginX + x1
                 let cellW = max(1, x2 - x1)
                 let availCellW = max(1, cellW - 10)
-                let cellOrigin = CGPoint(x: cellX + 5, y: curY + rowTops[anchorR] + 5)
+                let cellH = rowTops[min(block.rows.count, (m?.endRow ?? r) + 1)] - rowTops[anchorR]
+                var contentHeight: CGFloat = 0
+                for p in cellParas {
+                    if let _ = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
+                        let fitW = min(availCellW, w)
+                        let fitH = h * (fitW / w)
+                        contentHeight += fitH + max(0, p.before) + max(0, p.after)
+                    }
+                }
+                let textParas = cellParas.filter { $0.image == nil }
+                if !textParas.isEmpty {
+                    contentHeight += measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
+                }
+                let vOffset: CGFloat = cellH > contentHeight + 10 ? max(5, (cellH - contentHeight) / 2.0) : 5
+                let cellOrigin = CGPoint(x: cellX + 5, y: curY + rowTops[anchorR] + vOffset)
                 return charHighlightRects(
                     paragraphs: cellParas,
                     targetParagraphIndex: match.paragraphIndex,
@@ -766,7 +843,21 @@ public enum CGElementDrawer {
                 let x2 = m != nil ? colX[min(cols, m!.endColumn + 1)] : colX[anchorC + 1]
                 let cellW = max(1, x2 - x1)
                 let availCellW = max(1, cellW - 10)
-                let cellOrigin = CGPoint(x: x1 + 5, y: rowTops[anchorR] + 5)
+                let cellH = rowTops[min(el.rows.count, (m?.endRow ?? r) + 1)] - rowTops[anchorR]
+                var contentHeight: CGFloat = 0
+                for p in cellParas {
+                    if let _ = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
+                        let fitW = min(availCellW, w)
+                        let fitH = h * (fitW / w)
+                        contentHeight += fitH + max(0, p.before) + max(0, p.after)
+                    }
+                }
+                let textParas = cellParas.filter { $0.image == nil }
+                if !textParas.isEmpty {
+                    contentHeight += measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
+                }
+                let vOffset: CGFloat = cellH > contentHeight + 10 ? max(5, (cellH - contentHeight) / 2.0) : 5
+                let cellOrigin = CGPoint(x: x1 + 5, y: rowTops[anchorR] + vOffset)
                 let localRects = charHighlightRects(
                     paragraphs: cellParas,
                     targetParagraphIndex: match.paragraphIndex,

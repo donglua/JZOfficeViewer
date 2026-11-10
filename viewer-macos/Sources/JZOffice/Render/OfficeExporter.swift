@@ -20,9 +20,19 @@ public enum OfficeExporter {
                 }
             }
         }
-        for block in (doc.headerBlocks + doc.blocks + doc.footerBlocks) where block.type == .image {
-            if let part = block.image {
+        for block in (doc.headerBlocks + doc.blocks + doc.footerBlocks) {
+            if block.type == .image, let part = block.image {
                 imageStore.loadSync(part: part, maxPixelBudget: 4_000_000)
+            } else if block.type == .table {
+                for row in block.rows {
+                    for cell in row {
+                        for p in cell {
+                            if let part = p.image {
+                                imageStore.loadSync(part: part, maxPixelBudget: 4_000_000)
+                            }
+                        }
+                    }
+                }
             }
         }
 

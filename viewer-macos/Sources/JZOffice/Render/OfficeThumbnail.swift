@@ -132,9 +132,19 @@ public enum OfficeThumbnail {
 
         let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
         let budget = max(100_000, min(2_000_000, outW * outH * 2))
-        for block in allBlocks where block.type == .image {
-            if let part = block.image {
+        for block in allBlocks {
+            if block.type == .image, let part = block.image {
                 imageStore.loadSync(part: part, maxPixelBudget: budget)
+            } else if block.type == .table {
+                for row in block.rows {
+                    for cell in row {
+                        for p in cell {
+                            if let part = p.image {
+                                imageStore.loadSync(part: part, maxPixelBudget: budget)
+                            }
+                        }
+                    }
+                }
             }
         }
 

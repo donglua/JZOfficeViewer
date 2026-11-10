@@ -131,9 +131,13 @@ public struct OfficeParagraph: Codable, Sendable {
     public let lineSpacingRule: OfficeLineSpacingRule
     public let lineSpacing: CGFloat
     public let bullet: String
+    public let image: String?
+    public let imageWidth: CGFloat?
+    public let imageHeight: CGFloat?
 
     enum CodingKeys: String, CodingKey {
         case runs, alignment, before, after, indent, rightIndent, firstLineIndent, lineSpacingRule, lineSpacing, bullet
+        case image, imageWidth, imageHeight
     }
 
     public init(from decoder: Decoder) throws {
@@ -148,6 +152,9 @@ public struct OfficeParagraph: Codable, Sendable {
         self.lineSpacingRule = try c.decodeIfPresent(OfficeLineSpacingRule.self, forKey: .lineSpacingRule) ?? .auto
         self.lineSpacing = try c.decodeIfPresent(CGFloat.self, forKey: .lineSpacing) ?? 1.0
         self.bullet = try c.decodeIfPresent(String.self, forKey: .bullet) ?? ""
+        self.image = try c.decodeIfPresent(String.self, forKey: .image)
+        self.imageWidth = try c.decodeIfPresent(CGFloat.self, forKey: .imageWidth)
+        self.imageHeight = try c.decodeIfPresent(CGFloat.self, forKey: .imageHeight)
     }
 }
 

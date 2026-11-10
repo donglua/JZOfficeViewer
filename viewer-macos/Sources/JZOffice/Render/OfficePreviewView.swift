@@ -317,23 +317,30 @@ public struct OfficePreviewView: View {
             return CGSize(width: maxW, height: max(405, totalH))
         case .docx:
             let docW = doc.width > 0 ? doc.width : 595
-            let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
-            let availW = max(100, docW - 48)
-            var h: CGFloat = 48
-            for block in allBlocks {
-                if block.height > 0 {
-                    h += block.height + 8
-                } else if block.type == .table && !block.rows.isEmpty {
-                    var tbl = block
-                    tbl.width = availW
-                    h += CGElementDrawer.measureTableHeight(element: tbl) + 8
-                } else if !block.paragraphs.isEmpty {
-                    h += CGElementDrawer.measureParagraphsHeight(block.paragraphs, availableWidth: availW, wrap: true) + 12
-                } else {
-                    h += 80
+            let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
+            let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
+            let marginTop: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
+            let marginBottom: CGFloat = doc.marginBottom > 0 ? doc.marginBottom : 24
+            let availW = max(100, docW - marginX - marginR)
+            var curY = marginTop
+            for block in (doc.headerBlocks + doc.blocks + doc.footerBlocks) {
+                let elW = block.width > 0 ? min(availW, block.width) : availW
+                var elH = block.height
+                if elH <= 0 {
+                    if block.type == .table && !block.rows.isEmpty {
+                        var tbl = block
+                        tbl.width = elW
+                        elH = CGElementDrawer.measureTableHeight(element: tbl)
+                    } else if !block.paragraphs.isEmpty {
+                        elH = CGElementDrawer.measureParagraphsHeight(block.paragraphs, availableWidth: elW, wrap: true) + 8
+                    } else {
+                        elH = 80
+                    }
                 }
+                curY += elH + 8
             }
-            return CGSize(width: docW, height: max(docW * 1.414, h))
+            curY += marginBottom
+            return CGSize(width: docW, height: max(docW * 1.414, curY))
         case .xlsx:
             let idx = max(0, min(doc.sheets.count - 1, controller.currentPage - 1))
             guard idx < doc.sheets.count else { return CGSize(width: 800, height: 600) }
@@ -366,8 +373,17 @@ public struct OfficePreviewView: View {
                         if let part = el.image { parts.append(part) }
                     }
                 }
-                for block in (doc.headerBlocks + doc.blocks + doc.footerBlocks) where block.type == .image {
-                    if let part = block.image { parts.append(part) }
+                for block in (doc.headerBlocks + doc.blocks + doc.footerBlocks) {
+                    if block.type == .image, let part = block.image { parts.append(part) }
+                    if block.type == .table {
+                        for row in block.rows {
+                            for cell in row {
+                                for p in cell {
+                                    if let part = p.image { parts.append(part) }
+                                }
+                            }
+                        }
+                    }
                 }
                 store.preload(parts: parts)
                 return (doc, store.snapshot)
