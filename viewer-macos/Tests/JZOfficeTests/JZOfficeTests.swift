@@ -565,4 +565,253 @@ struct JZOfficeTests {
         }
         return false
     }
+
+    // MARK: - OfficeImageLoader 视口虚拟化与按需缓存测试
+
+    @Test("OfficeImageLoader 基础请求、异步解码与回调触发")
+    func imageLoaderBasicRequestAndDecode() async throws {
+        let pptxURL = samplePath("sample.pptx")
+        guard FileManager.default.fileExists(atPath: pptxURL.path) else { return }
+
+        final class CallbackTracker: @unchecked Sendable {
+            var count = 0
+            let lock = NSLock()
+            func increment() {
+                lock.lock()
+                defer { lock.unlock() }
+                count += 1
+            }
+            var value: Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return count
+            }
+        }
+
+        let tracker = CallbackTracker()
+        let loader = OfficeImageLoader(
+            filePath: pptxURL.path,
+            maxTotalPixels: 10_000,
+            maxCachedImages: 5,
+            onImageDecoded: {
+                tracker.increment()
+            }
+        )
+        defer { loader.close() }
+
+        let targetPart = "ppt/showcase/base/media/pixel.png"
+        loader.request(visibleParts: [targetPart], prefetchParts: [])
+
+        let deadline = Date().addingTimeInterval(3.0)
+        var loadedImage: CGImage?
+        while Date() < deadline {
+            if let img = loader.image(for: targetPart) {
+                loadedImage = img
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        #expect(loadedImage != nil)
+        #expect(loadedImage?.width == 1)
+        #expect(loadedImage?.height == 1)
+        #expect(loader.cachedCount >= 1)
+        #expect(loader.currentTotalPixels >= 1)
+        #expect(loader.snapshot[targetPart] != nil)
+
+        // 等待主线程回调派发
+        let callbackDeadline = Date().addingTimeInterval(1.0)
+        while Date() < callbackDeadline && tracker.value == 0 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(tracker.value >= 1)
+    }
+
+    @Test("OfficeImageLoader 空部件与无效部件容错")
+    func imageLoaderFaultTolerance() async throws {
+        let pptxURL = samplePath("sample.pptx")
+        guard FileManager.default.fileExists(atPath: pptxURL.path) else { return }
+
+        let loader = OfficeImageLoader(filePath: pptxURL.path)
+        defer { loader.close() }
+
+        // 请求空部件和无效部件
+        loader.request(visibleParts: ["", "ppt/media/non_existent.png"], prefetchParts: [""])
+
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        #expect(loader.image(for: "") == nil)
+        #expect(loader.image(for: "ppt/media/non_existent.png") == nil)
+        #expect(loader.cachedCount == 0)
+        #expect(loader.failedCount >= 1)
+
+        // 验证后续有效请求仍可正常工作
+        let validPart = "ppt/showcase/base/media/pixel.png"
+        loader.request(visibleParts: [validPart], prefetchParts: [])
+        let deadline = Date().addingTimeInterval(3.0)
+        var validImg: CGImage?
+        while Date() < deadline {
+            if let img = loader.image(for: validPart) {
+                validImg = img
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(validImg != nil)
+        #expect(loader.cachedCount == 1)
+    }
+
+    @Test("OfficeImageLoader 缓存上限与 LRU 淘汰：非 wanted 图片优先淘汰且 wanted 图片受保护")
+    func imageLoaderLRUEvictionAndWantedProtection() throws {
+        let pptxURL = samplePath("sample.pptx")
+        let loader = OfficeImageLoader(
+            filePath: pptxURL.path,
+            maxTotalPixels: 10_000,
+            maxCachedImages: 3
+        )
+        defer { loader.close() }
+
+        let imgA = createTestCGImage(width: 10, height: 10) // 100 px
+        let imgB = createTestCGImage(width: 10, height: 10) // 100 px
+        let imgC = createTestCGImage(width: 10, height: 10) // 100 px
+        let imgD = createTestCGImage(width: 10, height: 10) // 100 px
+
+        // 1. 模拟视口请求 A 与 B
+        loader.request(visibleParts: ["imgA", "imgB"], prefetchParts: [])
+        loader.insertImageForTesting(part: "imgA", image: imgA)
+        loader.insertImageForTesting(part: "imgB", image: imgB)
+        #expect(loader.cachedCount == 2)
+        #expect(loader.currentTotalPixels == 200)
+
+        // 2. 插入 C（未超过上限 3）
+        loader.insertImageForTesting(part: "imgC", image: imgC)
+        #expect(loader.cachedCount == 3)
+
+        // 3. 访问 imgA，使其在 LRU 队列中更新为最新
+        #expect(loader.image(for: "imgA") != nil)
+        // 此时 accessOrder 为 [imgB, imgC, imgA]
+
+        // 4. 用户滚动：视口变为 [imgA, imgD]，此时 imgB 和 imgC 不在 wanted 中
+        loader.request(visibleParts: ["imgA", "imgD"], prefetchParts: [])
+
+        // 5. 插入 imgD，导致缓存达到 4 张，超过 maxCachedImages: 3
+        // 淘汰候选人必须是不在 wanted 中的图片，accessOrder 中排在前面的是 imgB
+        loader.insertImageForTesting(part: "imgD", image: imgD)
+
+        #expect(loader.cachedCount == 3)
+        #expect(loader.image(for: "imgB") == nil, "imgB 最久未访问且不在 wanted，应当被淘汰")
+        #expect(loader.image(for: "imgC") != nil, "imgC 比 imgB 新，暂不淘汰")
+        #expect(loader.image(for: "imgA") != nil, "imgA 在 wanted 中，应当受保护")
+        #expect(loader.image(for: "imgD") != nil, "imgD 刚插入且在 wanted 中，应当存在")
+
+        // 6. 再次插入一张新图 imgE，此时 non-wanted 中只剩下 imgC
+        let imgE = createTestCGImage(width: 10, height: 10)
+        loader.insertImageForTesting(part: "imgE", image: imgE)
+        #expect(loader.cachedCount == 3)
+        #expect(loader.image(for: "imgC") == nil, "imgC 作为剩余的 non-wanted 最老项被淘汰")
+        #expect(loader.image(for: "imgA") != nil, "imgA 依然受保护")
+        #expect(loader.image(for: "imgD") != nil, "imgD 依然受保护")
+    }
+
+    @Test("OfficeImageLoader 像素预算超额淘汰与降至预算范围校验")
+    func imageLoaderPixelBudgetEviction() throws {
+        let pptxURL = samplePath("sample.pptx")
+        // 总像素预算 250 px
+        let loader = OfficeImageLoader(
+            filePath: pptxURL.path,
+            maxTotalPixels: 250,
+            maxCachedImages: 10
+        )
+        defer { loader.close() }
+
+        let small1 = createTestCGImage(width: 10, height: 10) // 100 px
+        let small2 = createTestCGImage(width: 10, height: 10) // 100 px
+        let big = createTestCGImage(width: 15, height: 15)    // 225 px
+
+        // 初始视口包含 small1 和 small2
+        loader.request(visibleParts: ["small1", "small2"], prefetchParts: [])
+        loader.insertImageForTesting(part: "small1", image: small1)
+        loader.insertImageForTesting(part: "small2", image: small2)
+        #expect(loader.currentTotalPixels == 200)
+        #expect(loader.cachedCount == 2)
+
+        // 视口移动到 big，small1 和 small2 脱离视口
+        loader.request(visibleParts: ["big"], prefetchParts: [])
+
+        // 插入 big（225 px），若不淘汰总像素将达到 425 px > 250 px
+        loader.insertImageForTesting(part: "big", image: big)
+
+        // 校验淘汰后总像素必须降至预算范围内 (225 <= 250)
+        #expect(loader.currentTotalPixels <= 250)
+        #expect(loader.currentTotalPixels == 225)
+        #expect(loader.image(for: "small1") == nil, "small1 应当已被淘汰以腾出像素预算")
+        #expect(loader.image(for: "small2") == nil, "small2 应当已被淘汰以腾出像素预算")
+        #expect(loader.image(for: "big") != nil, "big 作为当前视口所需图片被保留")
+
+        // 验证保护机制：若所有图片都在 wanted 中，即使超预算也不会被 trimLocked 强行淘汰
+        let extra = createTestCGImage(width: 10, height: 10) // 100 px
+        loader.request(visibleParts: ["big", "extra"], prefetchParts: [])
+        loader.insertImageForTesting(part: "extra", image: extra)
+        #expect(loader.cachedCount == 2)
+        #expect(loader.image(for: "big") != nil)
+        #expect(loader.image(for: "extra") != nil)
+    }
+
+    @Test("OfficeImageLoader 关闭与并发取消安全性")
+    func imageLoaderCloseAndCancellationSafety() async throws {
+        let pptxURL = samplePath("sample.pptx")
+        guard FileManager.default.fileExists(atPath: pptxURL.path) else { return }
+
+        let loader = OfficeImageLoader(filePath: pptxURL.path)
+
+        // 发起批量加载
+        loader.request(
+            visibleParts: [
+                "ppt/showcase/base/media/pixel.png",
+                "ppt/showcase/compat/media/pixel.png"
+            ],
+            prefetchParts: [
+                "ppt/showcase/charts/media/pixel.png",
+                "ppt/showcase/colors/media/pixel.png"
+            ]
+        )
+
+        // 立即关闭
+        loader.close()
+
+        #expect(loader.isClosedState)
+        #expect(loader.cachedCount == 0)
+        #expect(loader.currentTotalPixels == 0)
+        #expect(loader.snapshot.isEmpty)
+
+        // 等待后台任何可能在跑的任务完成
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        // 关闭后读取必须返回 nil
+        #expect(loader.image(for: "ppt/showcase/base/media/pixel.png") == nil)
+
+        // 再次调用 close 幂等且安全
+        loader.close()
+        #expect(loader.isClosedState)
+
+        // 关闭后调用 request 必须直接忽略
+        loader.request(visibleParts: ["ppt/showcase/base/media/pixel.png"], prefetchParts: [])
+        #expect(loader.currentWanted.isEmpty)
+        #expect(loader.cachedCount == 0)
+    }
+
+    private func createTestCGImage(width: Int, height: Int) -> CGImage {
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var bytes = [UInt8](repeating: 128, count: width * height * 4)
+        let ctx = CGContext(
+            data: &bytes,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        return ctx.makeImage()!
+    }
 }

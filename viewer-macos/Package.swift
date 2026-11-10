@@ -4,7 +4,14 @@ import PackageDescription
 import Foundation
 
 var testSwiftSettings: [SwiftSetting] = []
-// In modern Swift 6+, Swift Testing plugin is automatically discovered via toolchain.
+let cltTestingPlugins = "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
+if FileManager.default.fileExists(atPath: cltTestingPlugins) {
+    testSwiftSettings.append(.unsafeFlags([
+        "-plugin-path", cltTestingPlugins
+    ]))
+}
+
+
 let package = Package(
     name: "JZOffice",
     platforms: [

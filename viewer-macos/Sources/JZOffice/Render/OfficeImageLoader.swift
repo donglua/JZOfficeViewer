@@ -188,4 +188,56 @@ public final class OfficeImageLoader: @unchecked Sendable {
         totalPixels = 0
         lock.unlock()
     }
+
+    // MARK: - Testing Support
+
+    internal var currentTotalPixels: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return totalPixels
+    }
+
+    internal var cachedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return images.count
+    }
+
+    internal var currentWanted: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return wanted
+    }
+
+    internal var currentAccessOrder: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return accessOrder
+    }
+
+    internal var failedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return failedParts.count
+    }
+
+    internal var isClosedState: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isClosed
+    }
+
+    internal func insertImageForTesting(part: String, image: CGImage) {
+        lock.lock()
+        defer { lock.unlock() }
+        let pixels = image.width * image.height
+        if let old = images[part] {
+            totalPixels = max(0, totalPixels - (pixelCounts[part] ?? (old.width * old.height)))
+        }
+        images[part] = image
+        pixelCounts[part] = pixels
+        totalPixels += pixels
+        touchLocked(part)
+        trimLocked()
+    }
 }
