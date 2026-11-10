@@ -276,6 +276,12 @@ pub struct Paragraph {
     pub line_spacing: f32,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub bullet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_height: Option<f32>,
 }
 
 impl Default for Paragraph {
@@ -291,6 +297,9 @@ impl Default for Paragraph {
             line_spacing_rule: LineSpacingRule::Auto,
             line_spacing: 1.0,
             bullet: String::new(),
+            image: None,
+            image_width: None,
+            image_height: None,
         }
     }
 }

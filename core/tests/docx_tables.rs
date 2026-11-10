@@ -140,3 +140,82 @@ fn docx_table_vmerge_closes_when_row_omits_or_covers_column() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn docx_table_cell_contains_drawing_image() -> TestResult {
+    let mut parts = support::docx::parts();
+    let body = r#"
+<w:tbl>
+  <w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>
+  <w:tr>
+    <w:tc><w:p><w:r><w:t>Cell with image</w:t></w:r></w:p></w:tc>
+    <w:tc>
+      <w:p>
+        <w:r>
+          <w:drawing>
+            <wp:inline distT="0" distB="0" distL="0" distR="0">
+              <wp:extent cx="914400" cy="457200"/>
+              <wp:docPr id="1" name="Small teal PNG"/>
+              <wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>
+              <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="pixel.png"/><pic:cNvPicPr/></pic:nvPicPr>
+                  <pic:blipFill><a:blip r:embed="rImage"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+                  <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm>
+                    <a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>
+                </pic:pic>
+              </a:graphicData></a:graphic>
+            </wp:inline>
+          </w:drawing>
+        </w:r>
+      </w:p>
+    </w:tc>
+  </w:tr>
+</w:tbl>
+"#;
+    support::package::replace(&mut parts, "word/document.xml", &format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+ xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+ xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+ xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+  <w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body>
+</w:document>"#
+    ));
+    let doc = parse_reader(Cursor::new(archive(&parts)?))?;
+    let table = &doc.blocks[0];
+    assert_eq!(table.rows.len(), 1);
+    let cell_img = &table.rows[0][1];
+    assert!(!cell_img.is_empty());
+    let para = &cell_img[0];
+    assert!(para.image.is_some());
+    assert_eq!(para.image.as_deref(), Some("word/media/pixel.png"));
+    assert_eq!(para.image_width, Some(72.0));
+    assert_eq!(para.image_height, Some(36.0));
+    assert!(!doc.warnings.iter().any(|w| w.contains("Images inside table cells are omitted")));
+    Ok(())
+}
+
+#[test]
+fn docx_table_parses_tbl_borders() -> TestResult {
+    let body = r#"
+<w:tbl>
+  <w:tblPr>
+    <w:tblBorders>
+      <w:top w:val="single" w:sz="8" w:space="0" w:color="FF0000"/>
+    </w:tblBorders>
+  </w:tblPr>
+  <w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid>
+  <w:tr>
+    <w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc>
+  </w:tr>
+</w:tbl>
+"#;
+    let parts = table_parts(body);
+    let doc = parse_reader(Cursor::new(archive(&parts)?))?;
+    let table = &doc.blocks[0];
+    assert_eq!(table.stroke, 0xffff0000);
+    assert_eq!(table.stroke_width, 1.0);
+    Ok(())
+}
+

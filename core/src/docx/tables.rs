@@ -11,6 +11,33 @@ impl Parser<'_> {
             stroke: 0xffdadce0,
             ..Element::default()
         };
+        if let Some(borders) = node.child("tblPr").and_then(|n| n.child("tblBorders")) {
+            for border_name in ["top", "left", "bottom", "right", "insideH", "insideV"] {
+                if let Some(border) = borders.child(border_name) {
+                    let val = border.attr("val");
+                    if val == "none" || val == "nil" {
+                        continue;
+                    }
+                    let color = border.attr("color");
+                    if !color.is_empty() && color != "auto" {
+                        if let Ok(c) = u32::from_str_radix(color, 16) {
+                            table.stroke = 0xff000000 | c;
+                        }
+                    } else if color == "auto" || !val.is_empty() {
+                        table.stroke = 0xff000000;
+                    }
+                    let sz = border.attr("sz");
+                    if !sz.is_empty() {
+                        if let Ok(s) = sz.parse::<f32>() {
+                            table.stroke_width = (s / 8.0).max(0.5);
+                        }
+                    }
+                    if table.stroke != 0xffdadce0 {
+                        break;
+                    }
+                }
+            }
+        }
         if let Some(grid) = node.child("tblGrid") {
             for column in grid.named("gridCol") {
                 columns(table.column_widths.len() + 1)?;
@@ -188,6 +215,15 @@ impl Parser<'_> {
                     }
                 }
                 "tbl" => self.document.warn("Nested tables are omitted."),
+                "drawing" => {
+                    for image in self.drawings(node)? {
+                        let mut img_para = Paragraph::default();
+                        img_para.image = image.image;
+                        img_para.image_width = Some(image.width);
+                        img_para.image_height = Some(image.height);
+                        paragraphs.push(img_para);
+                    }
+                }
                 "sdt" => {
                     if let Some(content) = node.child("sdtContent") {
                         self.cell(content, paragraphs)?;

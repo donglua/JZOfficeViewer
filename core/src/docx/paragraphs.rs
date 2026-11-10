@@ -15,7 +15,7 @@ impl Parser<'_> {
             width: self.flow_width(),
             in_cell,
             limit: if in_cell {
-                1
+                100
             } else {
                 self.block_limit
                     .count
@@ -77,10 +77,10 @@ impl Parser<'_> {
                 "noBreakHyphen" => flow.text(font.run("\u{2011}", &mut self.document))?,
                 "softHyphen" => flow.text(font.run("\u{ad}", &mut self.document))?,
                 "drawing" => {
-                    if flow.in_cell {
-                        self.document.warn("Images inside table cells are omitted.");
-                    } else {
-                        for image in self.drawings(node)? {
+                    for image in self.drawings(node)? {
+                        if flow.in_cell {
+                            flow.cell_image(image)?;
+                        } else {
                             flow.image(image)?;
                         }
                     }
@@ -133,6 +133,27 @@ impl Flow {
             self.flush()?;
         }
         self.push(image)?;
+        self.current = self.template.clone();
+        self.current.before = 0.0;
+        self.current.bullet.clear();
+        Ok(())
+    }
+
+    fn cell_image(&mut self, image: Element) -> Result<()> {
+        if !self.current.runs.is_empty() || !self.current.bullet.is_empty() {
+            self.current.after = 0.0;
+            self.flush()?;
+        }
+        let mut img_para = self.template.clone();
+        img_para.image = image.image;
+        img_para.image_width = Some(image.width);
+        img_para.image_height = Some(image.height);
+        self.push(Element {
+            width: self.width,
+            padding: 0.0,
+            paragraphs: vec![img_para],
+            ..Element::default()
+        })?;
         self.current = self.template.clone();
         self.current.before = 0.0;
         self.current.bullet.clear();
