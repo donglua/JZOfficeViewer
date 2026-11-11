@@ -12,6 +12,7 @@ interface TextSegment {
   vertAlign?: string;
   spacing?: number;
   width: number;
+  background?: number;
 }
 
 interface WrappedLine {
@@ -617,13 +618,21 @@ export class CanvasElementDrawer {
     line: WrappedLine,
     lineX: number,
     baselineY: number,
-    starts: number[]
+    starts: number[],
+    curY: number
   ): void {
     let unitCursor = 0;
     for (const seg of line.segments) {
       const text = seg.text;
       const segLen = text.length;
       if (segLen === 0) continue;
+      if (seg.background && seg.background !== 0) {
+        const hlCss = RenderUtils.argbToCss(seg.background);
+        if (hlCss) {
+          ctx.fillStyle = hlCss;
+          ctx.fillRect(lineX + starts[unitCursor], curY, starts[unitCursor + segLen] - starts[unitCursor], line.height);
+        }
+      }
       ctx.font = seg.font;
       ctx.fillStyle = seg.color;
       let drawY = baselineY;
@@ -676,6 +685,52 @@ export class CanvasElementDrawer {
     startY: number,
     availableWidth: number
   ): number {
+    let totalHeight = 0;
+    for (let i = 0; i < lines.length; i++) {
+      totalHeight += lines[i].height;
+    }
+
+    if (totalHeight > 0 && para.background && para.background !== 0) {
+      const bgCss = RenderUtils.argbToCss(para.background);
+      if (bgCss) {
+        ctx.fillStyle = bgCss;
+        ctx.fillRect(startX, startY, availableWidth, totalHeight);
+      }
+    }
+
+    if (totalHeight > 0 && para.borderWidth && para.borderWidth > 0) {
+      const bw = para.borderWidth;
+      ctx.lineWidth = bw;
+      if (para.borderTop && para.borderTop !== 0) {
+        ctx.strokeStyle = RenderUtils.argbToCss(para.borderTop) ?? '#000000';
+        ctx.beginPath();
+        ctx.moveTo(startX, startY + bw / 2);
+        ctx.lineTo(startX + availableWidth, startY + bw / 2);
+        ctx.stroke();
+      }
+      if (para.borderBottom && para.borderBottom !== 0) {
+        ctx.strokeStyle = RenderUtils.argbToCss(para.borderBottom) ?? '#000000';
+        ctx.beginPath();
+        ctx.moveTo(startX, startY + totalHeight - bw / 2);
+        ctx.lineTo(startX + availableWidth, startY + totalHeight - bw / 2);
+        ctx.stroke();
+      }
+      if (para.borderLeft && para.borderLeft !== 0) {
+        ctx.strokeStyle = RenderUtils.argbToCss(para.borderLeft) ?? '#000000';
+        ctx.beginPath();
+        ctx.moveTo(startX + bw / 2, startY);
+        ctx.lineTo(startX + bw / 2, startY + totalHeight);
+        ctx.stroke();
+      }
+      if (para.borderRight && para.borderRight !== 0) {
+        ctx.strokeStyle = RenderUtils.argbToCss(para.borderRight) ?? '#000000';
+        ctx.beginPath();
+        ctx.moveTo(startX + availableWidth - bw / 2, startY);
+        ctx.lineTo(startX + availableWidth - bw / 2, startY + totalHeight);
+        ctx.stroke();
+      }
+    }
+
     const rightIndent = Math.max(0, para.rightIndent || 0);
     const baseIndent = Math.max(0, para.indent || 0);
     const firstIndent = Math.max(0, baseIndent + (para.firstLineIndent || 0));
@@ -696,19 +751,26 @@ export class CanvasElementDrawer {
         lineX += lineAvailWidth - line.width;
       }
 
-      const baselineY = curY + line.height - (line.height - line.maxFontSize) / 2 - line.maxFontSize * 0.15;
+      const baselineY = curY + (line.height + line.maxFontSize * 0.7) / 2;
       // 两端对齐按字间间隙拉伸绘制，段落末行保持左对齐（与 Word 规则一致）
       const justifyStarts = para.alignment === 3 && i < lines.length - 1
         ? CanvasElementDrawer.justifiedLineStarts(ctx, line, lineAvailWidth)
         : null;
       if (justifyStarts) {
-        CanvasElementDrawer.drawJustifiedLine(ctx, line, lineX, baselineY, justifyStarts);
+        CanvasElementDrawer.drawJustifiedLine(ctx, line, lineX, baselineY, justifyStarts, curY);
         curY += line.height;
         continue;
       }
 
       let segX = lineX;
       for (const seg of line.segments) {
+        if (seg.background && seg.background !== 0) {
+          const hlCss = RenderUtils.argbToCss(seg.background);
+          if (hlCss) {
+            ctx.fillStyle = hlCss;
+            ctx.fillRect(segX, curY, seg.width, line.height);
+          }
+        }
         ctx.font = seg.font;
         ctx.fillStyle = seg.color;
         let drawY = baselineY;
@@ -860,6 +922,7 @@ export class CanvasElementDrawer {
               vertAlign: run.vertAlign,
               spacing: run.spacing,
               width: fullW,
+              background: run.background,
             });
             currentLineWidth += fullW;
             break;
@@ -925,6 +988,7 @@ export class CanvasElementDrawer {
             vertAlign: run.vertAlign,
             spacing: run.spacing,
             width: bestWidth,
+            background: run.background,
           });
           remainingText = remainingText.substring(bestCount);
           if (remainingText.length > 0) {

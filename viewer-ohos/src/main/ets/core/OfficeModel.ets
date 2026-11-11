@@ -43,6 +43,7 @@ export interface Run {
   spacing?: number;
   weight?: number;
   color: number;
+  background?: number;
 }
 
 export interface Paragraph {
@@ -59,6 +60,12 @@ export interface Paragraph {
   image?: string;
   imageWidth?: number;
   imageHeight?: number;
+  background?: number;
+  borderTop?: number;
+  borderBottom?: number;
+  borderLeft?: number;
+  borderRight?: number;
+  borderWidth?: number;
 }
 
 export interface Element {
