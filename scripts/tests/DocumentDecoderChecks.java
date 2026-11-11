@@ -10,6 +10,7 @@ public final class DocumentDecoderChecks {
         checkSpreadsheetDecodeAndValidation();
         checkPptxAndDocxWithOmittedFields();
         checkTypographyAndStyleFields();
+        checkParagraphShadingAndBorders();
         checkGeometryAndPathValidation();
         checkEscapesAndOutOfOrderKeys();
         checkSheetGeometryValidation();
@@ -187,12 +188,53 @@ public final class DocumentDecoderChecks {
         check(el.imageBounds == null && el.image == null, "omitted imageBounds and image are null");
         check(el.rows.isEmpty() && el.columnWidths.isEmpty() && el.cellFills.isEmpty() && el.paths.isEmpty(), "omitted collections are empty");
         check("".equals(el.paragraphs.get(0).bullet), "omitted bullet defaults to empty string");
+        OfficeDocument.Paragraph para0 = el.paragraphs.get(0);
+        check(para0.background == 0, "omitted paragraph background defaults to 0");
+        check(para0.borderTop == 0 && para0.borderBottom == 0 && para0.borderLeft == 0 && para0.borderRight == 0,
+            "omitted borders default to 0");
+        check(para0.borderWidth == 0f, "omitted borderWidth defaults to 0");
         OfficeDocument.Run run0 = el.paragraphs.get(0).runs.get(0);
         check("".equals(run0.fontFace), "omitted fontFace defaults to empty string");
         check(!run0.strike, "omitted strike defaults to false");
         check("".equals(run0.vertAlign), "omitted vertAlign defaults to empty string");
         check(run0.spacing == 0f, "omitted spacing defaults to 0");
         check(run0.weight == 0, "omitted weight defaults to 0");
+        check(run0.background == 0, "omitted run background defaults to 0");
+    }
+
+    private static void checkParagraphShadingAndBorders() throws Exception {
+        String json = "{\"schemaVersion\":9,\"kind\":\"DOCX\",\"width\":595,\"warnings\":[],\"blocks\":["
+            + "{\"type\":\"TEXT\",\"x\":0,\"y\":0,\"width\":500,\"height\":100,\"padding\":0,"
+            + "\"transform\":[1,0,0,1,0,0],\"fill\":0,\"stroke\":0,\"strokeWidth\":0,"
+            + "\"verticalAlignment\":\"TOP\",\"textWrap\":true,"
+            + "\"paragraphs\":[{\"alignment\":0,\"before\":0,\"after\":0,\"indent\":0,\"rightIndent\":0,"
+            + "\"firstLineIndent\":0,\"lineSpacingRule\":\"AUTO\",\"lineSpacing\":1,"
+            + "\"background\":4294967040,\"borderTop\":4278190335,\"borderBottom\":4294901760,"
+            + "\"borderLeft\":4278255360,\"borderRight\":4294967295,\"borderWidth\":1.5,"
+            + "\"runs\":["
+            + "{\"text\":\"Highlighted\",\"size\":12,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,"
+            + "\"background\":4294967040}"
+            + "]}]}],\"pages\":[],\"cellStyles\":[],\"sheets\":[]}";
+        OfficeDocument doc = DocumentDecoder.decode(json);
+        OfficeDocument.Paragraph p = doc.blocks.get(0).paragraphs.get(0);
+        check(p.background == (int) 4294967040L, "paragraph background decoded");
+        check(p.borderTop == (int) 4278190335L, "paragraph borderTop decoded");
+        check(p.borderBottom == (int) 4294901760L, "paragraph borderBottom decoded");
+        check(p.borderLeft == (int) 4278255360L, "paragraph borderLeft decoded");
+        check(p.borderRight == (int) 4294967295L, "paragraph borderRight decoded");
+        check(p.borderWidth == 1.5f, "paragraph borderWidth decoded");
+
+        OfficeDocument.Run r = p.runs.get(0);
+        check(r.background == (int) 4294967040L, "run background decoded");
+
+        OfficeDocument.Run copied = r.copy();
+        check(copied.background == (int) 4294967040L, "run copy copies background");
+
+        // Verify invalid borderWidth
+        reject(json.replace("\"borderWidth\":1.5", "\"borderWidth\":-1.0"), "Invalid core display model", "negative borderWidth");
+        reject(json.replace("\"borderWidth\":1.5", "\"borderWidth\":1500"), "Invalid core display model", "excessive borderWidth");
+        reject(json.replace("\"borderWidth\":1.5", "\"borderWidth\":\"invalid\""), "Invalid core display model", "non-numeric borderWidth");
+        reject(json.replace("\"borderWidth\":1.5", "\"borderWidth\":1e3000"), "Invalid core display model", "infinite borderWidth");
     }
 
     private static void checkTypographyAndStyleFields() throws Exception {

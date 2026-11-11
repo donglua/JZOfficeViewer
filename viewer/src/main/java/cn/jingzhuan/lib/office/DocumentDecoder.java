@@ -901,6 +901,22 @@ final class DocumentDecoder {
                         if (c.peekNull()) { c.nextNull(); p.imageHeight = null; }
                         else p.imageHeight = (float) c.nextDouble();
                         break;
+                    case "background": p.background = (int) c.nextLong(); break;
+                    case "borderTop":
+                    case "border_top": p.borderTop = (int) c.nextLong(); break;
+                    case "borderBottom":
+                    case "border_bottom": p.borderBottom = (int) c.nextLong(); break;
+                    case "borderLeft":
+                    case "border_left": p.borderLeft = (int) c.nextLong(); break;
+                    case "borderRight":
+                    case "border_right": p.borderRight = (int) c.nextLong(); break;
+                    case "borderWidth":
+                    case "border_width": {
+                        double bw = c.nextDouble();
+                        if (!Double.isFinite(bw) || bw < 0 || bw > 1000) throw new IllegalArgumentException("Invalid borderWidth");
+                        p.borderWidth = (float) bw;
+                        break;
+                    }
                     case "runs":
                         c.beginArray();
                         while (c.hasNext()) p.runs.add(run(c));
@@ -939,6 +955,7 @@ final class DocumentDecoder {
                 case "color": r.color = (int) c.nextLong(); hasColor = true; break;
                 case "strike": r.strike = c.nextBoolean(); break;
                 case "vertAlign": r.vertAlign = vertAlign(c, "run"); break;
+                case "background": r.background = (int) c.nextLong(); break;
                 case "spacing": {
                     double spc = c.nextDouble();
                     if (!Double.isFinite(spc) || spc < -100.0 || spc > 400.0) {

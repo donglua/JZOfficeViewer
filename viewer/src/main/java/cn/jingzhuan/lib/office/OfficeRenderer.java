@@ -434,7 +434,38 @@ final class OfficeRenderer {
             }
         }
         for (OfficeTextLayout.Block block : d.texts) {
-            canvas.save(); canvas.translate(block.x, block.y); block.layout.draw(canvas); canvas.restore();
+            float bx = block.x;
+            float by = block.y;
+            float bw = block.layout.getWidth();
+            float bh = block.layout.getHeight();
+            if (block.background != 0) {
+                paint.setShader(null);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(block.background);
+                canvas.drawRect(bx, by, bx + bw, by + bh, paint);
+            }
+            if (block.borderWidth > 0) {
+                paint.setShader(null);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(block.borderWidth);
+                if (block.borderTop != 0) {
+                    paint.setColor(block.borderTop);
+                    canvas.drawLine(bx, by, bx + bw, by, paint);
+                }
+                if (block.borderBottom != 0) {
+                    paint.setColor(block.borderBottom);
+                    canvas.drawLine(bx, by + bh, bx + bw, by + bh, paint);
+                }
+                if (block.borderLeft != 0) {
+                    paint.setColor(block.borderLeft);
+                    canvas.drawLine(bx, by, bx, by + bh, paint);
+                }
+                if (block.borderRight != 0) {
+                    paint.setColor(block.borderRight);
+                    canvas.drawLine(bx + bw, by, bx + bw, by + bh, paint);
+                }
+            }
+            canvas.save(); canvas.translate(bx, by); block.layout.draw(canvas); canvas.restore();
         }
         canvas.restore();
     }

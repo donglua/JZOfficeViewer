@@ -8,6 +8,7 @@ import android.text.Spanned;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.style.AbsoluteSizeSpan;
+import android.text.style.BackgroundColorSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.LineHeightSpan;
 import android.text.style.MetricAffectingSpan;
@@ -22,6 +23,9 @@ final class OfficeTextLayout {
     static final class Block {
         StaticLayout layout;
         float x, y;
+        int background;
+        int borderTop, borderBottom, borderLeft, borderRight;
+        float borderWidth;
     }
 
     static float append(List<OfficeDocument.Paragraph> paragraphs, float x, float y, float width, List<Block> out, boolean pptx) {
@@ -33,6 +37,12 @@ final class OfficeTextLayout {
             y += Math.max(0, paragraph.before);
             Block block = new Block();
             block.x = x; block.y = y;
+            block.background = paragraph.background;
+            block.borderTop = paragraph.borderTop;
+            block.borderBottom = paragraph.borderBottom;
+            block.borderLeft = paragraph.borderLeft;
+            block.borderRight = paragraph.borderRight;
+            block.borderWidth = paragraph.borderWidth;
             block.layout = paragraph(paragraph, width, pptx, wrap);
             if (!wrap) {
                 float extra = Math.max(1, (int) width) - block.layout.getWidth();
@@ -61,6 +71,9 @@ final class OfficeTextLayout {
             text.setSpan(pptx ? new FontSize(run.size) : new AbsoluteSizeSpan(Math.max(1, Math.round(run.size))),
                 start, text.length(), flags);
             text.setSpan(new ForegroundColorSpan(run.color), start, text.length(), flags);
+            if (run.background != 0) {
+                text.setSpan(new BackgroundColorSpan(run.background), start, text.length(), flags);
+            }
             int style = (run.bold ? Typeface.BOLD : 0) | (run.italic ? Typeface.ITALIC : 0);
             if (!run.fontFace.isEmpty() || run.weight > 0) {
                 text.setSpan(new FontFace(run.fontFace, style, run.weight), start, text.length(), flags);

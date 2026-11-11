@@ -80,6 +80,9 @@ final class OfficeDocument {
         String image;
         Float imageWidth;
         Float imageHeight;
+        int background;
+        int borderTop, borderBottom, borderLeft, borderRight;
+        float borderWidth;
     }
 
     static final class Run {
@@ -92,12 +95,14 @@ final class OfficeDocument {
         String vertAlign = "";
         float spacing;
         int weight;
+        int background;
 
         Run copy() {
             Run r = new Run();
             r.text = text; r.fontFace = fontFace; r.size = size; r.bold = bold;
             r.italic = italic; r.underline = underline; r.color = color;
             r.strike = strike; r.vertAlign = vertAlign; r.spacing = spacing; r.weight = weight;
+            r.background = background;
             return r;
         }
     }
