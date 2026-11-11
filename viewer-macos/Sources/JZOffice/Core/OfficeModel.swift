@@ -85,6 +85,10 @@ public struct OfficeRun: Codable, Sendable {
     public let italic: Bool
     public let underline: Bool
     public let color: UInt32
+    public let strike: Bool
+    public let vertAlign: String
+    public let spacing: CGFloat
+    public let weight: Int
 
     public init(
         text: String,
@@ -93,7 +97,11 @@ public struct OfficeRun: Codable, Sendable {
         bold: Bool = false,
         italic: Bool = false,
         underline: Bool = false,
-        color: UInt32 = 0xff202124
+        color: UInt32 = 0xff202124,
+        strike: Bool = false,
+        vertAlign: String = "",
+        spacing: CGFloat = 0,
+        weight: Int = 0
     ) {
         self.text = text
         self.fontFace = fontFace
@@ -102,10 +110,15 @@ public struct OfficeRun: Codable, Sendable {
         self.italic = italic
         self.underline = underline
         self.color = color
+        self.strike = strike
+        self.vertAlign = vertAlign
+        self.spacing = spacing
+        self.weight = weight
     }
 
     enum CodingKeys: String, CodingKey {
         case text, fontFace, size, bold, italic, underline, color
+        case strike, vertAlign, spacing, weight
     }
 
     public init(from decoder: Decoder) throws {
@@ -117,6 +130,10 @@ public struct OfficeRun: Codable, Sendable {
         self.italic = try c.decodeIfPresent(Bool.self, forKey: .italic) ?? false
         self.underline = try c.decodeIfPresent(Bool.self, forKey: .underline) ?? false
         self.color = try c.decodeIfPresent(UInt32.self, forKey: .color) ?? 0xff202124
+        self.strike = try c.decodeIfPresent(Bool.self, forKey: .strike) ?? false
+        self.vertAlign = try c.decodeIfPresent(String.self, forKey: .vertAlign) ?? ""
+        self.spacing = try c.decodeIfPresent(CGFloat.self, forKey: .spacing) ?? 0
+        self.weight = try c.decodeIfPresent(Int.self, forKey: .weight) ?? 0
     }
 }
 
@@ -302,6 +319,61 @@ public struct OfficeCellStyle: Codable, Sendable {
     public let verticalAlignment: OfficeVerticalAlignment
     public let wrap: Bool
     public let borders: [UInt32?]
+    public let fontFace: String
+    public let strike: Bool
+    public let vertAlign: String
+
+    public init(
+        fontSize: CGFloat = 11,
+        bold: Bool = false,
+        italic: Bool = false,
+        underline: Bool = false,
+        color: UInt32 = 0xff202124,
+        fill: UInt32 = 0,
+        alignment: Int = 0,
+        verticalAlignment: OfficeVerticalAlignment = .top,
+        wrap: Bool = false,
+        borders: [UInt32?] = [],
+        fontFace: String = "",
+        strike: Bool = false,
+        vertAlign: String = ""
+    ) {
+        self.fontSize = fontSize
+        self.bold = bold
+        self.italic = italic
+        self.underline = underline
+        self.color = color
+        self.fill = fill
+        self.alignment = alignment
+        self.verticalAlignment = verticalAlignment
+        self.wrap = wrap
+        self.borders = borders
+        self.fontFace = fontFace
+        self.strike = strike
+        self.vertAlign = vertAlign
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case fontSize, bold, italic, underline, color, fill, alignment, verticalAlignment, wrap, borders
+        case fontFace, strike, vertAlign
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.fontSize = try c.decodeIfPresent(CGFloat.self, forKey: .fontSize) ?? 11
+        self.bold = try c.decodeIfPresent(Bool.self, forKey: .bold) ?? false
+        self.italic = try c.decodeIfPresent(Bool.self, forKey: .italic) ?? false
+        self.underline = try c.decodeIfPresent(Bool.self, forKey: .underline) ?? false
+        self.color = try c.decodeIfPresent(UInt32.self, forKey: .color) ?? 0xff202124
+        self.fill = try c.decodeIfPresent(UInt32.self, forKey: .fill) ?? 0
+        self.alignment = try c.decodeIfPresent(Int.self, forKey: .alignment) ?? 0
+        self.verticalAlignment = try c.decodeIfPresent(OfficeVerticalAlignment.self, forKey: .verticalAlignment) ?? .top
+        self.wrap = try c.decodeIfPresent(Bool.self, forKey: .wrap) ?? false
+        self.borders = try c.decodeIfPresent([UInt32?].self, forKey: .borders) ?? []
+        self.fontFace = try c.decodeIfPresent(String.self, forKey: .fontFace) ?? ""
+        self.strike = try c.decodeIfPresent(Bool.self, forKey: .strike) ?? false
+        self.vertAlign = try c.decodeIfPresent(String.self, forKey: .vertAlign) ?? ""
+    }
 }
 
 public struct OfficeCell: Codable, Sendable {

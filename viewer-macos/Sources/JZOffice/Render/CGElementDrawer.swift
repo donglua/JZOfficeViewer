@@ -582,6 +582,30 @@ public enum CGElementDrawer {
         return result
     }
 
+    private static var fontCache: [String: NSFont] = [:]
+    private static let fontCacheLock = NSLock()
+
+    private static func mapFontWeight(weight: Int, bold: Bool, lowerFace: String) -> NSFont.Weight {
+        if weight > 0 {
+            switch weight {
+            case ..<150: return .ultraLight
+            case 150..<250: return .thin
+            case 250..<350: return .light
+            case 350..<450: return .regular
+            case 450..<550: return .medium
+            case 550..<650: return .semibold
+            case 650..<750: return .bold
+            case 750..<850: return .heavy
+            default: return .black
+            }
+        }
+        if bold || lowerFace.contains("bold") { return .bold }
+        if lowerFace.contains("black") || lowerFace.contains("heavy") || lowerFace.contains("impact") { return .heavy }
+        if lowerFace.contains("medium") { return .medium }
+        if lowerFace.contains("light") { return .light }
+        return .regular
+    }
+
     public static func buildAttributedString(for para: OfficeParagraph) -> NSMutableAttributedString {
         let attr = NSMutableAttributedString()
         var allRuns: [OfficeRun] = []
@@ -594,14 +618,19 @@ public enum CGElementDrawer {
                 bold: first?.bold ?? false,
                 italic: first?.italic ?? false,
                 underline: false,
-                color: first?.color ?? 0xff202124
+                color: first?.color ?? 0xff202124,
+                strike: false,
+                vertAlign: "",
+                spacing: 0,
+                weight: first?.weight ?? 0
             ))
         }
         allRuns.append(contentsOf: para.runs.filter { !$0.text.isEmpty })
 
         for run in allRuns {
-            let fontSize = max(1, run.size)
-            let font = resolveNSFont(face: run.fontFace, size: fontSize, bold: run.bold, italic: run.italic)
+            let isScript = run.vertAlign == "superscript" || run.vertAlign == "subscript"
+            let effectiveSize = isScript ? max(1, run.size * 0.65) : max(1, run.size)
+            let font = resolveNSFont(face: run.fontFace, size: effectiveSize, bold: run.bold, italic: run.italic, weight: run.weight)
             let color = argbToNSColor(run.color)
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
@@ -611,38 +640,63 @@ public enum CGElementDrawer {
                 attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
                 attributes[.underlineColor] = color
             }
+            if run.strike {
+                attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                attributes[.strikethroughColor] = color
+            }
+            if run.vertAlign == "superscript" {
+                attributes[.baselineOffset] = effectiveSize * 0.45
+            } else if run.vertAlign == "subscript" {
+                attributes[.baselineOffset] = -effectiveSize * 0.25
+            }
+            if run.spacing != 0 {
+                attributes[.kern] = run.spacing
+            }
             attr.append(NSAttributedString(string: run.text, attributes: attributes))
         }
         return attr
     }
 
-    public static func resolveNSFont(face: String, size: CGFloat, bold: Bool, italic: Bool) -> NSFont {
+    public static func resolveNSFont(face: String, size: CGFloat, bold: Bool, italic: Bool, weight: Int = 0) -> NSFont {
         let trimmed = face.trimmingCharacters(in: .whitespacesAndNewlines)
-        var effectiveBold = bold
-        let lower = trimmed.lowercased()
-        if lower.contains("impact") || lower.contains("black") || lower.contains("heavy") {
-            effectiveBold = true
+        let key = "\(trimmed)#\(size)#\(bold)#\(italic)#\(weight)"
+        fontCacheLock.lock()
+        if let cached = fontCache[key] {
+            fontCacheLock.unlock()
+            return cached
         }
+        fontCacheLock.unlock()
+
+        let lower = trimmed.lowercased()
+        let targetWeight = mapFontWeight(weight: weight, bold: bold, lowerFace: lower)
+        let effectiveBold = bold || targetWeight == .bold || targetWeight == .heavy || targetWeight == .black || weight >= 600
+
         var font: NSFont?
         if !trimmed.isEmpty {
             font = NSFont(name: trimmed, size: size)
-            if font == nil && (lower.contains("song") || lower.contains("宋体") || lower.contains("mincho")) {
-                font = NSFont(name: "Songti SC", size: size)
+            if font == nil && (lower.contains("song") || lower.contains("宋体") || lower.contains("mincho") || lower.contains("times") || lower.contains("georgia") || lower.contains("cambria") || lower.contains("fangsong") || lower.contains("仿宋") || lower.contains("serif") || lower.contains("simsun")) {
+                font = NSFont(name: "Times New Roman", size: size) ?? NSFont(name: "Songti SC", size: size) ?? NSFont(name: "Georgia", size: size)
+            } else if font == nil && (lower.contains("mono") || lower.contains("consolas") || lower.contains("courier") || lower.contains("menlo") || lower.contains("monaco")) {
+                font = NSFont.monospacedSystemFont(ofSize: size, weight: targetWeight)
+            } else if font == nil && (lower.contains("kai") || lower.contains("楷体") || lower.contains("cursive") || lower.contains("comic")) {
+                font = NSFont(name: "Kaiti SC", size: size) ?? NSFont(name: "Comic Sans MS", size: size)
             } else if font == nil && (lower.contains("hei") || lower.contains("黑体") || lower.contains("yahei") || lower.contains("雅黑")) {
                 font = NSFont(name: "PingFang SC", size: size)
-            } else if font == nil && (lower.contains("kai") || lower.contains("楷体")) {
-                font = NSFont(name: "Kaiti SC", size: size)
-            } else if font == nil && (lower.contains("mono") || lower.contains("consolas") || lower.contains("courier")) {
-                font = NSFont.monospacedSystemFont(ofSize: size, weight: effectiveBold ? .bold : .regular)
             }
         }
-        var resolved = font ?? NSFont.systemFont(ofSize: size, weight: effectiveBold ? .bold : .regular)
+
+        var resolved = font ?? NSFont.systemFont(ofSize: size, weight: targetWeight)
         var traits: NSFontTraitMask = []
         if effectiveBold { traits.insert(.boldFontMask) }
         if italic { traits.insert(.italicFontMask) }
         if !traits.isEmpty {
             resolved = NSFontManager.shared.convert(resolved, toHaveTrait: traits)
         }
+
+        fontCacheLock.lock()
+        fontCache[key] = resolved
+        fontCacheLock.unlock()
+
         return resolved
     }
 
@@ -1158,13 +1212,38 @@ public enum CGElementDrawer {
         }
         guard !cell.text.isEmpty else { return }
 
-        let fontSize = max(8, style?.fontSize ?? 11)
-        let font = resolveNSFont(face: "", size: fontSize, bold: style?.bold ?? false, italic: style?.italic ?? false)
+        var rawFontSize = style?.fontSize ?? 11
+        if let vertAlign = style?.vertAlign, !vertAlign.isEmpty {
+            rawFontSize *= 0.65
+        }
+        let fontSize = max(6, rawFontSize)
+        let font = resolveNSFont(
+            face: style?.fontFace ?? "",
+            size: fontSize,
+            bold: style?.bold ?? false,
+            italic: style?.italic ?? false
+        )
         let textColor = argbToNSColor(style?.color ?? 0xff202124)
-        let attr = NSAttributedString(string: cell.text, attributes: [
+        var attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: textColor
-        ])
+        ]
+        if style?.underline == true {
+            attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            attributes[.underlineColor] = textColor
+        }
+        if style?.strike == true {
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            attributes[.strikethroughColor] = textColor
+        }
+        if let vertAlign = style?.vertAlign {
+            if vertAlign == "superscript" {
+                attributes[.baselineOffset] = fontSize * 0.45
+            } else if vertAlign == "subscript" {
+                attributes[.baselineOffset] = -fontSize * 0.25
+            }
+        }
+        let attr = NSAttributedString(string: cell.text, attributes: attributes)
         let ctLine = CTLineCreateWithAttributedString(attr)
         var ascent: CGFloat = 0
         var descent: CGFloat = 0

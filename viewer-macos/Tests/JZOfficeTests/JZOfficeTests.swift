@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreGraphics
+import AppKit
 @testable import JZOffice
 
 struct JZOfficeTests {
@@ -798,6 +799,161 @@ struct JZOfficeTests {
         loader.request(visibleParts: ["ppt/showcase/base/media/pixel.png"], prefetchParts: [])
         #expect(loader.currentWanted.isEmpty)
         #expect(loader.cachedCount == 0)
+    }
+
+    @Test("CGElementDrawer 字体解析与排版修饰属性（删除线、上下标、字间距、字重）")
+    func fontResolutionAndTypographyAttributes() throws {
+        // 1. 字体族回退与解析
+        let timesFont = CGElementDrawer.resolveNSFont(face: "Times New Roman", size: 14, bold: false, italic: false)
+        #expect(timesFont.familyName == "Times New Roman")
+
+        let simsunFont = CGElementDrawer.resolveNSFont(face: "SimSun", size: 14, bold: false, italic: false)
+        #expect(simsunFont.familyName == "Times New Roman" || simsunFont.familyName == "Songti SC" || simsunFont.familyName == "Georgia")
+
+        let consolasFont = CGElementDrawer.resolveNSFont(face: "Consolas", size: 14, bold: false, italic: false)
+        #expect(consolasFont.isFixedPitch || consolasFont.fontDescriptor.symbolicTraits.contains(.monoSpace))
+
+        let kaitiFont = CGElementDrawer.resolveNSFont(face: "KaiTi", size: 14, bold: false, italic: false)
+        #expect(kaitiFont.familyName == "Kaiti SC" || kaitiFont.familyName == "Comic Sans MS")
+
+        // 2. 线程安全缓存命中（同一请求返回相同实例）
+        let fontA = CGElementDrawer.resolveNSFont(face: "Times New Roman", size: 16, bold: true, italic: false, weight: 700)
+        let fontB = CGElementDrawer.resolveNSFont(face: "Times New Roman", size: 16, bold: true, italic: false, weight: 700)
+        #expect(fontA === fontB)
+
+        // 3. OfficeRun 与段落属性构建（删除线、上下标、字间距、字号缩放）
+        let paraJson = """
+        {
+            "runs": [
+                {"text": "正常文本", "size": 20, "bold": true, "strike": true, "color": 4294901760},
+                {"text": "上标", "size": 20, "vertAlign": "superscript"},
+                {"text": "下标", "size": 20, "vertAlign": "subscript"},
+                {"text": "间距文本", "size": 20, "spacing": 2.5},
+                {"text": "字重文本", "size": 20, "weight": 800}
+            ]
+        }
+        """.data(using: .utf8)!
+        let para = try JSONDecoder().decode(OfficeParagraph.self, from: paraJson)
+        #expect(para.runs.count == 5)
+        #expect(para.runs[0].strike == true)
+        #expect(para.runs[1].vertAlign == "superscript")
+        #expect(para.runs[2].vertAlign == "subscript")
+        #expect(para.runs[3].spacing == 2.5)
+        #expect(para.runs[4].weight == 800)
+
+        let attr = CGElementDrawer.buildAttributedString(for: para)
+        let str = attr.string as NSString
+
+        let r0 = str.range(of: "正常文本")
+        #expect(r0.location != NSNotFound)
+        let strikeVal = attr.attribute(.strikethroughStyle, at: r0.location, effectiveRange: nil) as? Int
+        #expect(strikeVal == NSUnderlineStyle.single.rawValue)
+        let strikeColor = attr.attribute(.strikethroughColor, at: r0.location, effectiveRange: nil) as? NSColor
+        #expect(strikeColor != nil)
+
+        let r1 = str.range(of: "上标")
+        #expect(r1.location != NSNotFound)
+        let superFont = attr.attribute(.font, at: r1.location, effectiveRange: nil) as? NSFont
+        #expect(abs((superFont?.pointSize ?? 0) - 13.0) < 0.1) // 20 * 0.65 = 13.0
+        let superOffset = attr.attribute(.baselineOffset, at: r1.location, effectiveRange: nil) as? CGFloat
+        #expect(abs((superOffset ?? 0) - (13.0 * 0.45)) < 0.1)
+
+        let r2 = str.range(of: "下标")
+        #expect(r2.location != NSNotFound)
+        let subFont = attr.attribute(.font, at: r2.location, effectiveRange: nil) as? NSFont
+        #expect(abs((subFont?.pointSize ?? 0) - 13.0) < 0.1) // 20 * 0.65 = 13.0
+        let subOffset = attr.attribute(.baselineOffset, at: r2.location, effectiveRange: nil) as? CGFloat
+        #expect(abs((subOffset ?? 0) - (-13.0 * 0.25)) < 0.1)
+
+        let r3 = str.range(of: "间距文本")
+        #expect(r3.location != NSNotFound)
+        let kernVal = attr.attribute(.kern, at: r3.location, effectiveRange: nil) as? CGFloat
+        #expect(abs((kernVal ?? 0) - 2.5) < 0.01)
+
+        let r4 = str.range(of: "字重文本")
+        #expect(r4.location != NSNotFound)
+        let weightFont = attr.attribute(.font, at: r4.location, effectiveRange: nil) as? NSFont
+        #expect(weightFont != nil)
+
+        // 4. OfficeCellStyle 解码与属性完整性校验
+        let cellStyleJson = """
+        {
+            "fontSize": 14,
+            "bold": true,
+            "italic": false,
+            "underline": true,
+            "color": 4278190080,
+            "fill": 0,
+            "alignment": 1,
+            "verticalAlignment": "CENTER",
+            "wrap": false,
+            "borders": [],
+            "fontFace": "Consolas",
+            "strike": true,
+            "vertAlign": "superscript"
+        }
+        """.data(using: .utf8)!
+        let decodedStyle = try JSONDecoder().decode(OfficeCellStyle.self, from: cellStyleJson)
+        #expect(decodedStyle.fontFace == "Consolas")
+        #expect(decodedStyle.strike == true)
+        #expect(decodedStyle.vertAlign == "superscript")
+
+        // 5. 缺省字段时 OfficeCellStyle 回退默认值
+        let legacyStyleJson = """
+        {
+            "fontSize": 12,
+            "bold": false,
+            "italic": false,
+            "underline": false,
+            "color": 4278190080,
+            "fill": 0,
+            "alignment": 0,
+            "verticalAlignment": "TOP",
+            "wrap": false,
+            "borders": []
+        }
+        """.data(using: .utf8)!
+        let defaultStyle = try JSONDecoder().decode(OfficeCellStyle.self, from: legacyStyleJson)
+        #expect(defaultStyle.fontFace == "")
+        #expect(defaultStyle.strike == false)
+        #expect(defaultStyle.vertAlign == "")
+
+        // 6. 电子表格单元格样式包含 fontFace、strike 与 vertAlign 时绘制无崩溃且生成有效图像
+        let sheetJson = """
+        {
+            "name": "Sheet1",
+            "rowHeights": [30],
+            "columnWidths": [120],
+            "cells": [
+                {"row": 0, "column": 0, "text": "H2O", "style": 0, "numeric": false}
+            ]
+        }
+        """.data(using: .utf8)!
+        let testSheet = try JSONDecoder().decode(OfficeSheet.self, from: sheetJson)
+        let cellStyle = OfficeCellStyle(
+            fontSize: 12,
+            bold: false,
+            italic: false,
+            underline: true,
+            color: 0xff000000,
+            fontFace: "Times New Roman",
+            strike: true,
+            vertAlign: "superscript"
+        )
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var bytes = [UInt8](repeating: 255, count: 200 * 100 * 4)
+        let ctx = CGContext(
+            data: &bytes,
+            width: 200,
+            height: 100,
+            bitsPerComponent: 8,
+            bytesPerRow: 200 * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        CGElementDrawer.drawSpreadsheet(in: ctx, sheet: testSheet, styles: [cellStyle], viewport: CGRect(x: 0, y: 0, width: 200, height: 100))
+        let img = ctx.makeImage()!
+        #expect(hasNonWhitePixel(img))
     }
 
     private func createTestCGImage(width: Int, height: Int) -> CGImage {
