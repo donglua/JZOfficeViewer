@@ -956,6 +956,84 @@ struct JZOfficeTests {
         #expect(hasNonWhitePixel(img))
     }
 
+    @Test("段落底纹、高亮与边框解码及渲染属性校验")
+    func testParagraphShadingBordersAndHighlighting() throws {
+        let json = """
+        {
+            "schemaVersion": 9,
+            "kind": "DOCX",
+            "width": 595,
+            "blocks": [
+                {
+                    "type": "TEXT",
+                    "width": 500,
+                    "height": 100,
+                    "paragraphs": [
+                        {
+                            "background": 4294901760,
+                            "borderTop": 4278190080,
+                            "borderBottom": 4278190080,
+                            "borderLeft": 4278190080,
+                            "borderRight": 4278190080,
+                            "borderWidth": 1.5,
+                            "runs": [
+                                {
+                                    "text": "高亮文本",
+                                    "size": 16,
+                                    "color": 4278190080,
+                                    "background": 4294967040
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let doc = try JSONDecoder().decode(OfficeDocument.self, from: json)
+        #expect(doc.blocks.count == 1)
+        let block = doc.blocks[0]
+        #expect(block.paragraphs.count == 1)
+        let para = block.paragraphs[0]
+        #expect(para.background == 4294901760)
+        #expect(para.borderTop == 4278190080)
+        #expect(para.borderBottom == 4278190080)
+        #expect(para.borderLeft == 4278190080)
+        #expect(para.borderRight == 4278190080)
+        #expect(para.borderWidth == 1.5)
+        #expect(para.runs.count == 1)
+        let run = para.runs[0]
+        #expect(run.text == "高亮文本")
+        #expect(run.background == 4294967040)
+
+        // 验证 buildAttributedString 挂载了 .backgroundColor
+        let attr = CGElementDrawer.buildAttributedString(for: para)
+        #expect(attr.length > 0)
+        let bg = attr.attribute(.backgroundColor, at: 0, effectiveRange: nil) as? NSColor
+        #expect(bg != nil)
+
+        // 验证 measureParagraphsHeight 与离屏渲染
+        let measuredH = CGElementDrawer.measureParagraphsHeight(block.paragraphs, availableWidth: 500, wrap: true)
+        #expect(measuredH > 0)
+
+        // 验证绘制包含段落底纹、边框和高亮
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var bytes = [UInt8](repeating: 255, count: 500 * 200 * 4)
+        let ctx = CGContext(
+            data: &bytes,
+            width: 500,
+            height: 200,
+            bitsPerComponent: 8,
+            bytesPerRow: 500 * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        CGElementDrawer.drawElement(in: ctx, element: block, images: [:])
+        let img = ctx.makeImage()!
+        #expect(hasNonWhitePixel(img))
+    }
+
     private func createTestCGImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         var bytes = [UInt8](repeating: 128, count: width * height * 4)

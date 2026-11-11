@@ -89,6 +89,7 @@ public struct OfficeRun: Codable, Sendable {
     public let vertAlign: String
     public let spacing: CGFloat
     public let weight: Int
+    public let background: UInt32
 
     public init(
         text: String,
@@ -101,7 +102,8 @@ public struct OfficeRun: Codable, Sendable {
         strike: Bool = false,
         vertAlign: String = "",
         spacing: CGFloat = 0,
-        weight: Int = 0
+        weight: Int = 0,
+        background: UInt32 = 0
     ) {
         self.text = text
         self.fontFace = fontFace
@@ -114,11 +116,12 @@ public struct OfficeRun: Codable, Sendable {
         self.vertAlign = vertAlign
         self.spacing = spacing
         self.weight = weight
+        self.background = background
     }
 
     enum CodingKeys: String, CodingKey {
         case text, fontFace, size, bold, italic, underline, color
-        case strike, vertAlign, spacing, weight
+        case strike, vertAlign, spacing, weight, background
     }
 
     public init(from decoder: Decoder) throws {
@@ -134,6 +137,7 @@ public struct OfficeRun: Codable, Sendable {
         self.vertAlign = try c.decodeIfPresent(String.self, forKey: .vertAlign) ?? ""
         self.spacing = try c.decodeIfPresent(CGFloat.self, forKey: .spacing) ?? 0
         self.weight = try c.decodeIfPresent(Int.self, forKey: .weight) ?? 0
+        self.background = try c.decodeIfPresent(UInt32.self, forKey: .background) ?? 0
     }
 }
 
@@ -151,10 +155,59 @@ public struct OfficeParagraph: Codable, Sendable {
     public let image: String?
     public let imageWidth: CGFloat?
     public let imageHeight: CGFloat?
+    public let background: UInt32
+    public let borderTop: UInt32
+    public let borderBottom: UInt32
+    public let borderLeft: UInt32
+    public let borderRight: UInt32
+    public let borderWidth: CGFloat
+
+    public init(
+        runs: [OfficeRun] = [],
+        alignment: Int = 0,
+        before: CGFloat = 0,
+        after: CGFloat = 0,
+        indent: CGFloat = 0,
+        rightIndent: CGFloat = 0,
+        firstLineIndent: CGFloat = 0,
+        lineSpacingRule: OfficeLineSpacingRule = .auto,
+        lineSpacing: CGFloat = 1.0,
+        bullet: String = "",
+        image: String? = nil,
+        imageWidth: CGFloat? = nil,
+        imageHeight: CGFloat? = nil,
+        background: UInt32 = 0,
+        borderTop: UInt32 = 0,
+        borderBottom: UInt32 = 0,
+        borderLeft: UInt32 = 0,
+        borderRight: UInt32 = 0,
+        borderWidth: CGFloat = 0
+    ) {
+        self.runs = runs
+        self.alignment = alignment
+        self.before = before
+        self.after = after
+        self.indent = indent
+        self.rightIndent = rightIndent
+        self.firstLineIndent = firstLineIndent
+        self.lineSpacingRule = lineSpacingRule
+        self.lineSpacing = lineSpacing
+        self.bullet = bullet
+        self.image = image
+        self.imageWidth = imageWidth
+        self.imageHeight = imageHeight
+        self.background = background
+        self.borderTop = borderTop
+        self.borderBottom = borderBottom
+        self.borderLeft = borderLeft
+        self.borderRight = borderRight
+        self.borderWidth = borderWidth
+    }
 
     enum CodingKeys: String, CodingKey {
         case runs, alignment, before, after, indent, rightIndent, firstLineIndent, lineSpacingRule, lineSpacing, bullet
         case image, imageWidth, imageHeight
+        case background, borderTop, borderBottom, borderLeft, borderRight, borderWidth
     }
 
     public init(from decoder: Decoder) throws {
@@ -172,6 +225,12 @@ public struct OfficeParagraph: Codable, Sendable {
         self.image = try c.decodeIfPresent(String.self, forKey: .image)
         self.imageWidth = try c.decodeIfPresent(CGFloat.self, forKey: .imageWidth)
         self.imageHeight = try c.decodeIfPresent(CGFloat.self, forKey: .imageHeight)
+        self.background = try c.decodeIfPresent(UInt32.self, forKey: .background) ?? 0
+        self.borderTop = try c.decodeIfPresent(UInt32.self, forKey: .borderTop) ?? 0
+        self.borderBottom = try c.decodeIfPresent(UInt32.self, forKey: .borderBottom) ?? 0
+        self.borderLeft = try c.decodeIfPresent(UInt32.self, forKey: .borderLeft) ?? 0
+        self.borderRight = try c.decodeIfPresent(UInt32.self, forKey: .borderRight) ?? 0
+        self.borderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .borderWidth) ?? 0
     }
 }
 

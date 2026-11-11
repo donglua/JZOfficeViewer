@@ -440,6 +440,15 @@ public enum CGElementDrawer {
         let before: CGFloat
         let after: CGFloat
         let isLast: Bool
+        let paraBackground: UInt32
+        let borderTop: UInt32
+        let borderBottom: UInt32
+        let borderLeft: UInt32
+        let borderRight: UInt32
+        let borderWidth: CGFloat
+        let isParagraphStart: Bool
+        let isParagraphEnd: Bool
+        let paragraphHeight: CGFloat
     }
 
     public static func measureParagraphsHeight(
@@ -491,6 +500,54 @@ public enum CGElementDrawer {
         ctx.textMatrix = CGAffineTransform(scaleX: 1.0, y: -1.0)
         for line in lines {
             curY += line.before
+
+            // 1. 段落底纹绘制
+            if line.isParagraphStart && line.paraBackground != 0 {
+                let bgColor = argbToNSColor(line.paraBackground).cgColor
+                ctx.saveGState()
+                ctx.setFillColor(bgColor)
+                ctx.fill(CGRect(x: originX, y: curY, width: availableWidth, height: line.paragraphHeight))
+                ctx.restoreGState()
+            }
+
+            // 2. 段落边框绘制
+            if line.isParagraphStart && line.borderWidth > 0 {
+                let bw = line.borderWidth
+                let pHeight = line.paragraphHeight
+                let halfBw = bw / 2.0
+                ctx.saveGState()
+                ctx.setLineWidth(bw)
+                if line.borderTop != 0 {
+                    ctx.setStrokeColor(argbToNSColor(line.borderTop).cgColor)
+                    ctx.beginPath()
+                    ctx.move(to: CGPoint(x: originX, y: curY + halfBw))
+                    ctx.addLine(to: CGPoint(x: originX + availableWidth, y: curY + halfBw))
+                    ctx.strokePath()
+                }
+                if line.borderBottom != 0 {
+                    ctx.setStrokeColor(argbToNSColor(line.borderBottom).cgColor)
+                    ctx.beginPath()
+                    ctx.move(to: CGPoint(x: originX, y: curY + pHeight - halfBw))
+                    ctx.addLine(to: CGPoint(x: originX + availableWidth, y: curY + pHeight - halfBw))
+                    ctx.strokePath()
+                }
+                if line.borderLeft != 0 {
+                    ctx.setStrokeColor(argbToNSColor(line.borderLeft).cgColor)
+                    ctx.beginPath()
+                    ctx.move(to: CGPoint(x: originX + halfBw, y: curY))
+                    ctx.addLine(to: CGPoint(x: originX + halfBw, y: curY + pHeight))
+                    ctx.strokePath()
+                }
+                if line.borderRight != 0 {
+                    ctx.setStrokeColor(argbToNSColor(line.borderRight).cgColor)
+                    ctx.beginPath()
+                    ctx.move(to: CGPoint(x: originX + availableWidth - halfBw, y: curY))
+                    ctx.addLine(to: CGPoint(x: originX + availableWidth - halfBw, y: curY + pHeight))
+                    ctx.strokePath()
+                }
+                ctx.restoreGState()
+            }
+
             let lineAvailW = max(1, availableWidth - line.leftIndent - line.rightIndent)
             var lineX = originX + line.leftIndent
             if line.alignment == 1 {
@@ -498,13 +555,35 @@ public enum CGElementDrawer {
             } else if line.alignment == 2 {
                 lineX += lineAvailW - line.width
             }
+
+            let drawLine: CTLine
+            if line.alignment == 3 && !line.isLast, let justified = CTLineCreateJustifiedLine(line.ctLine, 1.0, Double(lineAvailW)) {
+                drawLine = justified
+            } else {
+                drawLine = line.ctLine
+            }
+
+            // 3. 绘制文本高亮背景
+            let glyphRuns = (CTLineGetGlyphRuns(drawLine) as [AnyObject])
+            for runObj in glyphRuns {
+                let ctRun = runObj as! CTRun
+                let runAttrs = CTRunGetAttributes(ctRun) as NSDictionary
+                if let bgColor = (runAttrs[NSAttributedString.Key.backgroundColor] ?? runAttrs[NSAttributedString.Key.backgroundColor.rawValue as NSString]) as? NSColor {
+                    let stringRange = CTRunGetStringRange(ctRun)
+                    let xOffset = CTLineGetOffsetForStringIndex(drawLine, stringRange.location, nil)
+                    let runWidth = CGFloat(CTRunGetTypographicBounds(ctRun, CFRange(location: 0, length: 0), nil, nil, nil))
+                    if runWidth > 0 {
+                        ctx.saveGState()
+                        ctx.setFillColor(bgColor.cgColor)
+                        ctx.fill(CGRect(x: lineX + CGFloat(xOffset), y: curY, width: CGFloat(runWidth), height: line.height))
+                        ctx.restoreGState()
+                    }
+                }
+            }
+
             let baselineY = curY + line.ascent + max(0, (line.height - (line.ascent + line.descent)) / 2.0)
             ctx.textPosition = CGPoint(x: lineX, y: baselineY)
-            if line.alignment == 3 && !line.isLast, let justified = CTLineCreateJustifiedLine(line.ctLine, 1.0, Double(lineAvailW)) {
-                CTLineDraw(justified, ctx)
-            } else {
-                CTLineDraw(line.ctLine, ctx)
-            }
+            CTLineDraw(drawLine, ctx)
             curY += line.height + line.after
         }
         ctx.restoreGState()
@@ -537,7 +616,16 @@ public enum CGElementDrawer {
                     rightIndent: rightIndent,
                     before: max(0, para.before),
                     after: max(0, para.after),
-                    isLast: true
+                    isLast: true,
+                    paraBackground: para.background,
+                    borderTop: para.borderTop,
+                    borderBottom: para.borderBottom,
+                    borderLeft: para.borderLeft,
+                    borderRight: para.borderRight,
+                    borderWidth: para.borderWidth,
+                    isParagraphStart: true,
+                    isParagraphEnd: true,
+                    paragraphHeight: h
                 ))
                 continue
             }
@@ -546,6 +634,7 @@ public enum CGElementDrawer {
             let totalLen = attrString.length
             var startIdx = 0
             var lineIndex = 0
+            var paraLines: [LaidOutLine] = []
 
             while startIdx < totalLen {
                 let leftInd = lineIndex == 0 ? firstIndent : baseIndent
@@ -562,7 +651,7 @@ public enum CGElementDrawer {
 
                 let isFirst = startIdx == 0
                 let isLast = (startIdx + count) >= totalLen
-                result.append(LaidOutLine(
+                paraLines.append(LaidOutLine(
                     ctLine: ctLine,
                     width: w,
                     ascent: ascent,
@@ -573,10 +662,45 @@ public enum CGElementDrawer {
                     rightIndent: rightIndent,
                     before: isFirst ? max(0, para.before) : 0,
                     after: isLast ? max(0, para.after) : 0,
-                    isLast: isLast
+                    isLast: isLast,
+                    paraBackground: para.background,
+                    borderTop: para.borderTop,
+                    borderBottom: para.borderBottom,
+                    borderLeft: para.borderLeft,
+                    borderRight: para.borderRight,
+                    borderWidth: para.borderWidth,
+                    isParagraphStart: isFirst,
+                    isParagraphEnd: isLast,
+                    paragraphHeight: 0
                 ))
                 startIdx += count
                 lineIndex += 1
+            }
+
+            let paraH = paraLines.reduce(0) { $0 + $1.height }
+            for (i, pl) in paraLines.enumerated() {
+                result.append(LaidOutLine(
+                    ctLine: pl.ctLine,
+                    width: pl.width,
+                    ascent: pl.ascent,
+                    descent: pl.descent,
+                    height: pl.height,
+                    alignment: pl.alignment,
+                    leftIndent: pl.leftIndent,
+                    rightIndent: pl.rightIndent,
+                    before: pl.before,
+                    after: pl.after,
+                    isLast: pl.isLast,
+                    paraBackground: pl.paraBackground,
+                    borderTop: pl.borderTop,
+                    borderBottom: pl.borderBottom,
+                    borderLeft: pl.borderLeft,
+                    borderRight: pl.borderRight,
+                    borderWidth: pl.borderWidth,
+                    isParagraphStart: i == 0,
+                    isParagraphEnd: i == paraLines.count - 1,
+                    paragraphHeight: paraH
+                ))
             }
         }
         return result
@@ -651,6 +775,9 @@ public enum CGElementDrawer {
             }
             if run.spacing != 0 {
                 attributes[.kern] = run.spacing
+            }
+            if run.background != 0 {
+                attributes[.backgroundColor] = argbToNSColor(run.background)
             }
             attr.append(NSAttributedString(string: run.text, attributes: attributes))
         }
