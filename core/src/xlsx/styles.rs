@@ -140,6 +140,9 @@ impl Tables {
             style.cell.italic = font.italic;
             style.cell.underline = font.underline;
             style.cell.color = font.color;
+            style.cell.font_face = font.font_face.clone();
+            style.cell.strike = font.strike;
+            style.cell.vert_align = font.vert_align;
         }
         if !node.attr("fillId").is_empty() && boolean(node.attr("applyFill"), true)? {
             style.cell.fill = fill;

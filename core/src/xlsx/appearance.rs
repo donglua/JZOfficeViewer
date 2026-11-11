@@ -1,10 +1,19 @@
 use super::{boolean, colors::Colors, dimension};
-use crate::model::{CellStyle, Document, VerticalAlignment};
+use crate::model::{CellStyle, Document, VertAlign, VerticalAlignment};
 use crate::xml::Node;
-use crate::Result;
+use crate::{Error, Result};
 
 pub(super) fn font(node: &Node, colors: &Colors, document: &mut Document) -> Result<CellStyle> {
     let mut style = CellStyle::default();
+    if let Some(name_node) = node.child("name").or_else(|| node.child("rFont")) {
+        let face = name_node.attr("val").trim();
+        if face.len() > 256 {
+            return Err(Error::Limit("XLSX font family name exceeds 256 bytes"));
+        }
+        if !face.is_empty() {
+            style.font_face = face.to_owned();
+        }
+    }
     if let Some(size) = node.child("sz") {
         style.font_size = dimension(size.attr("val"), 11.0, 409.0)?.max(1.0);
     }
@@ -15,10 +24,17 @@ pub(super) fn font(node: &Node, colors: &Colors, document: &mut Document) -> Res
         .child("i")
         .map_or(Ok(false), |n| boolean(n.attr("val"), true))?;
     style.underline = node.child("u").is_some_and(|n| n.attr("val") != "none");
-    style.color = colors.color(node.child("color"), style.color, document)?;
-    if node.child("strike").is_some() || node.child("vertAlign").is_some() {
-        document.warn("Strikethrough and superscript/subscript fonts are not supported");
+    if let Some(strike_node) = node.child("strike") {
+        style.strike = boolean(strike_node.attr("val"), true)?;
     }
+    if let Some(va_node) = node.child("vertAlign") {
+        style.vert_align = match va_node.attr("val") {
+            "superscript" => VertAlign::Superscript,
+            "subscript" => VertAlign::Subscript,
+            _ => VertAlign::Baseline,
+        };
+    }
+    style.color = colors.color(node.child("color"), style.color, document)?;
     Ok(style)
 }
 
