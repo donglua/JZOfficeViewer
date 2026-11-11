@@ -53,8 +53,14 @@ fn parses_font_face_strike_and_vert_align() -> TestResult {
     let cell_style = &document.cell_styles[0];
     assert_eq!(cell_style.font_face, "Times New Roman");
     assert!(cell_style.strike);
-    assert_eq!(cell_style.vert_align, jz_office_core::model::VertAlign::Subscript);
-    assert!(document.warnings.iter().all(|w| !w.contains("Strikethrough and superscript")));
+    assert_eq!(
+        cell_style.vert_align,
+        jz_office_core::model::VertAlign::Subscript
+    );
+    assert!(document
+        .warnings
+        .iter()
+        .all(|w| !w.contains("Strikethrough and superscript")));
     Ok(())
 }
 
@@ -108,6 +114,9 @@ fn parses_xlsx_rfont_and_superscript() -> TestResult {
     let cell_style = &document.cell_styles[0];
     assert_eq!(cell_style.font_face, "Calibri");
     assert!(!cell_style.strike);
-    assert_eq!(cell_style.vert_align, jz_office_core::model::VertAlign::Superscript);
+    assert_eq!(
+        cell_style.vert_align,
+        jz_office_core::model::VertAlign::Superscript
+    );
     Ok(())
 }
