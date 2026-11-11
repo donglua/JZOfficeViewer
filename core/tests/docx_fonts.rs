@@ -21,11 +21,13 @@ fn serializes_explicit_font_when_saved_families_agree() -> TestResult {
 
         // Then the name reaches the viewer while font availability remains explicit.
         assert_eq!(document.schema_version, 9);
-        assert_eq!(
-            run,
-            json!({"text":"English 中文", "fontFace":face, "size":18.0,
-            "bold":true, "italic":true, "underline":true, "color":0xffc03020_u32})
-        );
+        let mut expected = json!({"text":"English 中文", "fontFace":face, "size":18.0,
+            "bold":true, "italic":true, "underline":true, "color":0xffc03020_u32});
+        let weight = jz_office_core::model::infer_font_weight(face);
+        if weight > 0 {
+            expected["weight"] = json!(weight);
+        }
+        assert_eq!(run, expected);
         assert_eq!(document.warnings.len(), 1);
         assert!(document.warnings[0].contains("device fonts"));
     }
@@ -459,5 +461,28 @@ fn cell_style_serializes_typography_and_omits_defaults() -> TestResult {
     assert_eq!(json_custom["fontFace"], "Calibri");
     assert_eq!(json_custom["strike"], true);
     assert_eq!(json_custom["vertAlign"], "superscript");
+    Ok(())
+}
+
+#[test]
+fn resolves_east_asian_font_for_chinese_text_in_mixed_script_run() -> TestResult {
+    let body = r#"<w:p><w:r><w:rPr>
+<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="SimSun"/>
+<w:strike/><w:vertAlign w:val="superscript"/><w:spacing w:val="40"/>
+</w:rPr><w:t>中文</w:t></w:r>
+<w:r><w:rPr>
+<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="SimSun"/>
+</w:rPr><w:t>English</w:t></w:r>
+</w:p>"#;
+    let document = parse(body, "")?;
+    let runs = &document.blocks[0].paragraphs[0].runs;
+    assert_eq!(runs[0].font_face, "SimSun");
+    assert!(runs[0].strike);
+    assert_eq!(
+        runs[0].vert_align,
+        jz_office_core::model::VertAlign::Superscript
+    );
+    assert_eq!(runs[0].spacing, 2.0); // 40 twips = 2.0 pt
+    assert_eq!(runs[1].font_face, "Calibri");
     Ok(())
 }

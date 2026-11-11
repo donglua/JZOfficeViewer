@@ -1,5 +1,7 @@
 use super::MAX_COORDINATE;
-use crate::model::{Document, LineSpacingRule, Paragraph, Run};
+use crate::model::{
+    contains_east_asian, infer_font_weight, Document, LineSpacingRule, Paragraph, Run, VertAlign,
+};
 use crate::xml::{self, Node};
 use crate::{Error, Result};
 
@@ -24,28 +26,56 @@ impl Font {
             text: text.to_owned(),
             ..self.run.clone()
         };
-        let mut face = None;
         for family in &self.families {
-            match family {
-                FontFamily::Default => (),
-                FontFamily::Theme => {
-                    document.warn("Theme fonts use the viewer's default font.");
-                    return run;
-                }
-                FontFamily::Explicit(value) => {
-                    if face.is_some_and(|previous| previous != value) {
-                        document.warn("Mixed-script font families use the viewer's default font.");
-                        return run;
-                    }
-                    face = Some(value);
-                }
+            if matches!(family, FontFamily::Theme) {
+                document.warn("Theme fonts use the viewer's default font.");
+                return run;
             }
         }
+        let mut explicit = Vec::new();
+        for family in &self.families {
+            if let FontFamily::Explicit(value) = family {
+                explicit.push(value.as_str());
+            }
+        }
+        if explicit.is_empty() {
+            return run;
+        }
+
+        let all_identical = explicit.iter().all(|f| *f == explicit[0]);
+        let face = if all_identical {
+            Some(explicit[0])
+        } else {
+            let has_cjk = contains_east_asian(text);
+            let has_latin = text.chars().any(|c| c.is_ascii_alphabetic());
+            if has_cjk && !has_latin {
+                if let FontFamily::Explicit(ref ea) = self.families[2] {
+                    Some(ea.as_str())
+                } else {
+                    None
+                }
+            } else if has_latin && !has_cjk {
+                if let FontFamily::Explicit(ref ascii) = self.families[0] {
+                    Some(ascii.as_str())
+                } else if let FontFamily::Explicit(ref h_ansi) = self.families[1] {
+                    Some(h_ansi.as_str())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
         if let Some(face) = face {
-            run.font_face.clone_from(face);
+            run.font_face = face.to_owned();
+            run.weight = infer_font_weight(face);
             document.warn(
                 "Font families use available device fonts; missing fonts may be substituted.",
             );
+        } else {
+            document.warn("Mixed-script font families use the viewer's default font.");
+            return run;
         }
         run
     }
@@ -125,6 +155,15 @@ pub(super) fn font(
             "b" => run.bold = enabled(value),
             "i" => run.italic = enabled(value),
             "u" => run.underline = enabled(value),
+            "strike" | "dstrike" => run.strike = enabled(value),
+            "vertAlign" => {
+                run.vert_align = match value {
+                    "superscript" => VertAlign::Superscript,
+                    "subscript" => VertAlign::Subscript,
+                    _ => VertAlign::Baseline,
+                };
+            }
+            "spacing" => run.spacing = (xml::number(value, 0.0) / 20.0).clamp(-100.0, 400.0),
             "sz" => run.size = (xml::number(value, run.size * 2.0) / 2.0).clamp(1.0, 400.0),
             "color" => {
                 run.color = if value.eq_ignore_ascii_case("auto") {
