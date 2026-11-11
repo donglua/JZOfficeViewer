@@ -11,9 +11,12 @@ import android.text.style.AbsoluteSizeSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.LineHeightSpan;
 import android.text.style.MetricAffectingSpan;
+import android.text.style.StrikethroughSpan;
 import android.text.style.StyleSpan;
 import android.text.style.UnderlineSpan;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 final class OfficeTextLayout {
     static final class Block {
@@ -59,9 +62,19 @@ final class OfficeTextLayout {
                 start, text.length(), flags);
             text.setSpan(new ForegroundColorSpan(run.color), start, text.length(), flags);
             int style = (run.bold ? Typeface.BOLD : 0) | (run.italic ? Typeface.ITALIC : 0);
-            if (!run.fontFace.isEmpty()) text.setSpan(new FontFace(run.fontFace, style), start, text.length(), flags);
-            else if (style != 0) text.setSpan(new StyleSpan(style), start, text.length(), flags);
+            if (!run.fontFace.isEmpty() || run.weight > 0) {
+                text.setSpan(new FontFace(run.fontFace, style, run.weight), start, text.length(), flags);
+            } else if (style != 0) {
+                text.setSpan(new StyleSpan(style), start, text.length(), flags);
+            }
             if (run.underline) text.setSpan(new UnderlineSpan(), start, text.length(), flags);
+            if (run.strike) text.setSpan(new StrikethroughSpan(), start, text.length(), flags);
+            if ("superscript".equals(run.vertAlign) || "subscript".equals(run.vertAlign)) {
+                text.setSpan(new ScriptSpan("superscript".equals(run.vertAlign)), start, text.length(), flags);
+            }
+            if (run.spacing != 0) {
+                text.setSpan(new LetterSpacingSpan(run.spacing), start, text.length(), flags);
+            }
         }
         if (text.length() == 0) text.append(" ");
         TextPaint font = new TextPaint(Paint.ANTI_ALIAS_FLAG);
@@ -96,6 +109,64 @@ final class OfficeTextLayout {
         return builder.build();
     }
 
+    private static final Map<String, Typeface> TYPEFACE_CACHE =
+        new LinkedHashMap<String, Typeface>(64, 0.75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<String, Typeface> eldest) {
+                return size() > 64;
+            }
+        };
+
+    static Typeface resolveTypeface(String face, int style, int weight) {
+        String cleanFace = face == null ? "" : face.trim();
+        String key = cleanFace + "#" + style + "#" + weight;
+        synchronized (TYPEFACE_CACHE) {
+            Typeface cached = TYPEFACE_CACHE.get(key);
+            if (cached != null) return cached;
+            Typeface tf = createTypeface(cleanFace, style, weight);
+            TYPEFACE_CACHE.put(key, tf);
+            return tf;
+        }
+    }
+
+    private static Typeface createTypeface(String face, int style, int weight) {
+        String target;
+        String lower = face.toLowerCase(java.util.Locale.ROOT);
+        if (face.isEmpty()) {
+            target = null;
+        } else if ("impact".equals(lower)) {
+            target = "sans-serif-condensed";
+            style |= Typeface.BOLD;
+        } else if (containsAny(lower, "song", "宋体", "times new roman", "times", "georgia", "cambria", "fangsong", "仿宋", "mincho", "细明体", "pmingliu")) {
+            target = "serif";
+        } else if (containsAny(lower, "mono", "courier", "consolas", "menlo", "monaco", "lucida console")) {
+            target = "monospace";
+        } else if (containsAny(lower, "kai", "楷体", "comic sans", "casual", "cursive")) {
+            target = "cursive";
+        } else if (weight == 300 || lower.contains("light")) {
+            target = "sans-serif-light";
+        } else if (weight == 500 || lower.contains("medium")) {
+            target = "sans-serif-medium";
+        } else if (weight >= 800 || lower.contains("black") || lower.contains("heavy")) {
+            target = "sans-serif-black";
+        } else {
+            target = face;
+        }
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P && weight > 0) {
+            Typeface base = target == null ? Typeface.DEFAULT : Typeface.create(target, Typeface.NORMAL);
+            return Typeface.create(base, weight, (style & Typeface.ITALIC) != 0);
+        } else {
+            return target == null ? Typeface.defaultFromStyle(style) : Typeface.create(target, style);
+        }
+    }
+
+    private static boolean containsAny(String str, String... keywords) {
+        for (String kw : keywords) {
+            if (str.contains(kw)) return true;
+        }
+        return false;
+    }
+
     private static final class FontSize extends MetricAffectingSpan {
         private final float size;
 
@@ -109,18 +180,51 @@ final class OfficeTextLayout {
         private final Typeface typeface;
 
         FontFace(String face, int style) {
-            if ("Impact".equalsIgnoreCase(face)) {
-                face = "sans-serif-condensed";
-                style |= Typeface.BOLD;
-            } else if ("思源黑体 CN Light".equals(face) || "Source Han Sans CN Light".equals(face)
-                || "Source Han Sans SC Light".equals(face) || "Noto Sans CJK SC Light".equals(face)) {
-                face = "sans-serif-light";
-            }
-            typeface = Typeface.create(face, style);
+            this(face, style, 0);
+        }
+
+        FontFace(String face, int style, int weight) {
+            typeface = resolveTypeface(face, style, weight);
         }
 
         @Override public void updateMeasureState(TextPaint paint) { paint.setTypeface(typeface); }
         @Override public void updateDrawState(TextPaint paint) { paint.setTypeface(typeface); }
+    }
+
+    private static final class ScriptSpan extends MetricAffectingSpan {
+        private final boolean superscript;
+
+        ScriptSpan(boolean superscript) { this.superscript = superscript; }
+
+        @Override public void updateMeasureState(TextPaint p) { apply(p); }
+        @Override public void updateDrawState(TextPaint p) { apply(p); }
+
+        private void apply(TextPaint p) {
+            p.setTextSize(Math.max(1f, p.getTextSize() * 0.65f));
+            if (superscript) {
+                p.baselineShift += (int) (p.ascent() * 0.35f);
+            } else {
+                p.baselineShift -= (int) (p.descent() * 0.35f);
+            }
+        }
+    }
+
+    private static final class LetterSpacingSpan extends MetricAffectingSpan {
+        private final float spacingPt;
+
+        LetterSpacingSpan(float spacingPt) { this.spacingPt = spacingPt; }
+
+        @Override public void updateMeasureState(TextPaint p) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                p.setLetterSpacing(spacingPt / Math.max(1f, p.getTextSize()));
+            }
+        }
+
+        @Override public void updateDrawState(TextPaint p) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                p.setLetterSpacing(spacingPt / Math.max(1f, p.getTextSize()));
+            }
+        }
     }
 
     private static final class PptxLineHeight implements LineHeightSpan {

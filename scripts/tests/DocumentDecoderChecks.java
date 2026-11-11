@@ -9,6 +9,7 @@ public final class DocumentDecoderChecks {
     public static void main(String[] args) throws Exception {
         checkSpreadsheetDecodeAndValidation();
         checkPptxAndDocxWithOmittedFields();
+        checkTypographyAndStyleFields();
         checkGeometryAndPathValidation();
         checkEscapesAndOutOfOrderKeys();
         checkSheetGeometryValidation();
@@ -186,7 +187,74 @@ public final class DocumentDecoderChecks {
         check(el.imageBounds == null && el.image == null, "omitted imageBounds and image are null");
         check(el.rows.isEmpty() && el.columnWidths.isEmpty() && el.cellFills.isEmpty() && el.paths.isEmpty(), "omitted collections are empty");
         check("".equals(el.paragraphs.get(0).bullet), "omitted bullet defaults to empty string");
-        check("".equals(el.paragraphs.get(0).runs.get(0).fontFace), "omitted fontFace defaults to empty string");
+        OfficeDocument.Run run0 = el.paragraphs.get(0).runs.get(0);
+        check("".equals(run0.fontFace), "omitted fontFace defaults to empty string");
+        check(!run0.strike, "omitted strike defaults to false");
+        check("".equals(run0.vertAlign), "omitted vertAlign defaults to empty string");
+        check(run0.spacing == 0f, "omitted spacing defaults to 0");
+        check(run0.weight == 0, "omitted weight defaults to 0");
+    }
+
+    private static void checkTypographyAndStyleFields() throws Exception {
+        String baseDoc = "{\"schemaVersion\":9,\"kind\":\"DOCX\",\"width\":595,\"warnings\":[],\"blocks\":["
+            + "{\"type\":\"TEXT\",\"x\":0,\"y\":0,\"width\":500,\"height\":100,\"padding\":0,"
+            + "\"transform\":[1,0,0,1,0,0],\"fill\":0,\"stroke\":0,\"strokeWidth\":0,"
+            + "\"verticalAlignment\":\"TOP\",\"textWrap\":true,"
+            + "\"paragraphs\":[{\"alignment\":0,\"before\":0,\"after\":0,\"indent\":0,\"rightIndent\":0,"
+            + "\"firstLineIndent\":0,\"lineSpacingRule\":\"AUTO\",\"lineSpacing\":1,\"runs\":["
+            + "{\"text\":\"T1\",\"size\":12,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,"
+            + "\"strike\":true,\"vertAlign\":\"superscript\",\"spacing\":2.5,\"weight\":600},"
+            + "{\"text\":\"T2\",\"size\":12,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,"
+            + "\"strike\":false,\"vertAlign\":\"subscript\",\"spacing\":-1.0,\"weight\":300},"
+            + "{\"text\":\"T3\",\"size\":12,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,"
+            + "\"strike\":false,\"vertAlign\":\"baseline\",\"spacing\":0,\"weight\":400}"
+            + "]}]}],\"pages\":[],\"cellStyles\":[],\"sheets\":[]}";
+        OfficeDocument doc = DocumentDecoder.decode(baseDoc);
+        java.util.List<OfficeDocument.Run> runs = doc.blocks.get(0).paragraphs.get(0).runs;
+        check(runs.size() == 3, "runs decoded count");
+        check(runs.get(0).strike && "superscript".equals(runs.get(0).vertAlign)
+            && runs.get(0).spacing == 2.5f && runs.get(0).weight == 600, "run 0 typography decoded");
+        check(!runs.get(1).strike && "subscript".equals(runs.get(1).vertAlign)
+            && runs.get(1).spacing == -1.0f && runs.get(1).weight == 300, "run 1 typography decoded");
+        check(!runs.get(2).strike && "baseline".equals(runs.get(2).vertAlign)
+            && runs.get(2).spacing == 0f && runs.get(2).weight == 400, "run 2 typography decoded");
+
+        // CellStyle with fontFace, strike, vertAlign
+        String baseSheet = "{\"schemaVersion\":9,\"kind\":\"XLSX\",\"width\":595,\"warnings\":[],\"blocks\":[],\"pages\":[],"
+            + "\"cellStyles\":[{\"fontSize\":11,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,"
+            + "\"fill\":0,\"alignment\":3,\"verticalAlignment\":\"BOTTOM\",\"wrap\":false,\"borders\":[null,null,null,null],"
+            + "\"fontFace\":\"Calibri\",\"strike\":true,\"vertAlign\":\"superscript\"}],"
+            + "\"sheets\":[{\"name\":\"S\",\"rowHeights\":[20],\"columnWidths\":[50],"
+            + "\"cells\":[{\"row\":0,\"column\":0,\"text\":\"test\",\"style\":0,\"numeric\":false}],\"merges\":[]}]}";
+        OfficeDocument sheetDoc = DocumentDecoder.decode(baseSheet);
+        SpreadsheetDocument.CellStyle cs = sheetDoc.cellStyles.get(0);
+        check("Calibri".equals(cs.fontFace), "cell style fontFace decoded");
+        check(cs.strike, "cell style strike decoded");
+        check("superscript".equals(cs.vertAlign), "cell style vertAlign decoded");
+
+        // Copy method verification
+        OfficeDocument.Run original = runs.get(0);
+        OfficeDocument.Run copied = original.copy();
+        check(copied.strike == original.strike && copied.vertAlign.equals(original.vertAlign)
+            && copied.spacing == original.spacing && copied.weight == original.weight, "run copy copies new fields");
+
+        // Validation errors
+        reject(baseDoc.replace("\"vertAlign\":\"superscript\"", "\"vertAlign\":\"invalid\""),
+            "Invalid core display model", "invalid run vertAlign");
+        reject(baseDoc.replace("\"spacing\":2.5", "\"spacing\":500"),
+            "Invalid core display model", "spacing exceeding upper bound");
+        reject(baseDoc.replace("\"spacing\":2.5", "\"spacing\":-150"),
+            "Invalid core display model", "spacing below lower bound");
+        reject(baseDoc.replace("\"weight\":600", "\"weight\":1500"),
+            "Invalid core display model", "weight exceeding upper bound");
+        reject(baseDoc.replace("\"weight\":600", "\"weight\":-10"),
+            "Invalid core display model", "weight negative");
+        reject(baseSheet.replace("\"vertAlign\":\"superscript\"", "\"vertAlign\":\"other\""),
+            "Invalid core display model", "invalid cellStyle vertAlign");
+        StringBuilder longFace = new StringBuilder();
+        for (int i = 0; i < 300; i++) longFace.append('a');
+        reject(baseSheet.replace("\"Calibri\"", "\"" + longFace + "\""),
+            "Invalid core display model", "cellStyle fontFace too long");
     }
 
     private static void checkGeometryAndPathValidation() throws Exception {

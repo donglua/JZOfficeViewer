@@ -256,6 +256,22 @@ final class DocumentDecoder {
                     if (count != 4) throw new IllegalArgumentException("Expected four cell borders");
                     hasBorders = true;
                     break;
+                case "fontFace":
+                    if (c.peekNull()) {
+                        c.nextNull();
+                        style.fontFace = "";
+                    } else {
+                        String ff = c.nextString();
+                        if (ff.length() > 256) throw new IllegalArgumentException("fontFace too long");
+                        style.fontFace = ff;
+                    }
+                    break;
+                case "strike":
+                    style.strike = c.nextBoolean();
+                    break;
+                case "vertAlign":
+                    style.vertAlign = vertAlign(c, "cellStyle");
+                    break;
                 default: c.skipValue(); break;
             }
         }
@@ -921,6 +937,24 @@ final class DocumentDecoder {
                 case "italic": r.italic = c.nextBoolean(); hasItalic = true; break;
                 case "underline": r.underline = c.nextBoolean(); hasUnderline = true; break;
                 case "color": r.color = (int) c.nextLong(); hasColor = true; break;
+                case "strike": r.strike = c.nextBoolean(); break;
+                case "vertAlign": r.vertAlign = vertAlign(c, "run"); break;
+                case "spacing": {
+                    double spc = c.nextDouble();
+                    if (!Double.isFinite(spc) || spc < -100.0 || spc > 400.0) {
+                        throw new IllegalArgumentException("Invalid run spacing: " + spc);
+                    }
+                    r.spacing = (float) spc;
+                    break;
+                }
+                case "weight": {
+                    double wt = c.nextDouble();
+                    if (!Double.isFinite(wt) || wt < 0 || wt > 1000) {
+                        throw new IllegalArgumentException("Invalid run weight: " + wt);
+                    }
+                    r.weight = (int) Math.round(wt);
+                    break;
+                }
                 default: c.skipValue(); break;
             }
         }
@@ -929,6 +963,20 @@ final class DocumentDecoder {
             throw new IllegalArgumentException("Missing run fields");
         }
         return r;
+    }
+
+    private static String vertAlign(Cursor c, String name) {
+        String va;
+        if (c.peekNull()) {
+            c.nextNull();
+            va = "";
+        } else {
+            va = c.nextString();
+        }
+        if (!va.isEmpty() && !va.equals("superscript") && !va.equals("subscript") && !va.equals("baseline")) {
+            throw new IllegalArgumentException("Invalid " + name + " vertAlign: " + va);
+        }
+        return va;
     }
 
     /** Zero-DOM single-pass JSON cursor over a String. */

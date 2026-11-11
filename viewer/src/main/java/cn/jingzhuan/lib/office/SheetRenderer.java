@@ -21,12 +21,6 @@ final class SheetRenderer {
     private static final int GRID_COLOR = 0xffdce1e5, HEADER_COLOR = 0xfff3f5f7;
     private static final int MAX_CACHED_LAYOUTS = 256, MAX_LAYOUT_COST = 256 * 1024;
     private static final int BUCKET_ROW_SIZE = 64;
-    private static final Typeface[] TYPEFACES = {
-        Typeface.create(Typeface.DEFAULT, Typeface.NORMAL),
-        Typeface.create(Typeface.DEFAULT, Typeface.BOLD),
-        Typeface.create(Typeface.DEFAULT, Typeface.ITALIC),
-        Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC)
-    };
 
     float width, height;
     private SpreadsheetDocument.Sheet sheet;
@@ -190,6 +184,11 @@ final class SheetRenderer {
         float remaining = Math.max(0, availableHeight - layout.getHeight());
         if (style.verticalAlignment == OfficeDocument.VerticalAlignment.CENTER) y += remaining / 2;
         else if (style.verticalAlignment == OfficeDocument.VerticalAlignment.BOTTOM) y += remaining;
+        if ("superscript".equals(style.vertAlign)) {
+            y += (int) (layout.getPaint().ascent() * 0.35f);
+        } else if ("subscript".equals(style.vertAlign)) {
+            y += (int) (layout.getPaint().descent() * 0.35f);
+        }
         int save = canvas.save();
         canvas.clipRect(bounds.left + PADDING, bounds.top + VERTICAL_PADDING, bounds.right - PADDING, bounds.bottom - VERTICAL_PADDING);
         canvas.translate(x, y);
@@ -205,7 +204,11 @@ final class SheetRenderer {
         font.setTextSize(style.fontSize); font.setColor(style.color); font.setUnderlineText(style.underline);
         int typeface = style.bold ? (style.italic ? Typeface.BOLD_ITALIC : Typeface.BOLD)
             : (style.italic ? Typeface.ITALIC : Typeface.NORMAL);
-        font.setTypeface(TYPEFACES[typeface]);
+        font.setTypeface(OfficeTextLayout.resolveTypeface(style.fontFace, typeface, 0));
+        font.setStrikeThruText(style.strike);
+        if ("superscript".equals(style.vertAlign) || "subscript".equals(style.vertAlign)) {
+            font.setTextSize(Math.max(1f, style.fontSize * 0.65f));
+        }
         String text = cell.previewText();
         int layoutWidth = Math.max(1, (int) availableWidth);
         if (!style.wrap) layoutWidth = Math.max(layoutWidth, (int) Math.ceil(Layout.getDesiredWidth(text, font)));

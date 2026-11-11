@@ -52,8 +52,10 @@ final class SpreadsheetDocument {
     }
 
     static final class CellStyle {
+        String fontFace = "";
         float fontSize = 11;
-        boolean bold, italic, underline, wrap;
+        boolean bold, italic, underline, strike, wrap;
+        String vertAlign = "";
         int color = 0xff202124, fill;
         int alignment = 3;
         OfficeDocument.VerticalAlignment verticalAlignment = OfficeDocument.VerticalAlignment.BOTTOM;
