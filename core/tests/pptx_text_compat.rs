@@ -235,14 +235,39 @@ fn preserves_inherited_spacing_when_direct_values_are_invalid() -> TestResult {
 }
 
 #[test]
-fn retains_warning_when_percentage_paragraph_spacing_is_requested() -> TestResult {
+fn parses_percentage_paragraph_spacing() -> TestResult {
     let body = r#"<a:p><a:pPr><a:spcBef><a:spcPct val="50000"/></a:spcBef>
 <a:spcAft><a:spcPct val="50000"/></a:spcAft></a:pPr></a:p>"#;
     let doc = parse_bodies(["", "", body])?;
-    assert!(doc
+    let paragraph = &paragraphs(&doc)?[0];
+    checks::near(paragraph.before, 9.0);
+    checks::near(paragraph.after, 9.0);
+    assert!(!doc
         .warnings
         .iter()
         .any(|w| w == "PPTX percentage paragraph spacing is not supported."));
+
+    let body_custom_font = r#"<a:p><a:pPr><a:defRPr sz="2400"/><a:spcBef><a:spcPct val="50000"/></a:spcBef>
+<a:spcAft><a:spcPct val="100000"/></a:spcAft></a:pPr></a:p>"#;
+    let doc_custom = parse_bodies(["", "", body_custom_font])?;
+    let paragraph_custom = &paragraphs(&doc_custom)?[0];
+    checks::near(paragraph_custom.before, 12.0);
+    checks::near(paragraph_custom.after, 24.0);
+    Ok(())
+}
+
+#[test]
+fn parses_justified_paragraph_alignments() -> TestResult {
+    for align in ["just", "dist", "justLow", "thaiDist"] {
+        let body = format!(r#"<a:p><a:pPr algn="{align}"/></a:p>"#);
+        let doc = parse_bodies(["", "", &body])?;
+        let paragraph = &paragraphs(&doc)?[0];
+        assert_eq!(paragraph.alignment, 3);
+        assert!(!doc
+            .warnings
+            .iter()
+            .any(|w| w == "PPTX justified paragraphs use left alignment."));
+    }
     Ok(())
 }
 

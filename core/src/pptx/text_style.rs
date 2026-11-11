@@ -82,6 +82,7 @@ impl TextStyle<'_> {
             "l" => paragraph.alignment = 0,
             "ctr" => paragraph.alignment = 1,
             "r" => paragraph.alignment = 2,
+            "just" | "justLow" | "dist" | "thaiDist" => paragraph.alignment = 3,
             _ => {
                 paragraph.alignment = 0;
                 self.doc
@@ -113,17 +114,24 @@ impl TextStyle<'_> {
                 paragraph.line_spacing = (value / 100.0).min(10_000.0);
             }
         }
-        paragraph.before = self.spacing(properties.child("spcBef"), paragraph.before);
-        paragraph.after = self.spacing(properties.child("spcAft"), paragraph.after);
+        let font_size = properties
+            .child("defRPr")
+            .map(|rpr| number(rpr.attr("sz"), 1800.0) / 100.0)
+            .unwrap_or(18.0);
+        paragraph.before = self.spacing(properties.child("spcBef"), paragraph.before, font_size);
+        paragraph.after = self.spacing(properties.child("spcAft"), paragraph.after, font_size);
         if properties.child("tabLst").is_some() || flag(properties.attr("rtl"), false) {
             self.doc.warn("PPTX tabs and RTL layout are simplified.");
         }
     }
 
-    fn spacing(&mut self, node: Option<&Node>, fallback: f32) -> f32 {
+    fn spacing(&mut self, node: Option<&Node>, fallback: f32, font_size: f32) -> f32 {
         let Some(node) = node else { return fallback };
         if let Some(points) = node.child("spcPts") {
             return (number(points.attr("val"), fallback * 100.0) / 100.0).clamp(0.0, 10_000.0);
+        }
+        if let Some(ratio) = node.child("spcPct").and_then(|n| percentage(n.attr("val"))) {
+            return (ratio * font_size).clamp(0.0, 10_000.0);
         }
         if node.child("spcPct").is_some() {
             self.doc
