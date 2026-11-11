@@ -1338,7 +1338,11 @@ struct DocxParagraphView {
           buildHighlightedSpans(this.para, this.paraMatches, this.currentMatchKey),
           (item: TextSpanItem, rIdx: number) => {
             Span(item.text)
-              .fontSize(item.run.size || 14)
+              .fontSize(
+                item.run.vertAlign === 'superscript' || item.run.vertAlign === 'subscript'
+                  ? (item.run.size || 14) * 0.65
+                  : (item.run.size || 14)
+              )
               .fontFamily(RenderUtils.resolveFontFamily(item.run.fontFace, false))
               .fontColor(
                 item.isCurrent
@@ -1348,9 +1352,10 @@ struct DocxParagraphView {
               .fontWeight(
                 item.isCurrent
                   ? FontWeight.Bolder
-                  : (RenderUtils.resolveFontBold(item.run.fontFace, item.run.bold) ? FontWeight.Bold : FontWeight.Normal)
+                  : RenderUtils.resolveFontWeight(item.run.fontFace, item.run.bold, item.run.weight)
               )
               .fontStyle(item.run.italic ? FontStyle.Italic : FontStyle.Normal)
+              .letterSpacing(item.run.spacing ? `${item.run.spacing}vp` : undefined)
               .textBackgroundStyle(
                 item.isHighlight
                   ? {
@@ -1360,7 +1365,9 @@ struct DocxParagraphView {
                   : undefined
               )
               .decoration({
-                type: item.run.underline ? TextDecorationType.Underline : TextDecorationType.None,
+                type: item.run.strike
+                  ? TextDecorationType.LineThrough
+                  : (item.run.underline ? TextDecorationType.Underline : TextDecorationType.None),
                 color: RenderUtils.argbToCss(item.run.color) ?? '#202124'
               })
           },

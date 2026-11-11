@@ -8,6 +8,9 @@ interface TextSegment {
   fontSize: number;
   color: string;
   underline: boolean;
+  strike?: boolean;
+  vertAlign?: string;
+  spacing?: number;
   width: number;
 }
 
@@ -623,12 +626,18 @@ export class CanvasElementDrawer {
       if (segLen === 0) continue;
       ctx.font = seg.font;
       ctx.fillStyle = seg.color;
+      let drawY = baselineY;
+      if (seg.vertAlign === 'superscript') {
+        drawY -= seg.fontSize * 0.45;
+      } else if (seg.vertAlign === 'subscript') {
+        drawY += seg.fontSize * 0.25;
+      }
       let k = 0;
       while (k < segLen) {
         const code = text.charCodeAt(k);
         const paired = code >= 0xD800 && code <= 0xDBFF && k + 1 < segLen;
         const step = paired ? 2 : 1;
-        ctx.fillText(text.substring(k, k + step), lineX + starts[unitCursor + k], baselineY);
+        ctx.fillText(text.substring(k, k + step), lineX + starts[unitCursor + k], drawY);
         k += step;
       }
       if (seg.underline) {
@@ -638,8 +647,20 @@ export class CanvasElementDrawer {
           ctx.strokeStyle = seg.color;
           ctx.lineWidth = Math.max(0.75, seg.fontSize * 0.06);
           ctx.beginPath();
-          ctx.moveTo(underlineLeft, baselineY + seg.fontSize * 0.12);
-          ctx.lineTo(underlineRight, baselineY + seg.fontSize * 0.12);
+          ctx.moveTo(underlineLeft, drawY + seg.fontSize * 0.12);
+          ctx.lineTo(underlineRight, drawY + seg.fontSize * 0.12);
+          ctx.stroke();
+        }
+      }
+      if (seg.strike) {
+        const strikeLeft = lineX + starts[unitCursor];
+        const strikeRight = lineX + starts[unitCursor + segLen];
+        if (strikeRight > strikeLeft) {
+          ctx.strokeStyle = seg.color;
+          ctx.lineWidth = Math.max(0.75, seg.fontSize * 0.06);
+          ctx.beginPath();
+          ctx.moveTo(strikeLeft, drawY - seg.fontSize * 0.28);
+          ctx.lineTo(strikeRight, drawY - seg.fontSize * 0.28);
           ctx.stroke();
         }
       }
@@ -690,14 +711,28 @@ export class CanvasElementDrawer {
       for (const seg of line.segments) {
         ctx.font = seg.font;
         ctx.fillStyle = seg.color;
+        let drawY = baselineY;
+        if (seg.vertAlign === 'superscript') {
+          drawY -= seg.fontSize * 0.45;
+        } else if (seg.vertAlign === 'subscript') {
+          drawY += seg.fontSize * 0.25;
+        }
         // 整段一次性绘制，不再逐字调用 fillText
-        ctx.fillText(seg.text, segX, baselineY);
+        ctx.fillText(seg.text, segX, drawY);
         if (seg.underline && seg.width > 0) {
           ctx.strokeStyle = seg.color;
           ctx.lineWidth = Math.max(0.75, seg.fontSize * 0.06);
           ctx.beginPath();
-          ctx.moveTo(segX, baselineY + seg.fontSize * 0.12);
-          ctx.lineTo(segX + seg.width, baselineY + seg.fontSize * 0.12);
+          ctx.moveTo(segX, drawY + seg.fontSize * 0.12);
+          ctx.lineTo(segX + seg.width, drawY + seg.fontSize * 0.12);
+          ctx.stroke();
+        }
+        if (seg.strike && seg.width > 0) {
+          ctx.strokeStyle = seg.color;
+          ctx.lineWidth = Math.max(0.75, seg.fontSize * 0.06);
+          ctx.beginPath();
+          ctx.moveTo(segX, drawY - seg.fontSize * 0.28);
+          ctx.lineTo(segX + seg.width, drawY - seg.fontSize * 0.28);
           ctx.stroke();
         }
         segX += seg.width;
@@ -788,9 +823,12 @@ export class CanvasElementDrawer {
     };
 
     for (const run of runs) {
-      const fontSize = Math.max(1, run.size || 12);
+      let fontSize = Math.max(1, run.size || 12);
+      if (run.vertAlign === 'superscript' || run.vertAlign === 'subscript') {
+        fontSize = Math.max(1, fontSize * 0.65);
+      }
       const fontStyle = run.italic ? 'italic ' : '';
-      const fontWeight = RenderUtils.resolveFontBold(run.fontFace, run.bold) ? 'bold ' : '';
+      const fontWeight = RenderUtils.resolveFontBold(run.fontFace, run.bold, run.weight) ? 'bold ' : '';
       // 使用 vp 作为字号单位，并对齐 Android 的 Impact / 思源黑体 Light 字体兼容映射
       const fontFace = RenderUtils.resolveFontFamily(run.fontFace, true);
       const fontStr = `${fontStyle}${fontWeight}${fontSize}vp ${fontFace}`;
@@ -818,6 +856,9 @@ export class CanvasElementDrawer {
               fontSize,
               color: colorCss,
               underline: run.underline,
+              strike: run.strike,
+              vertAlign: run.vertAlign,
+              spacing: run.spacing,
               width: fullW,
             });
             currentLineWidth += fullW;
@@ -880,6 +921,9 @@ export class CanvasElementDrawer {
             fontSize,
             color: colorCss,
             underline: run.underline,
+            strike: run.strike,
+            vertAlign: run.vertAlign,
+            spacing: run.spacing,
             width: bestWidth,
           });
           remainingText = remainingText.substring(bestCount);

@@ -1024,10 +1024,13 @@ export struct SpreadsheetView {
 
     if (!cell.text || colW <= 4 || rowH <= 2) return;
 
-    const fontSize = Math.max(8, (style?.fontSize ?? 11) * scale);
-    const bold = style?.bold ? 'bold ' : '';
+    let effectiveFs = style?.fontSize ?? 11;
+    if (style?.vertAlign) effectiveFs *= 0.65;
+    const fontSize = Math.max(6, effectiveFs * scale);
     const italic = style?.italic ? 'italic ' : '';
-    ctx.font = `${italic}${bold}${fontSize}vp sans-serif`;
+    const fontFace = RenderUtils.resolveFontFamily(style?.fontFace, true);
+    const fontWeight = RenderUtils.resolveFontBold(style?.fontFace, style?.bold) ? 'bold ' : '';
+    ctx.font = `${italic}${fontWeight}${fontSize}vp ${fontFace}`;
     ctx.fillStyle = style?.color ? (RenderUtils.argbToCss(style.color) ?? '#202124') : '#202124';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
@@ -1132,7 +1135,7 @@ export struct SpreadsheetView {
       const line = finalLines[i];
       let textX = left + 2;
       let textW = 0;
-      if (align !== 0 || style?.underline) {
+      if (align !== 0 || style?.underline || style?.strike) {
         textW = ctx.measureText(line).width;
         if (align === 1) {
           textX += (availW - textW) / 2;
@@ -1149,6 +1152,15 @@ export struct SpreadsheetView {
         ctx.beginPath();
         ctx.moveTo(textX, lineY + fontSize * 0.45);
         ctx.lineTo(textX + textW, lineY + fontSize * 0.45);
+        ctx.stroke();
+      }
+
+      if (style?.strike && textW > 0) {
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = Math.max(0.75, fontSize * 0.06);
+        ctx.beginPath();
+        ctx.moveTo(textX, lineY);
+        ctx.lineTo(textX + textW, lineY);
         ctx.stroke();
       }
     }

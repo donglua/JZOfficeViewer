@@ -38,6 +38,10 @@ export interface Run {
   bold: boolean;
   italic: boolean;
   underline: boolean;
+  strike?: boolean;
+  vertAlign?: string;
+  spacing?: number;
+  weight?: number;
   color: number;
 }
 
@@ -96,10 +100,13 @@ export interface CellRange {
 }
 
 export interface CellStyle {
+  fontFace?: string;
   fontSize: number;
   bold: boolean;
   italic: boolean;
   underline: boolean;
+  strike?: boolean;
+  vertAlign?: string;
   color: number;
   fill: number;
   alignment: number;

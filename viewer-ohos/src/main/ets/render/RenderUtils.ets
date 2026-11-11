@@ -61,10 +61,23 @@ export class RenderUtils {
     return result;
   }
 
+  private static containsAny(target: string, ...keywords: string[]): boolean {
+    for (let i = 0; i < keywords.length; i++) {
+      if (target.indexOf(keywords[i]) !== -1) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * 对齐 Android 端 OfficeTextLayout.FontFace 的字体族兼容映射：
-   * - Impact -> sans-serif-condensed（并自动补偿加粗）
-   * - 思源黑体 CN Light / Source Han Sans CN Light / Source Han Sans SC Light / Noto Sans CJK SC Light -> sans-serif-light
+   * - Impact -> sans-serif-condensed
+   * - 衬线体 (宋体、Times 等) -> serif
+   * - 等宽字体 (Courier、Consolas 等) -> monospace
+   * - 手写体/草书 (楷体、Comic Sans 等) -> cursive
+   * - 细体 (思源黑体 CN Light 等) -> sans-serif-light
+   * - 其他 -> sans-serif
    */
   public static resolveFontFamily(fontFace?: string, quoteCustom: boolean = false): string {
     const key = `${quoteCustom ? 1 : 0}:${fontFace ?? ''}`;
@@ -74,13 +87,58 @@ export class RenderUtils {
     const trimmed = fontFace ? fontFace.trim() : '';
     let result = 'sans-serif';
     if (trimmed.length > 0) {
-      if (trimmed.toLowerCase() === 'impact') {
+      const lower = trimmed.toLowerCase();
+      if (lower === 'impact') {
         result = 'sans-serif-condensed, sans-serif';
       } else if (
-        trimmed === '思源黑体 CN Light' ||
-        trimmed === 'Source Han Sans CN Light' ||
-        trimmed === 'Source Han Sans SC Light' ||
-        trimmed === 'Noto Sans CJK SC Light'
+        RenderUtils.containsAny(
+          lower,
+          'song',
+          '宋体',
+          'times new roman',
+          'times',
+          'georgia',
+          'cambria',
+          'fangsong',
+          '仿宋',
+          'mincho',
+          '细明体',
+          'pmingliu'
+        )
+      ) {
+        result = quoteCustom ? `"${trimmed}", serif` : `${trimmed}, serif`;
+      } else if (
+        RenderUtils.containsAny(
+          lower,
+          'mono',
+          'courier',
+          'consolas',
+          'menlo',
+          'monaco',
+          'lucida console'
+        )
+      ) {
+        result = quoteCustom ? `"${trimmed}", monospace` : `${trimmed}, monospace`;
+      } else if (
+        RenderUtils.containsAny(
+          lower,
+          'kai',
+          '楷体',
+          'comic sans',
+          'casual',
+          'cursive'
+        )
+      ) {
+        result = quoteCustom ? `"${trimmed}", cursive` : `${trimmed}, cursive`;
+      } else if (
+        RenderUtils.containsAny(
+          lower,
+          '思源黑体 cn light',
+          'source han sans cn light',
+          'source han sans sc light',
+          'noto sans cjk sc light',
+          'light'
+        )
       ) {
         result = 'sans-serif-light, sans-serif';
       } else {
@@ -99,11 +157,39 @@ export class RenderUtils {
   }
 
   /**
+   * 解析字体粗细：支持显式数值、加粗标志以及字体名称中的粗细语义
+   */
+  public static resolveFontWeight(fontFace?: string, bold?: boolean, weight?: number): number | FontWeight {
+    if (weight !== undefined && weight > 0) {
+      return weight;
+    }
+    if (bold) {
+      return FontWeight.Bold;
+    }
+    if (fontFace) {
+      const lower = fontFace.toLowerCase();
+      if (RenderUtils.containsAny(lower, 'impact', 'black', 'heavy')) {
+        return FontWeight.Bolder;
+      }
+      if (lower.indexOf('medium') !== -1) {
+        return FontWeight.Medium;
+      }
+      if (lower.indexOf('light') !== -1) {
+        return FontWeight.Lighter;
+      }
+    }
+    return FontWeight.Normal;
+  }
+
+  /**
    * 对齐 Android 端 OfficeTextLayout.FontFace：Impact 映射为 sans-serif-condensed 时强制加粗
    */
-  public static resolveFontBold(fontFace?: string, bold?: boolean): boolean {
+  public static resolveFontBold(fontFace?: string, bold?: boolean, weight?: number): boolean {
     if (bold) return true;
-    return fontFace ? fontFace.trim().toLowerCase() === 'impact' : false;
+    if (weight !== undefined && weight >= 600) return true;
+    if (!fontFace) return false;
+    const lower = fontFace.trim().toLowerCase();
+    return lower === 'impact' || lower.indexOf('black') !== -1 || lower.indexOf('heavy') !== -1;
   }
 
   /**
