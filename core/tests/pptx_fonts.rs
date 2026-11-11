@@ -29,13 +29,15 @@ fn serializes_latin_typeface_when_explicitly_saved() -> TestResult {
 
         // Then the raw font name and existing formatting survive the current schema.
         assert_eq!(document.schema_version, 9);
-        assert_eq!(
-            run,
-            json!({
-                "text": "0 1", "fontFace": face, "size": 36.0,
-                "bold": true, "italic": true, "underline": true, "color": 0xffc03020_u32
-            })
-        );
+        let mut expected = json!({
+            "text": "0 1", "fontFace": face, "size": 36.0,
+            "bold": true, "italic": true, "underline": true, "color": 0xffc03020_u32
+        });
+        let weight = jz_office_core::model::infer_font_weight(face);
+        if weight > 0 {
+            expected["weight"] = json!(weight);
+        }
+        assert_eq!(run, expected);
     }
     Ok(())
 }
@@ -137,6 +139,38 @@ fn omits_font_face_when_docx_uses_existing_run_defaults() -> TestResult {
     assert!(serde_json::to_value(Run::default())?
         .get("fontFace")
         .is_none());
+    Ok(())
+}
+
+#[test]
+fn serializes_ea_typeface_when_text_contains_cjk() -> TestResult {
+    let body = r#"<a:p><a:r><a:rPr strike="sngStrike" baseline="30000" spc="150">
+<a:ea typeface="Microsoft YaHei"/>
+</a:rPr><a:t>幻灯片</a:t></a:r></a:p>"#;
+    let document = parse_bodies(["", "", body])?;
+    let run = &runs(&document)?[0];
+    assert_eq!(run.font_face, "Microsoft YaHei");
+    assert!(run.strike);
+    assert_eq!(
+        run.vert_align,
+        jz_office_core::model::VertAlign::Superscript
+    );
+    assert_eq!(run.spacing, 1.5); // 150 hundredths of pt = 1.5 pt
+    Ok(())
+}
+
+#[test]
+fn serializes_ea_typeface_when_both_latin_and_ea_are_present_on_cjk_text() -> TestResult {
+    let body = r#"<a:p><a:r><a:rPr>
+<a:latin typeface="Arial"/><a:ea typeface="SimSun"/>
+</a:rPr><a:t>中文</a:t></a:r>
+<a:r><a:rPr>
+<a:latin typeface="Arial"/><a:ea typeface="SimSun"/>
+</a:rPr><a:t>English</a:t></a:r></a:p>"#;
+    let document = parse_bodies(["", "", body])?;
+    let runs = runs(&document)?;
+    assert_eq!(runs[0].font_face, "SimSun");
+    assert_eq!(runs[1].font_face, "Arial");
     Ok(())
 }
 

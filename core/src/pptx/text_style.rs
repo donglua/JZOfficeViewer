@@ -1,7 +1,9 @@
 use super::colors::Theme;
 use super::flag;
 use super::geometry::points;
-use crate::model::{Document, LineSpacingRule, Paragraph, Run};
+use crate::model::{
+    contains_east_asian, infer_font_weight, Document, LineSpacingRule, Paragraph, Run, VertAlign,
+};
 use crate::xml::{number, Node};
 
 pub(super) struct TextStyle<'a> {
@@ -28,13 +30,22 @@ impl TextStyle<'_> {
             }
         }
         run.color = self.theme.text_fill(properties, run.color, self.doc);
-        if let Some(face) = properties
+        let latin = properties
             .child("latin")
-            .map(|font| font.attr("typeface"))
-            .filter(|face| !face.is_empty())
-        {
+            .map(|f| f.attr("typeface"))
+            .filter(|s| !s.is_empty());
+        let ea = properties
+            .child("ea")
+            .map(|f| f.attr("typeface"))
+            .filter(|s| !s.is_empty());
+        if contains_east_asian(&run.text) {
+            if let Some(face) = ea.or(latin) {
+                run.font_face = face.to_owned();
+            }
+        } else if let Some(face) = latin {
             run.font_face = face.to_owned();
         }
+        run.weight = infer_font_weight(&run.font_face);
         if ["latin", "ea", "cs", "sym"]
             .iter()
             .any(|n| properties.child(n).is_some())
@@ -42,13 +53,22 @@ impl TextStyle<'_> {
             self.doc
                 .warn("PPTX font faces use viewer system font fallbacks.");
         }
-        if number(properties.attr("baseline"), 0.0) != 0.0
-            || !matches!(properties.attr("strike"), "" | "noStrike")
-            || properties.child("highlight").is_some()
-        {
-            self.doc.warn(
-                "PPTX baseline shifts, strikethrough, and text highlighting are not supported.",
-            );
+        match properties.attr("strike") {
+            "sngStrike" | "dblStrike" => run.strike = true,
+            "noStrike" => run.strike = false,
+            _ => (),
+        }
+        let baseline = number(properties.attr("baseline"), 0.0);
+        if baseline > 0.0 {
+            run.vert_align = VertAlign::Superscript;
+        } else if baseline < 0.0 {
+            run.vert_align = VertAlign::Subscript;
+        }
+        if !properties.attr("spc").is_empty() {
+            run.spacing = (number(properties.attr("spc"), 0.0) / 100.0).clamp(-100.0, 400.0);
+        }
+        if properties.child("highlight").is_some() {
+            self.doc.warn("PPTX text highlighting is not supported.");
         }
         if properties.child("hlinkClick").is_some() || properties.child("hlinkMouseOver").is_some()
         {

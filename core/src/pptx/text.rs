@@ -119,7 +119,6 @@ impl Text<'_> {
                     continue;
                 }
                 let mut run = base.clone();
-                styles.run(&mut run, item.child("rPr"));
                 if item.name == "br" {
                     run.text.push('\n');
                 } else {
@@ -130,6 +129,7 @@ impl Text<'_> {
                         styles.doc.warn("PPTX fields use saved text values.");
                     }
                 }
+                styles.run(&mut run, item.child("rPr"));
                 self.budget.text(run.text.len())?;
                 result.runs.push(run);
             }
