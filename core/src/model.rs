@@ -82,6 +82,10 @@ pub fn is_zero_u16(v: &u16) -> bool {
     *v == 0
 }
 
+pub fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 pub fn contains_east_asian(text: &str) -> bool {
     text.chars().any(|c| {
         matches!(
@@ -344,6 +348,18 @@ pub struct Paragraph {
     pub image_width: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_height: Option<f32>,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub background: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub border_top: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub border_bottom: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub border_left: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub border_right: u32,
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub border_width: f32,
 }
 
 impl Default for Paragraph {
@@ -362,6 +378,12 @@ impl Default for Paragraph {
             image: None,
             image_width: None,
             image_height: None,
+            background: 0,
+            border_top: 0,
+            border_bottom: 0,
+            border_left: 0,
+            border_right: 0,
+            border_width: 0.0,
         }
     }
 }
@@ -384,6 +406,8 @@ pub struct Run {
     #[serde(skip_serializing_if = "is_zero_u16")]
     pub weight: u16,
     pub color: u32,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub background: u32,
 }
 
 impl Default for Run {
@@ -400,6 +424,7 @@ impl Default for Run {
             spacing: 0.0,
             weight: 0,
             color: 0xff202124,
+            background: 0,
         }
     }
 }
