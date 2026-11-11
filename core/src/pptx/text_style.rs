@@ -67,8 +67,8 @@ impl TextStyle<'_> {
         if !properties.attr("spc").is_empty() {
             run.spacing = (number(properties.attr("spc"), 0.0) / 100.0).clamp(-100.0, 400.0);
         }
-        if properties.child("highlight").is_some() {
-            self.doc.warn("PPTX text highlighting is not supported.");
+        if let Some(hl) = properties.child("highlight") {
+            run.background = self.theme.color(hl, run.background, self.doc);
         }
         if properties.child("hlinkClick").is_some() || properties.child("hlinkMouseOver").is_some()
         {

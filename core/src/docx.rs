@@ -281,7 +281,7 @@ fn inspect(node: &Node, document: &mut Document) {
         "color" if !node.attr("themeColor").is_empty() => {
             Some("Theme colors use saved colors or inherited fallbacks.")
         }
-        "vertAlign" | "strike" | "dstrike" | "highlight" | "vanish" => {
+        "vertAlign" | "strike" | "dstrike" | "vanish" => {
             Some("Some advanced run formatting is not reproduced.")
         }
         "pageBreakBefore" if format::enabled(node.attr("val")) => {

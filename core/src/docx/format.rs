@@ -172,6 +172,38 @@ pub(super) fn font(
                     xml::color(value, run.color)
                 }
             }
+            "highlight" => {
+                let mapped = match value {
+                    "yellow" => 0xFFFFFF00,
+                    "green" => 0xFF00FF00,
+                    "cyan" => 0xFF00FFFF,
+                    "magenta" => 0xFFFF00FF,
+                    "blue" => 0xFF0000FF,
+                    "red" => 0xFFFF0000,
+                    "darkBlue" | "darkblue" => 0xFF000080,
+                    "darkCyan" | "darkcyan" => 0xFF008080,
+                    "darkGreen" | "darkgreen" => 0xFF008000,
+                    "darkMagenta" | "darkmagenta" => 0xFF800080,
+                    "darkRed" | "darkred" => 0xFF800000,
+                    "darkYellow" | "darkyellow" => 0xFF808000,
+                    "darkGray" | "darkgray" => 0xFF808080,
+                    "lightGray" | "lightgray" => 0xFFC0C0C0,
+                    "black" => 0xFF000000,
+                    "white" => 0xFFFFFFFF,
+                    "none" => 0,
+                    _ => xml::color(value, 0),
+                };
+                run.background = mapped;
+            }
+            "shd" => {
+                let fill = node.attr("fill");
+                if !fill.is_empty()
+                    && !fill.eq_ignore_ascii_case("auto")
+                    && !fill.eq_ignore_ascii_case("none")
+                {
+                    run.background = xml::color(fill, run.background);
+                }
+            }
             "vanish" => font.hidden = enabled(value),
             "webHidden" => font.hidden = enabled(value),
             _ => (),
@@ -364,6 +396,39 @@ impl ParagraphFormat {
                     }
                     if let Some(level) = node.child("ilvl") {
                         self.level = level.attr("val").parse::<u8>().map_or(0, |n| n.min(8));
+                    }
+                }
+                "shd" => {
+                    let fill = node.attr("fill");
+                    if !fill.is_empty()
+                        && !fill.eq_ignore_ascii_case("auto")
+                        && !fill.eq_ignore_ascii_case("none")
+                    {
+                        self.paragraph.background = xml::color(fill, self.paragraph.background);
+                    }
+                }
+                "pBdr" => {
+                    for child in &node.children {
+                        let val = child.attr("val");
+                        if val == "none" || val == "nil" {
+                            continue;
+                        }
+                        let color = if child.attr("color").is_empty()
+                            || child.attr("color").eq_ignore_ascii_case("auto")
+                        {
+                            0xFF000000
+                        } else {
+                            xml::color(child.attr("color"), 0xFF000000)
+                        };
+                        let sz = xml::number(child.attr("sz"), 4.0) / 8.0;
+                        match child.name.as_str() {
+                            "top" => self.paragraph.border_top = color,
+                            "bottom" => self.paragraph.border_bottom = color,
+                            "left" => self.paragraph.border_left = color,
+                            "right" => self.paragraph.border_right = color,
+                            _ => {}
+                        }
+                        self.paragraph.border_width = sz.max(self.paragraph.border_width);
                     }
                 }
                 _ => (),
