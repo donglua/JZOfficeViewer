@@ -377,3 +377,87 @@ fn parse(body: &str, styles: &str) -> TestResult<Document> {
     );
     Ok(parse_reader(Cursor::new(package::archive(&parts)?))?)
 }
+
+#[test]
+fn serializes_typography_attributes_when_present() -> TestResult {
+    let run = jz_office_core::model::Run {
+        text: "H2O".to_owned(),
+        strike: true,
+        vert_align: jz_office_core::model::VertAlign::Subscript,
+        spacing: 1.5,
+        weight: 300,
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&run)?;
+    assert_eq!(json["strike"], true);
+    assert_eq!(json["vertAlign"], "subscript");
+    assert_eq!(json["spacing"], 1.5);
+    assert_eq!(json["weight"], 300);
+    Ok(())
+}
+
+#[test]
+fn omits_default_typography_attributes_in_run() -> TestResult {
+    let run = jz_office_core::model::Run::default();
+    let json = serde_json::to_value(&run)?;
+    assert!(json.get("strike").is_none());
+    assert!(json.get("vertAlign").is_none());
+    assert!(json.get("spacing").is_none());
+    assert!(json.get("weight").is_none());
+    Ok(())
+}
+
+#[test]
+fn east_asian_detection_identifies_cjk_kana_and_hangul() {
+    use jz_office_core::model::contains_east_asian;
+    assert!(contains_east_asian("中文测试"));
+    assert!(contains_east_asian("ひらがな"));
+    assert!(contains_east_asian("カタカナ"));
+    assert!(contains_east_asian("한국어"));
+    assert!(contains_east_asian("Hello 世界"));
+    assert!(contains_east_asian("全角！"));
+    assert!(!contains_east_asian("Hello World"));
+    assert!(!contains_east_asian("1234567890"));
+    assert!(!contains_east_asian("!@#$%^&*()_+"));
+}
+
+#[test]
+fn font_weight_inference_matches_all_weight_tiers() {
+    use jz_office_core::model::infer_font_weight;
+    assert_eq!(infer_font_weight("Roboto-Thin"), 100);
+    assert_eq!(infer_font_weight("Helvetica Hairline"), 100);
+    assert_eq!(infer_font_weight("Source Sans Pro ExtraLight"), 200);
+    assert_eq!(infer_font_weight("PingFang SC UltraLight"), 200);
+    assert_eq!(infer_font_weight("Noto Sans DemiLight"), 300);
+    assert_eq!(infer_font_weight("思源黑体 CN Light"), 300);
+    assert_eq!(infer_font_weight("Fira Code Medium"), 500);
+    assert_eq!(infer_font_weight("Open Sans SemiBold"), 600);
+    assert_eq!(infer_font_weight("Segoe UI DemiBold"), 600);
+    assert_eq!(infer_font_weight("Inter ExtraBold"), 800);
+    assert_eq!(infer_font_weight("Ubuntu UltraBold"), 800);
+    assert_eq!(infer_font_weight("Avenir Heavy"), 800);
+    assert_eq!(infer_font_weight("Arial Black"), 900);
+    assert_eq!(infer_font_weight("Calibri"), 0);
+    assert_eq!(infer_font_weight("Times New Roman"), 0);
+}
+
+#[test]
+fn cell_style_serializes_typography_and_omits_defaults() -> TestResult {
+    let style = jz_office_core::spreadsheet::CellStyle::default();
+    let json_default = serde_json::to_value(&style)?;
+    assert!(json_default.get("fontFace").is_none());
+    assert!(json_default.get("strike").is_none());
+    assert!(json_default.get("vertAlign").is_none());
+
+    let custom = jz_office_core::spreadsheet::CellStyle {
+        font_face: "Calibri".to_owned(),
+        strike: true,
+        vert_align: jz_office_core::model::VertAlign::Superscript,
+        ..Default::default()
+    };
+    let json_custom = serde_json::to_value(&custom)?;
+    assert_eq!(json_custom["fontFace"], "Calibri");
+    assert_eq!(json_custom["strike"], true);
+    assert_eq!(json_custom["vertAlign"], "superscript");
+    Ok(())
+}

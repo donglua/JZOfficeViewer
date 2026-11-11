@@ -184,10 +184,16 @@ pub struct CellRange {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CellStyle {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub font_face: String,
     pub font_size: f32,
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    #[serde(skip_serializing_if = "crate::model::is_false")]
+    pub strike: bool,
+    #[serde(skip_serializing_if = "crate::model::VertAlign::is_baseline")]
+    pub vert_align: crate::model::VertAlign,
     pub color: u32,
     pub fill: u32,
     pub alignment: u8,
@@ -199,10 +205,13 @@ pub struct CellStyle {
 impl Default for CellStyle {
     fn default() -> Self {
         Self {
+            font_face: String::new(),
             font_size: 11.0,
             bold: false,
             italic: false,
             underline: false,
+            strike: false,
+            vert_align: crate::model::VertAlign::Baseline,
             color: 0xff202124,
             fill: 0,
             alignment: 3,

@@ -54,6 +54,72 @@ pub struct GradientFill {
     pub in_slide_space: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VertAlign {
+    #[default]
+    Baseline,
+    Superscript,
+    Subscript,
+}
+
+impl VertAlign {
+    #[must_use]
+    pub const fn is_baseline(&self) -> bool {
+        matches!(self, Self::Baseline)
+    }
+}
+
+pub fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+pub fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
+}
+
+pub fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
+}
+
+pub fn contains_east_asian(text: &str) -> bool {
+    text.chars().any(|c| {
+        matches!(
+            c,
+            '\u{2E80}'..='\u{9FFF}'
+                | '\u{AC00}'..='\u{D7AF}'
+                | '\u{F900}'..='\u{FAFF}'
+                | '\u{FE30}'..='\u{FE4F}'
+                | '\u{FF00}'..='\u{FFEF}'
+        )
+    })
+}
+
+pub fn infer_font_weight(font_face: &str) -> u16 {
+    let lower = font_face.to_ascii_lowercase();
+    let normalized = lower.replace([' ', '-', '_'], "");
+    if normalized.contains("thin") || normalized.contains("hairline") {
+        100
+    } else if normalized.contains("extralight") || normalized.contains("ultralight") {
+        200
+    } else if normalized.contains("demilight") || normalized.contains("light") {
+        300
+    } else if normalized.contains("medium") {
+        500
+    } else if normalized.contains("semibold") || normalized.contains("demibold") {
+        600
+    } else if normalized.contains("extrabold")
+        || normalized.contains("ultrabold")
+        || normalized.contains("heavy")
+    {
+        800
+    } else if normalized.contains("black") {
+        900
+    } else {
+        0
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Default, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum VerticalAlignment {
@@ -112,10 +178,6 @@ pub struct Document {
     pub margin_left: f32,
     #[serde(skip_serializing_if = "is_zero_f32")]
     pub margin_right: f32,
-}
-
-fn is_zero_f32(v: &f32) -> bool {
-    *v == 0.0
 }
 
 impl Document {
@@ -313,6 +375,14 @@ pub struct Run {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub strike: bool,
+    #[serde(rename = "vertAlign", skip_serializing_if = "VertAlign::is_baseline")]
+    pub vert_align: VertAlign,
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub spacing: f32,
+    #[serde(skip_serializing_if = "is_zero_u16")]
+    pub weight: u16,
     pub color: u32,
 }
 
@@ -325,6 +395,10 @@ impl Default for Run {
             bold: false,
             italic: false,
             underline: false,
+            strike: false,
+            vert_align: VertAlign::Baseline,
+            spacing: 0.0,
+            weight: 0,
             color: 0xff202124,
         }
     }
