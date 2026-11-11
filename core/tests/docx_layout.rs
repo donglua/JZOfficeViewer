@@ -41,6 +41,36 @@ fn document_xml(body: &str) -> String {
     )
 }
 
+fn layout_parts_with_sect(document_body: &str, styles_body: &str, sect: &str) -> Parts {
+    vec![
+        xml(
+            "[Content_Types].xml",
+            &content_types(&[
+                ("word/document.xml", "wordprocessingml.document.main"),
+                ("word/styles.xml", "wordprocessingml.styles"),
+            ]),
+        ),
+        xml(
+            "_rels/.rels",
+            &relationships(&[("rOffice", "officeDocument", "word/document.xml")]),
+        ),
+        xml(
+            "word/document.xml",
+            &format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{document_body}<w:sectPr>{sect}</w:sectPr></w:body>
+</w:document>"#
+            ),
+        ),
+        xml("word/styles.xml", &styles_xml(styles_body)),
+        xml(
+            "word/_rels/document.xml.rels",
+            &relationships(&[("rStyles", "styles", "styles.xml")]),
+        ),
+    ]
+}
+
 fn styles_xml(body: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -183,18 +213,94 @@ fn clamps_invalid_docx_spacing_and_indents_without_nan() -> TestResult {
 }
 
 #[test]
-fn warns_for_unsupported_line_count_spacing() -> TestResult {
+fn line_count_paragraph_spacing_is_supported() -> TestResult {
     let body = text_paragraph(
-        "unsupported units",
+        "line count spacing",
         r#"<w:spacing w:beforeLines="100" w:afterLines="200"/>"#,
     );
     let parts = layout_parts(&body, "");
 
     let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let paragraph = paragraph_at(&document.blocks, 0);
+    checks::near(paragraph.before, 14.4);
+    checks::near(paragraph.after, 28.8);
 
-    assert!(document.warnings.iter().any(
+    assert!(!document.warnings.iter().any(
         |warning| warning == "Line-count paragraph spacing uses the viewer's default spacing."
     ));
+    Ok(())
+}
+
+#[test]
+fn autospacing_defaults_to_five_points() -> TestResult {
+    let body = text_paragraph(
+        "auto spacing",
+        r#"<w:spacing w:beforeAutospacing="1" w:afterAutospacing="true"/>"#,
+    );
+    let parts = layout_parts(&body, "");
+
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let paragraph = paragraph_at(&document.blocks, 0);
+    checks::near(paragraph.before, 5.0);
+    checks::near(paragraph.after, 5.0);
+    Ok(())
+}
+
+#[test]
+fn contextual_spacing_collapses_touching_margins_for_identical_styles() -> TestResult {
+    let body = [
+        text_paragraph(
+            "p1",
+            r#"<w:pStyle w:val="ListParagraph"/><w:contextualSpacing/><w:spacing w:before="240" w:after="160"/>"#,
+        ),
+        text_paragraph(
+            "p2",
+            r#"<w:pStyle w:val="ListParagraph"/><w:contextualSpacing/><w:spacing w:before="200" w:after="120"/>"#,
+        ),
+        text_paragraph(
+            "p3",
+            r#"<w:pStyle w:val="OtherStyle"/><w:contextualSpacing/><w:spacing w:before="100" w:after="80"/>"#,
+        ),
+    ]
+    .join("");
+    let parts = layout_parts(&body, "");
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+
+    let p1 = paragraph_at(&document.blocks, 0);
+    checks::near(p1.before, 12.0);
+    checks::near(p1.after, 0.0);
+
+    let p2 = paragraph_at(&document.blocks, 1);
+    checks::near(p2.before, 0.0);
+    checks::near(p2.after, 6.0);
+
+    let p3 = paragraph_at(&document.blocks, 2);
+    checks::near(p3.before, 5.0);
+    checks::near(p3.after, 4.0);
+    Ok(())
+}
+
+#[test]
+fn docgrid_line_pitch_compensates_single_line_spacing() -> TestResult {
+    let body = text_paragraph("docgrid line pitch", "");
+    let sect = r#"<w:pgSz w:w="12240" w:h="15840"/><w:docGrid w:linePitch="360"/>"#;
+    let parts = layout_parts_with_sect(&body, "", sect);
+
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let paragraph = paragraph_at(&document.blocks, 0);
+    checks::near(paragraph.line_spacing, 1.25);
+    Ok(())
+}
+
+#[test]
+fn snap_to_grid_disabled_skips_docgrid_line_pitch_compensation() -> TestResult {
+    let body = text_paragraph("snap to grid disabled", r#"<w:snapToGrid w:val="0"/>"#);
+    let sect = r#"<w:pgSz w:w="12240" w:h="15840"/><w:docGrid w:linePitch="360"/>"#;
+    let parts = layout_parts_with_sect(&body, "", sect);
+
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let paragraph = paragraph_at(&document.blocks, 0);
+    checks::near(paragraph.line_spacing, 1.0);
     Ok(())
 }
 

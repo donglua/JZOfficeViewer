@@ -5,9 +5,26 @@ use crate::{Error, Result};
 
 impl Parser<'_> {
     pub(super) fn paragraph(&mut self, node: &Node, in_cell: bool) -> Result<Vec<Element>> {
-        let (paragraph, font) =
+        let (mut format, font) =
             self.styles
                 .paragraph(node, &mut self.numbering, &mut self.document)?;
+        if !in_cell {
+            if self.last_contextual
+                && format.contextual_spacing
+                && !format.style_id.is_empty()
+                && self.last_style_id.as_deref() == Some(&format.style_id)
+            {
+                if let Some(last_block) = self.document.blocks.last_mut() {
+                    if let Some(prev_p) = last_block.paragraphs.last_mut() {
+                        prev_p.after = 0.0;
+                        format.paragraph.before = 0.0;
+                    }
+                }
+            }
+            self.last_style_id = Some(format.style_id.clone());
+            self.last_contextual = format.contextual_spacing;
+        }
+        let paragraph = format.paragraph;
         let mut flow = Flow {
             current: paragraph.clone(),
             template: paragraph,

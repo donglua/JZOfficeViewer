@@ -1,5 +1,5 @@
 use super::format::{self, Font, ParagraphFormat};
-use crate::model::{Document, Paragraph};
+use crate::model::{Document, LineSpacingRule};
 use crate::xml::Node;
 use crate::{Error, Package, Result};
 use std::collections::{HashMap, HashSet};
@@ -15,6 +15,7 @@ pub(super) struct Styles {
     default_paragraph: String,
     pub default_character: String,
     pub theme_fonts: super::theme::ThemeFonts,
+    pub line_pitch: f32,
 }
 
 impl Styles {
@@ -103,13 +104,14 @@ impl Styles {
         node: &Node,
         numbering: &mut super::numbering::Numbering,
         document: &mut Document,
-    ) -> Result<(Paragraph, Font)> {
+    ) -> Result<(ParagraphFormat, Font)> {
         let mut format = self.paragraph.clone();
         let mut font = self.font.clone();
         let properties = node.child("pPr");
         let id = properties
             .and_then(|n| n.child("pStyle"))
             .map_or(self.default_paragraph.as_str(), |n| n.attr("val"));
+        format.style_id = id.to_owned();
         let chain = self.chain(id, document);
         let outline = properties.and_then(|n| n.child("outlineLvl")).or_else(|| {
             chain
@@ -153,7 +155,22 @@ impl Styles {
                 format.paragraph.indent = 18.0 * (f32::from(format.level) + 1.0);
             }
         }
-        Ok((format.paragraph, font))
+        if format.snap_to_grid
+            && self.line_pitch > 0.0
+            && format.paragraph.line_spacing_rule == LineSpacingRule::Auto
+            && (format.paragraph.line_spacing - 1.0).abs() < 0.01
+        {
+            let font_size = if font.run.size > 0.0 && font.run.size.is_finite() {
+                font.run.size
+            } else {
+                12.0
+            };
+            let natural = font_size * 1.2;
+            if natural < self.line_pitch {
+                format.paragraph.line_spacing = (self.line_pitch / natural).clamp(1.0, 1.8);
+            }
+        }
+        Ok((format, font))
     }
 }
 

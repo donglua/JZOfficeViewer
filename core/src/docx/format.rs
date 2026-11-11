@@ -186,6 +186,9 @@ pub(super) struct ParagraphFormat {
     pub number: String,
     pub level: u8,
     pub has_indent: bool,
+    pub contextual_spacing: bool,
+    pub snap_to_grid: bool,
+    pub style_id: String,
     line_spacing_units: f32,
 }
 
@@ -196,6 +199,9 @@ impl Default for ParagraphFormat {
             number: String::new(),
             level: 0,
             has_indent: false,
+            contextual_spacing: false,
+            snap_to_grid: true,
+            style_id: String::new(),
             line_spacing_units: 240.0,
         }
     }
@@ -231,8 +237,36 @@ impl ParagraphFormat {
                     }
                 }
                 "spacing" => {
-                    self.paragraph.before = points(node.attr("before"), self.paragraph.before);
-                    self.paragraph.after = points(node.attr("after"), self.paragraph.after);
+                    let em = if font_size > 0.0 && font_size.is_finite() {
+                        font_size
+                    } else {
+                        12.0
+                    };
+                    if !node.attr("beforeLines").is_empty() {
+                        let lines = xml::number(node.attr("beforeLines"), 0.0);
+                        self.paragraph.before =
+                            (lines / 100.0 * em * 1.2).clamp(0.0, MAX_COORDINATE);
+                    } else if !node.attr("before").is_empty() {
+                        self.paragraph.before = points(node.attr("before"), self.paragraph.before);
+                    } else if matches!(node.attr("beforeAutospacing"), "1" | "true" | "on")
+                        || (!node.attr("beforeAutospacing").is_empty()
+                            && enabled(node.attr("beforeAutospacing")))
+                    {
+                        self.paragraph.before = 5.0;
+                    }
+
+                    if !node.attr("afterLines").is_empty() {
+                        let lines = xml::number(node.attr("afterLines"), 0.0);
+                        self.paragraph.after =
+                            (lines / 100.0 * em * 1.2).clamp(0.0, MAX_COORDINATE);
+                    } else if !node.attr("after").is_empty() {
+                        self.paragraph.after = points(node.attr("after"), self.paragraph.after);
+                    } else if matches!(node.attr("afterAutospacing"), "1" | "true" | "on")
+                        || (!node.attr("afterAutospacing").is_empty()
+                            && enabled(node.attr("afterAutospacing")))
+                    {
+                        self.paragraph.after = 5.0;
+                    }
                     let mut update_line_spacing = false;
                     if !node.attr("line").is_empty() {
                         self.line_spacing_units =
@@ -249,6 +283,19 @@ impl ParagraphFormat {
                     }
                     if update_line_spacing {
                         self.apply_line_spacing();
+                    }
+                }
+                "contextualSpacing" => {
+                    let val = node.attr("val");
+                    self.contextual_spacing = if val.is_empty() { true } else { enabled(val) };
+                }
+                "snapToGrid" => {
+                    let val = node.attr("val");
+                    self.snap_to_grid = if val.is_empty() { true } else { enabled(val) };
+                }
+                "pStyle" => {
+                    if !node.attr("val").is_empty() {
+                        self.style_id = node.attr("val").to_owned();
                     }
                 }
                 "ind" => {

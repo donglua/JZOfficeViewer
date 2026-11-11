@@ -73,7 +73,14 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
     }
     inspect(body, &mut document);
     let relationships = package.relationships(main_part)?;
-    let styles = Styles::load(package, main_part, &mut document)?;
+    let mut styles = Styles::load(package, main_part, &mut document)?;
+    let line_pitch = sections
+        .iter()
+        .rev()
+        .map(|s| section::line_pitch(s))
+        .find(|&p| p > 0.0)
+        .unwrap_or(0.0);
+    styles.line_pitch = line_pitch;
     let numbering_part = package.related_by_type(main_part, "numbering")?;
     let numbering_root = if let Some(path) = numbering_part {
         package.optional_xml(&path)?
@@ -90,6 +97,8 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
         cells: 0,
         text_bytes: 0,
         block_limit: FLOW_LIMIT,
+        last_style_id: None,
+        last_contextual: false,
     };
     parser.body(body)?;
     // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）。
@@ -109,6 +118,8 @@ struct Parser<'a> {
     cells: usize,
     text_bytes: usize,
     block_limit: BlockLimit,
+    pub(super) last_style_id: Option<String>,
+    pub(super) last_contextual: bool,
 }
 
 impl Parser<'_> {
@@ -121,6 +132,8 @@ impl Parser<'_> {
                     }
                 }
                 "tbl" => {
+                    self.last_style_id = None;
+                    self.last_contextual = false;
                     let table = self.table(node)?;
                     self.push(table)?;
                 }
@@ -270,13 +283,6 @@ fn inspect(node: &Node, document: &mut Document) {
         }
         "vertAlign" | "strike" | "dstrike" | "highlight" | "vanish" => {
             Some("Some advanced run formatting is not reproduced.")
-        }
-        "spacing"
-            if ["beforeLines", "afterLines"]
-                .iter()
-                .any(|key| !node.attr(key).is_empty()) =>
-        {
-            Some("Line-count paragraph spacing uses the viewer's default spacing.")
         }
         "pageBreakBefore" if format::enabled(node.attr("val")) => {
             Some("Paragraph page breaks are ignored in continuous flow.")

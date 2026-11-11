@@ -84,6 +84,13 @@ pub(super) fn page_margins(sect: &Node, page_width: f32) -> PageMargins {
     }
 }
 
+/// 解析 sectPr/docGrid linePitch（单位：点，twips / 20）
+pub(super) fn line_pitch(sect: &Node) -> f32 {
+    sect.child("docGrid")
+        .map(|grid| xml::number(grid.attr("linePitch"), 0.0) / 20.0)
+        .unwrap_or(0.0)
+}
+
 impl Parser<'_> {
     /// 解析 header/footer 部件，返回内容块列表。复用 body 解析逻辑，但输出到临时 blocks。
     pub(super) fn section_blocks(&mut self, part: &str) -> Result<Vec<crate::model::Element>> {
@@ -100,10 +107,14 @@ impl Parser<'_> {
         let saved_relationships = std::mem::replace(&mut self.relationships, relationships);
         // 页眉页脚使用更小的块数量上限，保证 core 不会输出平台层解码会拒绝的模型
         let saved_limit = std::mem::replace(&mut self.block_limit, super::SECTION_LIMIT);
+        let saved_style_id = self.last_style_id.take();
+        let saved_contextual = std::mem::replace(&mut self.last_contextual, false);
         // 临时交换 blocks，让 body() 把解析结果写入临时 Vec；text_bytes 在 body() 内正常累计
         let saved = std::mem::take(&mut self.document.blocks);
         let result = self.body(&root);
         let blocks = std::mem::replace(&mut self.document.blocks, saved);
+        self.last_style_id = saved_style_id;
+        self.last_contextual = saved_contextual;
         self.block_limit = saved_limit;
         self.relationships = saved_relationships;
         result?;
