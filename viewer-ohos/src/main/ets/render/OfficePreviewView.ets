@@ -1362,7 +1362,12 @@ struct DocxParagraphView {
                       color: item.isCurrent ? '#FFA726' : '#FFF59D',
                       radius: '2vp'
                     }
-                  : undefined
+                  : (item.run.background && item.run.background !== 0
+                      ? {
+                          color: RenderUtils.argbToCss(item.run.background) ?? '#00000000',
+                          radius: '0vp'
+                        }
+                      : undefined)
               )
               .decoration({
                 type: item.run.strike
@@ -1371,7 +1376,7 @@ struct DocxParagraphView {
                 color: RenderUtils.argbToCss(item.run.color) ?? '#202124'
               })
           },
-          (item: TextSpanItem, rIdx: number) => `span-${rIdx}-${item.text.length}-${item.isHighlight ? (item.isCurrent ? 2 : 1) : 0}`
+          (item: TextSpanItem, rIdx: number) => `span-${rIdx}-${item.text.length}-${item.isHighlight ? (item.isCurrent ? 2 : 1) : 0}-${item.run.background ?? 0}`
         )
       }
       .width('100%')
@@ -1384,7 +1389,56 @@ struct DocxParagraphView {
         left: Math.max(0, this.para.indent ?? 0),
         right: Math.max(0, this.para.rightIndent ?? 0)
       })
+      .backgroundColor(
+        this.para.background && this.para.background !== 0
+          ? (RenderUtils.argbToCss(this.para.background) ?? undefined)
+          : undefined
+      )
+      .border(this.calcBorder())
+      .padding(this.calcPadding())
     }
+  }
+
+  private calcBorder(): BorderOptions | undefined {
+    if (!this.para || !this.para.borderWidth || this.para.borderWidth <= 0) {
+      return undefined;
+    }
+    const bw = this.para.borderWidth;
+    const topColor = this.para.borderTop && this.para.borderTop !== 0 ? RenderUtils.argbToCss(this.para.borderTop) : undefined;
+    const bottomColor = this.para.borderBottom && this.para.borderBottom !== 0 ? RenderUtils.argbToCss(this.para.borderBottom) : undefined;
+    const leftColor = this.para.borderLeft && this.para.borderLeft !== 0 ? RenderUtils.argbToCss(this.para.borderLeft) : undefined;
+    const rightColor = this.para.borderRight && this.para.borderRight !== 0 ? RenderUtils.argbToCss(this.para.borderRight) : undefined;
+    if (!topColor && !bottomColor && !leftColor && !rightColor) {
+      return undefined;
+    }
+    return {
+      width: {
+        top: topColor ? `${bw}vp` : '0vp',
+        bottom: bottomColor ? `${bw}vp` : '0vp',
+        left: leftColor ? `${bw}vp` : '0vp',
+        right: rightColor ? `${bw}vp` : '0vp'
+      },
+      color: {
+        top: topColor ?? '#000000',
+        bottom: bottomColor ?? '#000000',
+        left: leftColor ?? '#000000',
+        right: rightColor ?? '#000000'
+      }
+    };
+  }
+
+  private calcPadding(): Padding | undefined {
+    if (!this.para) return undefined;
+    const hasBorder = !!(this.para.borderWidth && this.para.borderWidth > 0 &&
+      (this.para.borderTop || this.para.borderBottom || this.para.borderLeft || this.para.borderRight));
+    const hasBg = !!(this.para.background && this.para.background !== 0);
+    if (!hasBorder && !hasBg) return undefined;
+    return {
+      top: (this.para.borderTop || hasBg) ? 2 : 0,
+      bottom: (this.para.borderBottom || hasBg) ? 2 : 0,
+      left: (this.para.borderLeft || hasBg) ? 4 : 0,
+      right: (this.para.borderRight || hasBg) ? 4 : 0
+    };
   }
 
   private mapAlignment(align: number): TextAlign {
