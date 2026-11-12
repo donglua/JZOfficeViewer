@@ -152,6 +152,14 @@ fn docx_paragraph_borders_set_colors_and_max_width() -> TestResult {
 }
 
 #[test]
+fn docx_paragraph_border_width_is_clamped_to_protocol_limit() -> TestResult {
+    let body = r#"<w:p><w:pPr><w:pBdr><w:top w:val="single" w:sz="8001"/></w:pBdr></w:pPr><w:r><w:t>Bordered</w:t></w:r></w:p>"#;
+    let doc = parse_docx(&body)?;
+    checks::near(doc.blocks[0].paragraphs[0].border_width, 1000.0);
+    Ok(())
+}
+
+#[test]
 fn pptx_highlight_sets_run_background_and_removes_warning() -> TestResult {
     let body = r#"<a:p><a:r><a:rPr><a:highlight><a:srgbClr val="00FF00"/></a:highlight></a:rPr><a:t>Highlighted</a:t></a:r></a:p>"#;
     let doc = parse_pptx_body(body)?;

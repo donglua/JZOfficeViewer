@@ -231,6 +231,8 @@ public final class DocumentDecoderChecks {
         check(copied.background == (int) 4294967040L, "run copy copies background");
 
         // Verify invalid borderWidth
+        OfficeDocument boundary = DocumentDecoder.decode(json.replace("\"borderWidth\":1.5", "\"borderWidth\":1000"));
+        check(boundary.blocks.get(0).paragraphs.get(0).borderWidth == 1000f, "borderWidth protocol boundary accepted");
         reject(json.replace("\"borderWidth\":1.5", "\"borderWidth\":-1.0"), "Invalid core display model", "negative borderWidth");
         reject(json.replace("\"borderWidth\":1.5", "\"borderWidth\":1500"), "Invalid core display model", "excessive borderWidth");
         reject(json.replace("\"borderWidth\":1.5", "\"borderWidth\":\"invalid\""), "Invalid core display model", "non-numeric borderWidth");

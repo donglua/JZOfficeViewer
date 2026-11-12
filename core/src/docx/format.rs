@@ -420,7 +420,8 @@ impl ParagraphFormat {
                         } else {
                             xml::color(child.attr("color"), 0xFF000000)
                         };
-                        let sz = xml::number(child.attr("sz"), 4.0) / 8.0;
+                        // 与平台解码器的边框宽度上限保持一致，避免输出无法被接受的模型。
+                        let sz = (xml::number(child.attr("sz"), 4.0) / 8.0).clamp(0.0, 1000.0);
                         match child.name.as_str() {
                             "top" => self.paragraph.border_top = color,
                             "bottom" => self.paragraph.border_bottom = color,
