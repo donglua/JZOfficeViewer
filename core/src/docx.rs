@@ -292,7 +292,7 @@ fn inspect(node: &Node, document: &mut Document) {
         "pageBreakBefore" if format::enabled(node.attr("val")) => {
             Some("Paragraph page breaks are ignored in continuous flow.")
         }
-        "srcRect" | "effectLst" => Some("Image cropping and drawing effects are not reproduced."),
+        "effectLst" => Some("Image drawing effects are not reproduced."),
         "tblStyle" => Some("Table styles use the viewer's default cell appearance."),
         _ => None,
     };
