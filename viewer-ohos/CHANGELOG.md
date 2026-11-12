@@ -1,5 +1,24 @@
 # 更新日志
 
+## 0.13.1
+
+发布页面：[v0.13.1 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.13.1)。
+
+本版本主要增强 DOCX 排版完整度（保留文本框文字内容、支持图片裁剪映射），并优化鸿蒙 NEXT 端 PPTX 滑动渲染性能与末页页码计算。
+
+### 排版与特性
+
+- **DOCX 文本框内容保留（`core`）**：
+  - 支持解析 `w:pict`、`w:object` 和 `w:txbxContent` 内部文本框段落，将其内容按流式保留在文档正文中，避免此前直接跳过文本框导致文字丢失。
+- **DOCX 图片裁剪映射（`core`）**：
+  - 解析图形与内嵌图片的 `a:srcRect` 裁剪比例属性，映射并投影到现有数据模型的 `imageBounds` 中；各平台视图层（Android / HarmonyOS NEXT / macOS）无需修改即可自动正确显示裁剪后的局部图片。
+
+### 细节修复与交互优化
+
+- **鸿蒙端 PPTX 滑动重绘与页码修正（`viewer-ohos`）**：
+  - 优化高频滑动过程中的重绘通知逻辑，仅在页码实际变化时通知 ArkUI 状态与外部回调，降低冗余渲染开销。
+  - 修正 PPTX 视口滚动到底部边界时因上一页可见面积较大而无法选中末页的问题，确保首尾边界页码准确对应。
+
 ## 0.13.0
 
 发布页面：[v0.13.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.13.0)。
