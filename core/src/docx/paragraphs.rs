@@ -115,6 +115,19 @@ impl Parser<'_> {
                 "sym" => self
                     .document
                     .warn("Symbol fonts are unsupported; symbols are omitted."),
+                "pict" | "object" | "txbxContent" => {
+                    if let Some(content) = node.descendant("txbxContent") {
+                        if !flow.current.runs.is_empty() {
+                            flow.current.after = 0.0;
+                            flow.flush()?;
+                        }
+                        for paragraph in content.children.iter().filter(|n| n.name == "p") {
+                            for block in self.paragraph(paragraph, flow.in_cell)? {
+                                flow.push(block)?;
+                            }
+                        }
+                    }
+                }
                 name if skipped(name) => (),
                 _ => self.inline(node, font, flow)?,
             }

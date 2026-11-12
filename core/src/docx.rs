@@ -147,6 +147,11 @@ impl Parser<'_> {
                         self.body(content)?;
                     }
                 }
+                "pict" | "object" | "txbxContent" => {
+                    if let Some(content) = node.descendant("txbxContent") {
+                        self.body(content)?;
+                    }
+                }
                 name if skipped(name) => (),
                 _ => self.body(node)?,
             }
@@ -264,9 +269,9 @@ fn inspect(node: &Node, document: &mut Document) {
         "footnoteReference" | "endnoteReference" => Some("Footnotes and endnotes are omitted."),
         "oMath" | "oMathPara" => Some("Mathematical equations are omitted."),
         "anchor" => Some("Floating drawings use document flow; anchors and wrapping are ignored."),
-        "pict" | "object" | "txbxContent" => {
-            Some("Legacy drawings, embedded objects and text boxes are omitted.")
-        }
+        "pict" | "object" | "txbxContent" => Some(
+            "Text box content is preserved in document flow; legacy drawings and box layout are omitted.",
+        ),
         "altChunk" => Some("Embedded document content is omitted."),
         "ins" | "del" | "moveFrom" | "moveTo" => {
             Some("Tracked changes show inserted content and omit deleted content.")
