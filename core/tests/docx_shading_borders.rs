@@ -154,7 +154,7 @@ fn docx_paragraph_borders_set_colors_and_max_width() -> TestResult {
 #[test]
 fn docx_paragraph_border_width_is_clamped_to_protocol_limit() -> TestResult {
     let body = r#"<w:p><w:pPr><w:pBdr><w:top w:val="single" w:sz="8001"/></w:pBdr></w:pPr><w:r><w:t>Bordered</w:t></w:r></w:p>"#;
-    let doc = parse_docx(&body)?;
+    let doc = parse_docx(body)?;
     checks::near(doc.blocks[0].paragraphs[0].border_width, 1000.0);
     Ok(())
 }
