@@ -167,7 +167,8 @@ final class OfficeTextLayout {
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P && weight > 0) {
             Typeface base = target == null ? Typeface.DEFAULT : Typeface.create(target, Typeface.NORMAL);
-            return Typeface.create(base, weight, (style & Typeface.ITALIC) != 0);
+            int effectiveWeight = (style & Typeface.BOLD) != 0 ? Math.max(700, weight) : weight;
+            return Typeface.create(base, effectiveWeight, (style & Typeface.ITALIC) != 0);
         } else {
             return target == null ? Typeface.defaultFromStyle(style) : Typeface.create(target, style);
         }

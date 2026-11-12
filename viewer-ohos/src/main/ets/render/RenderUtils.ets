@@ -160,11 +160,11 @@ export class RenderUtils {
    * 解析字体粗细：支持显式数值、加粗标志以及字体名称中的粗细语义
    */
   public static resolveFontWeight(fontFace?: string, bold?: boolean, weight?: number): number | FontWeight {
+    if (bold) {
+      return weight !== undefined && weight > 700 ? weight : FontWeight.Bold;
+    }
     if (weight !== undefined && weight > 0) {
       return weight;
-    }
-    if (bold) {
-      return FontWeight.Bold;
     }
     if (fontFace) {
       const lower = fontFace.toLowerCase();

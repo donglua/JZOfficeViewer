@@ -21,7 +21,8 @@ final class DocxFontChecks {
             + "<w:p><w:r><w:rPr>" + family("serif") + "<w:b/><w:i/></w:rPr><w:t>Serif: iiii WWWW 0123456789 中文</w:t></w:r></w:p>"
             + "<w:p><w:r><w:rPr>" + family("Unavailable Office Font") + "</w:rPr><w:t>Missing font: fallback 中文</w:t></w:r></w:p>"
             + "<w:p><w:r><w:rPr><w:rFonts w:ascii=\"monospace\" w:eastAsia=\"serif\"/></w:rPr>"
-            + "<w:t>Mixed fonts: fallback 中文</w:t></w:r></w:p>";
+            + "<w:t>Mixed fonts: fallback 中文</w:t></w:r></w:p>"
+            + "<w:p><w:r><w:rPr>" + family("Source Han Sans SC Light") + "<w:b/></w:rPr><w:t>Light bold 中文</w:t></w:r></w:p>";
         File source = CompatibilityChecks.document(context, "fonts", "word/document.xml", new String[][] {
             {"word/document.xml", "<w:document" + namespace + "><w:body>" + body + "</w:body></w:document>"},
             {"word/_rels/document.xml.rels", CompatibilityChecks.relationships("style", "styles", "styles.xml")},
@@ -30,7 +31,7 @@ final class DocxFontChecks {
         });
         try (OfficePackage pkg = OfficePackage.open(context, Uri.fromFile(source))) {
             OfficeDocument document = pkg.document;
-            check(document.blocks.size() == 4, "Font fixture has four paragraphs");
+            check(document.blocks.size() == 5, "Font fixture has five paragraphs");
             check("Unavailable Office Font".equals(document.blocks.get(2).paragraphs.get(0).runs.get(0).fontFace), "Missing family is passed to device fallback");
             check(document.blocks.get(3).paragraphs.get(0).runs.get(0).fontFace.isEmpty(), "Mixed-script families retain default fallback");
             check(document.warnings.stream().anyMatch(w -> w.contains("device fonts"))
@@ -41,6 +42,12 @@ final class DocxFontChecks {
                 TextPaint serif = paint(document.blocks.get(1).paragraphs.get(0));
                 check(serif.measureText("WWWW") > serif.measureText("iiii") + 10, "Explicit serif overrides inherited monospace");
                 check(serif.getTypeface().getStyle() == Typeface.BOLD_ITALIC, "Font override preserves bold and italic");
+                TextPaint lightBold = paint(document.blocks.get(4).paragraphs.get(0));
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    check(lightBold.getTypeface().getWeight() >= 700, "Explicit bold is not reduced by light font weight");
+                } else {
+                    check(lightBold.getTypeface().isBold(), "Explicit bold is preserved before API 28");
+                }
             });
             CompatibilityChecks.show(instrumentation, activity, source, "compat-fonts-screen.png");
         } finally { check(source.delete(), "Delete font fixture"); }
