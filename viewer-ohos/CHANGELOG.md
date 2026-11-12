@@ -1,5 +1,40 @@
 # 更新日志
 
+## 0.13.0
+
+发布页面：[v0.13.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.13.0)。
+
+本版本主要支持跨平台字体族解析与排版修饰属性（字体回退、字间距、字重、上下标、删除线）、高级段落间距与网格间距补偿，以及全端文本高亮、段落底纹与段落边框高保真渲染。
+
+### 排版与字体属性
+
+- **跨平台字体族解析与排版修饰（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - **核心模型下沉（`core`）**：数据模型新增完整 Typography 支持，涵盖西文字体族（`font_family`）、东亚字体族（`font_family_east_asia`）、通用字体族类别（`GenericFontFamily`：Serif / Sans-Serif / Monospace）、字间距（`spacing`）、基线偏移与上下标（`baseline`）、单/双删除线（`strike` / `double_strike`）以及标准化字重（`weight` 100–900）。
+  - **文档解析支持**：DOCX、PPTX 及 XLSX 全面支持字体族提取与东亚字体（中文字符）优先匹配规则；XLSX 单元格样式支持提取字体族、删除线及垂直对齐方式。
+  - **Android 端（`viewer`）**：引入通用字体族后备映射系统与 `Typeface` 缓存池，支持字重匹配、字间距（`letterSpacing`）、上下标基线对齐与删除线渲染；修复细字重（Light）与加粗样式的兼容表现。
+  - **HarmonyOS NEXT 端（`viewer-ohos`）**：支持字体族级联回退、Canvas 文字排版字间距补偿，以及 DOCX 上下标基线偏移对齐。
+  - **macOS 端（`viewer-macos`）**：接入 CoreText 字体匹配与系统通用字体回退；新增有界 `TypefaceCache`（LRU 缓存）避免高频文本测量与绘制时重复解析字体对象。
+
+### 段落间距与网格补偿
+
+- **DOCX 高级段落间距与网格补偿（`core`）**：
+  - 支持行数单位段落间距（`lineRule="auto"` 行距计算），解析上下文间距标记（`w:contextualSpacing`）自动消除同级段落间的重复间距。
+  - 引入文档网格行间距补偿算法（`w:docGrid` pitch compensation），精准对齐 Word 标准排版网格。
+- **PPTX 段落间距与排版对齐（`core`）**：
+  - 支持百分比与点数行距/段前段后间距（`spcPct` / `spcPts`）计算。
+  - 支持两端对齐（justified alignment）排版。
+
+### 底纹、边框与文本高亮
+
+- **文本高亮与段落底纹边框（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - **模型与解析（`core`）**：支持解析文本高亮颜色（`w:highlight`）、段落底纹填充（`w:shd`）及段落上下左右与段间边框（`w:pBdr`），并对边框线宽实施安全钳位与边界校验。
+  - **全端绘制支持**：Android Canvas、鸿蒙 NEXT Canvas 与 macOS CoreGraphics 原生预览层均已完整支持段落底纹区域填充、多边边框线条绘制与文本 run 背景高亮矩形渲染。
+
+### 细节修复与稳定性
+
+- **PPTX 属性继承修复**：修复当幻灯片段落显式声明 `baseline=0` 时意外继承母版/上下文基线偏移的问题。
+- **排版与测试规范**：统一修复核心层边框计算边界条件，规范测试用例断言风格与格式化。
+
 ## 0.12.0
 
 发布页面：[v0.12.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.12.0)。
