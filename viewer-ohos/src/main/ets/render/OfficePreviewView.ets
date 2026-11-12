@@ -8,6 +8,7 @@ import { CanvasElementDrawer, OfficeRect } from './CanvasElementDrawer';
 import { ImageStore } from './ImageStore';
 import { SpreadsheetView } from './SpreadsheetView';
 import { OfficeSearchBar } from './OfficeSearchBar';
+import { PptxViewportPage, resolvePptxCurrentPage } from './PptxViewport';
 
 class ArrayDataSource<T> implements IDataSource {
   private readonly items: T[];
@@ -1671,11 +1672,9 @@ struct DocxTableView {
   }
 }
 
-interface PptxPageLayout {
+interface PptxPageLayout extends PptxViewportPage {
   readonly page: model.Page;
-  readonly y: number;
   readonly width: number;
-  readonly height: number;
 }
 
 /**
@@ -1942,21 +1941,22 @@ struct PptxSlidesView {
     if (s <= 0) return;
     const visibleTop = (this.offsetY - this.getTop()) / s;
     const visibleBottom = visibleTop + this.canvasHeight / s;
-    let bestPage = Math.max(1, this.currentPage);
-    let bestVisible = -1;
-    for (let i = 0; i < this.pageLayouts.length; i++) {
-      const page = this.pageLayouts[i];
-      const visible = Math.max(0, Math.min(visibleBottom, page.y + page.height) - Math.max(visibleTop, page.y));
-      if (visible > bestVisible + 0.01 || (Math.abs(visible - bestVisible) <= 0.01 && i + 1 === this.currentPage)) {
-        bestVisible = visible;
-        bestPage = i + 1;
-      }
+    const bestPage = resolvePptxCurrentPage(
+      this.pageLayouts,
+      this.currentPage,
+      this.offsetY,
+      this.maxY(),
+      visibleTop,
+      visibleBottom
+    );
+    // 高频手势中只在页码真正变化时触发 ArkUI 更新与回调。
+    if (this.currentPage !== bestPage) {
+      this.currentPage = bestPage;
     }
-    this.currentPage = bestPage;
-    if (this.notifiedPage !== this.currentPage) {
-      this.notifiedPage = this.currentPage;
+    if (this.notifiedPage !== bestPage) {
+      this.notifiedPage = bestPage;
       if (this.onSlideChange) {
-        this.onSlideChange(this.currentPage, this.totalPages);
+        this.onSlideChange(bestPage, this.totalPages);
       }
     }
   }
@@ -2152,7 +2152,8 @@ struct PptxSlidesView {
   }
 
   private redraw(): void {
-    this.drawPptx();
+    // 拖动、缩放和惯性事件可能高于屏幕刷新率，合并到下一帧只绘制最新视口。
+    this.scheduleRedraw();
   }
 
   private requestVisibleImages(parts: string[]): void {
