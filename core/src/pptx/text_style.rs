@@ -58,11 +58,19 @@ impl TextStyle<'_> {
             "noStrike" => run.strike = false,
             _ => (),
         }
-        let baseline = number(properties.attr("baseline"), 0.0);
-        if baseline > 0.0 {
-            run.vert_align = VertAlign::Superscript;
-        } else if baseline < 0.0 {
-            run.vert_align = VertAlign::Subscript;
+        if let Some(baseline) = properties
+            .attr("baseline")
+            .parse::<f32>()
+            .ok()
+            .filter(|n| n.is_finite())
+        {
+            run.vert_align = if baseline > 0.0 {
+                VertAlign::Superscript
+            } else if baseline < 0.0 {
+                VertAlign::Subscript
+            } else {
+                VertAlign::Baseline
+            };
         }
         if !properties.attr("spc").is_empty() {
             run.spacing = (number(properties.attr("spc"), 0.0) / 100.0).clamp(-100.0, 400.0);

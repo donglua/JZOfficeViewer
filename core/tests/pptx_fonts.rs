@@ -174,6 +174,20 @@ fn serializes_ea_typeface_when_both_latin_and_ea_are_present_on_cjk_text() -> Te
     Ok(())
 }
 
+#[test]
+fn direct_zero_baseline_resets_inherited_superscript_and_invalid_preserves_it() -> TestResult {
+    let master = r#"<a:lstStyle><a:lvl1pPr><a:defRPr baseline="30000"/></a:lvl1pPr></a:lstStyle>"#;
+    for (baseline, expected) in [
+        ("0", jz_office_core::model::VertAlign::Baseline),
+        ("invalid", jz_office_core::model::VertAlign::Superscript),
+    ] {
+        let body = format!(r#"<a:p><a:r><a:rPr baseline="{baseline}"/><a:t>Text</a:t></a:r></a:p>"#);
+        let document = parse_bodies([master, "", &body])?;
+        assert_eq!(runs(&document)?[0].vert_align, expected);
+    }
+    Ok(())
+}
+
 fn parse_bodies(bodies: [&str; 3]) -> TestResult<Document> {
     let mut parts = pptx::parts();
     for ((path, root), body) in [
