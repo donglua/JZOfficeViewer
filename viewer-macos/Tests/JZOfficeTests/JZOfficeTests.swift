@@ -956,6 +956,34 @@ struct JZOfficeTests {
         #expect(hasNonWhitePixel(img))
     }
 
+    @Test("字体缓存按 LRU 顺序淘汰且容量受限")
+    func fontCacheCapacityAndEviction() {
+        var cache = CGElementDrawer.FontLRUCache(capacity: 2)
+        let first = NSFont.systemFont(ofSize: 10)
+        let second = NSFont.systemFont(ofSize: 11)
+        let third = NSFont.systemFont(ofSize: 12)
+        let fourth = NSFont.systemFont(ofSize: 13)
+
+        #expect(cache.insert(first, forKey: "first") === first)
+        #expect(cache.insert(second, forKey: "second") === second)
+        #expect(cache.value(forKey: "first") === first)
+
+        // first 最近被使用，插入 third 时应淘汰 second。
+        #expect(cache.insert(third, forKey: "third") === third)
+        #expect(cache.count == 2)
+        #expect(cache.value(forKey: "second") == nil)
+        #expect(cache.value(forKey: "first") === first)
+        #expect(cache.value(forKey: "third") === third)
+
+        // 重复键保留原实例并刷新使用顺序，下一次插入淘汰 third。
+        #expect(cache.insert(NSFont.systemFont(ofSize: 14), forKey: "first") === first)
+        #expect(cache.insert(fourth, forKey: "fourth") === fourth)
+        #expect(cache.count == 2)
+        #expect(cache.value(forKey: "third") == nil)
+        #expect(cache.value(forKey: "first") === first)
+        #expect(cache.value(forKey: "fourth") === fourth)
+    }
+
     @Test("段落底纹、高亮与边框解码及渲染属性校验")
     func testParagraphShadingBordersAndHighlighting() throws {
         let json = """

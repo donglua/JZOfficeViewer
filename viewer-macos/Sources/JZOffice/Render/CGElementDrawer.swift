@@ -706,7 +706,47 @@ public enum CGElementDrawer {
         return result
     }
 
-    private static var fontCache: [String: NSFont] = [:]
+    /// 有容量上限的字体 LRU 缓存；数组保存从最早到最近使用的键。
+    struct FontLRUCache {
+        private let capacity: Int
+        private var values: [String: NSFont] = [:]
+        private var keys: [String] = []
+
+        init(capacity: Int) {
+            self.capacity = max(1, capacity)
+        }
+
+        var count: Int {
+            values.count
+        }
+
+        mutating func value(forKey key: String) -> NSFont? {
+            guard let font = values[key] else { return nil }
+            markAsRecentlyUsed(key)
+            return font
+        }
+
+        mutating func insert(_ font: NSFont, forKey key: String) -> NSFont {
+            if let cached = values[key] {
+                markAsRecentlyUsed(key)
+                return cached
+            }
+            values[key] = font
+            keys.append(key)
+            if keys.count > capacity {
+                let evicted = keys.removeFirst()
+                values.removeValue(forKey: evicted)
+            }
+            return font
+        }
+
+        private mutating func markAsRecentlyUsed(_ key: String) {
+            keys.removeAll { $0 == key }
+            keys.append(key)
+        }
+    }
+
+    private static var fontCache = FontLRUCache(capacity: 64)
     private static let fontCacheLock = NSLock()
 
     private static func mapFontWeight(weight: Int, bold: Bool, lowerFace: String) -> NSFont.Weight {
@@ -788,7 +828,7 @@ public enum CGElementDrawer {
         let trimmed = face.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = "\(trimmed)#\(size)#\(bold)#\(italic)#\(weight)"
         fontCacheLock.lock()
-        if let cached = fontCache[key] {
+        if let cached = fontCache.value(forKey: key) {
             fontCacheLock.unlock()
             return cached
         }
@@ -821,10 +861,10 @@ public enum CGElementDrawer {
         }
 
         fontCacheLock.lock()
-        fontCache[key] = resolved
+        let cached = fontCache.insert(resolved, forKey: key)
         fontCacheLock.unlock()
 
-        return resolved
+        return cached
     }
 
     public static func computeLineHeight(para: OfficeParagraph, naturalHeight: CGFloat) -> CGFloat {
