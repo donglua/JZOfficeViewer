@@ -181,7 +181,8 @@ fn direct_zero_baseline_resets_inherited_superscript_and_invalid_preserves_it() 
         ("0", jz_office_core::model::VertAlign::Baseline),
         ("invalid", jz_office_core::model::VertAlign::Superscript),
     ] {
-        let body = format!(r#"<a:p><a:r><a:rPr baseline="{baseline}"/><a:t>Text</a:t></a:r></a:p>"#);
+        let body =
+            format!(r#"<a:p><a:r><a:rPr baseline="{baseline}"/><a:t>Text</a:t></a:r></a:p>"#);
         let document = parse_bodies([master, "", &body])?;
         assert_eq!(runs(&document)?[0].vert_align, expected);
     }
