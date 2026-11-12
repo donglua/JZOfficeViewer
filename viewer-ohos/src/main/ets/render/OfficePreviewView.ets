@@ -1,5 +1,6 @@
 import { image } from '@kit.ImageKit';
 import { displaySync } from '@kit.ArkGraphics2D';
+import { LengthMetrics, LengthUnit } from '@kit.ArkUI';
 import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
 import { RenderUtils } from './RenderUtils';
@@ -1331,6 +1332,14 @@ struct DocxParagraphView {
     return undefined;
   }
 
+  private calcBaselineOffset(run: model.Run): LengthMetrics {
+    const fontSize = (run.size || 14) * 0.65;
+    const offset = run.vertAlign === 'superscript'
+      ? fontSize * 0.45
+      : (run.vertAlign === 'subscript' ? -fontSize * 0.25 : 0);
+    return new LengthMetrics(offset, LengthUnit.VP);
+  }
+
   build() {
     if (this.para) {
       Text() {
@@ -1343,6 +1352,7 @@ struct DocxParagraphView {
                   ? (item.run.size || 14) * 0.65
                   : (item.run.size || 14)
               )
+              .baselineOffset(this.calcBaselineOffset(item.run))
               .fontFamily(RenderUtils.resolveFontFamily(item.run.fontFace, false))
               .fontColor(
                 item.isCurrent
