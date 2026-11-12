@@ -515,6 +515,55 @@ export class CanvasElementDrawer {
     return total;
   }
 
+  /**
+   * 测量带字符间距的文本；按 Unicode 码点逐字测量，避免拆开代理对。
+   */
+  private static measureSpacedText(ctx: OfficeCanvasContext, text: string, spacing?: number): number {
+    if (!spacing || !Number.isFinite(spacing) || text.length <= 1) {
+      return ctx.measureText(text).width;
+    }
+    let width = 0;
+    let index = 0;
+    let charIndex = 0;
+    while (index < text.length) {
+      const code = text.charCodeAt(index);
+      const step = code >= 0xD800 && code <= 0xDBFF && index + 1 < text.length ? 2 : 1;
+      const char = text.substring(index, index + step);
+      if (charIndex > 0) width += spacing;
+      width += ctx.measureText(char).width;
+      index += char.length;
+      charIndex++;
+    }
+    return width;
+  }
+
+  /** 无字符间距时保留整段绘制快路径，有间距时按码点逐字绘制。 */
+  private static fillSpacedText(
+    ctx: OfficeCanvasContext,
+    text: string,
+    x: number,
+    y: number,
+    spacing?: number
+  ): void {
+    if (!spacing || !Number.isFinite(spacing) || text.length <= 1) {
+      ctx.fillText(text, x, y);
+      return;
+    }
+    let currentX = x;
+    let index = 0;
+    let charIndex = 0;
+    while (index < text.length) {
+      const code = text.charCodeAt(index);
+      const step = code >= 0xD800 && code <= 0xDBFF && index + 1 < text.length ? 2 : 1;
+      const char = text.substring(index, index + step);
+      if (charIndex > 0) currentX += spacing;
+      ctx.fillText(char, currentX, y);
+      currentX += ctx.measureText(char).width;
+      index += char.length;
+      charIndex++;
+    }
+  }
+
   /** 空格类字符：半角空格、制表符、全角空格 */
   private static isBlankCode(code: number): boolean {
     return code === 0x20 || code === 0x09 || code === 0x3000;
@@ -539,6 +588,7 @@ export class CanvasElementDrawer {
     if (lineAvailWidth - line.width <= 0.5) return null;
 
     const charWidths: number[] = [];
+    const charSpacings: number[] = [];
     const charCodes: number[] = [];
     const charUnits: number[] = [];
     const unitStarts: number[] = [];
@@ -551,6 +601,7 @@ export class CanvasElementDrawer {
       if (ctx) ctx.font = seg.font;
       // 无画笔时按字符数均分 run 宽度，保证与 layoutParagraph 的折行结果一致
       const avgUnitWidth = seg.width / segLen;
+      const runSpacing = seg.spacing !== undefined && Number.isFinite(seg.spacing) ? seg.spacing : 0;
       let i = 0;
       while (i < segLen) {
         const code = text.charCodeAt(i);
@@ -562,7 +613,8 @@ export class CanvasElementDrawer {
           if (measured > 0) width = measured;
         }
         charWidths.push(width);
-        totalCharsWidth += width;
+        charSpacings.push(i > 0 ? runSpacing : 0);
+        totalCharsWidth += (i > 0 ? runSpacing : 0) + width;
         charCodes.push(code);
         charUnits.push(step);
         unitStarts.push(totalUnits);
@@ -602,7 +654,7 @@ export class CanvasElementDrawer {
       starts[u] = x;
       // 代理对的两个 UTF-16 单元共用一个起点，避免被拆开绘制
       if (charUnits[k] === 2) starts[u + 1] = x;
-      x += charWidths[k];
+      x += charSpacings[k] + charWidths[k];
       if (gapAfter[k]) x += gapWidth;
     }
     starts[totalUnits] = x;
@@ -779,8 +831,7 @@ export class CanvasElementDrawer {
         } else if (seg.vertAlign === 'subscript') {
           drawY += seg.fontSize * 0.25;
         }
-        // 整段一次性绘制，不再逐字调用 fillText
-        ctx.fillText(seg.text, segX, drawY);
+        CanvasElementDrawer.fillSpacedText(ctx, seg.text, segX, drawY, seg.spacing);
         if (seg.underline && seg.width > 0) {
           ctx.strokeStyle = seg.color;
           ctx.lineWidth = Math.max(0.75, seg.fontSize * 0.06);
@@ -908,7 +959,7 @@ export class CanvasElementDrawer {
 
         while (remainingText.length > 0) {
           const limit = maxLineW(rawLines.length - 1);
-          const fullW = ctx.measureText(remainingText).width;
+          const fullW = CanvasElementDrawer.measureSpacedText(ctx, remainingText, run.spacing);
 
           // 快路径：如果整段文字直接放得下，0 拆分直接入列！
           if (!wrap || currentLineWidth + fullW <= limit) {
@@ -940,12 +991,12 @@ export class CanvasElementDrawer {
           let low = 1;
           let high = remainingText.length;
           let bestCount = 1;
-          let bestWidth = ctx.measureText(remainingText.substring(0, 1)).width;
+          let bestWidth = CanvasElementDrawer.measureSpacedText(ctx, remainingText.substring(0, 1), run.spacing);
 
           while (low <= high) {
             const mid = (low + high) >>> 1;
             const sub = remainingText.substring(0, mid);
-            const w = ctx.measureText(sub).width;
+            const w = CanvasElementDrawer.measureSpacedText(ctx, sub, run.spacing);
             if (w <= availInLine) {
               bestCount = mid;
               bestWidth = w;
@@ -958,7 +1009,7 @@ export class CanvasElementDrawer {
           // 代理对保护：避免将高/低代理项劈开导致乱码
           if (bestCount < remainingText.length && remainingText.charCodeAt(bestCount - 1) >= 0xD800 && remainingText.charCodeAt(bestCount - 1) <= 0xDBFF) {
             bestCount = bestCount > 1 ? bestCount - 1 : bestCount + 1;
-            bestWidth = ctx.measureText(remainingText.substring(0, bestCount)).width;
+            bestWidth = CanvasElementDrawer.measureSpacedText(ctx, remainingText.substring(0, bestCount), run.spacing);
           }
 
           // 英文按词折行保护：若截断处在单词中间且前部有空格，优先在空格处断行
@@ -967,7 +1018,7 @@ export class CanvasElementDrawer {
             const lastSpace = candidate.lastIndexOf(' ');
             if (lastSpace > 0 && lastSpace >= bestCount * 0.4) {
               bestCount = lastSpace + 1;
-              bestWidth = ctx.measureText(remainingText.substring(0, bestCount)).width;
+              bestWidth = CanvasElementDrawer.measureSpacedText(ctx, remainingText.substring(0, bestCount), run.spacing);
             }
           }
 
@@ -1111,10 +1162,10 @@ export class CanvasElementDrawer {
             if (ctx && segLen > 0) {
               ctx.font = seg.font;
               if (matchStartInSeg > 0) {
-                x1 = ctx.measureText(seg.text.substring(0, matchStartInSeg)).width;
+                x1 = CanvasElementDrawer.measureSpacedText(ctx, seg.text.substring(0, matchStartInSeg), seg.spacing);
               }
               if (matchEndInSeg < segLen) {
-                x2 = ctx.measureText(seg.text.substring(0, matchEndInSeg)).width;
+                x2 = CanvasElementDrawer.measureSpacedText(ctx, seg.text.substring(0, matchEndInSeg), seg.spacing);
               }
             } else if (segLen > 0) {
               x1 = (matchStartInSeg / segLen) * seg.width;
