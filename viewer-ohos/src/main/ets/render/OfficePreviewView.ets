@@ -1769,6 +1769,9 @@ struct PptxSlidesView {
   private pendingJumpPage: number = 0;
   private redrawTimer: number = -1;
   private readonly loadingParts: Set<string> = new Set();
+  // 仅保留当前可见幻灯片所需图片的引用；否则长 PPTX 滚动后所有图片均不可淘汰，
+  // 会造成 PixelMap 累积、GC 与解码竞争，直接表现为滑动掉帧。
+  private readonly visibleImageParts: Set<string> = new Set();
   private loadGeneration: number = 0;
 
   private onSearchChanged(): void {
@@ -1860,6 +1863,7 @@ struct PptxSlidesView {
       clearTimeout(this.redrawTimer);
       this.redrawTimer = -1;
     }
+    this.visibleImageParts.clear();
     this.imageStore.release();
   }
 
@@ -2156,15 +2160,37 @@ struct PptxSlidesView {
     this.scheduleRedraw();
   }
 
-  private requestVisibleImages(parts: string[]): void {
-    for (const part of parts) {
+  private requestVisibleImages(parts: Map<string, number>): void {
+    const nextVisible = new Set<string>();
+    for (const part of parts.keys()) {
+      if (part) nextVisible.add(part);
+    }
+
+    // 图像引用必须随视口滚动释放。原实现只 acquire、不 release，长文档中每张
+    // 已浏览幻灯片都会永久占用 LRU，超过预算后无法逐出，导致持续内存压力与掉帧。
+    for (const part of this.visibleImageParts) {
+      if (!nextVisible.has(part)) {
+        this.imageStore.releasePart(part);
+      }
+    }
+    for (const part of nextVisible) {
+      if (!this.visibleImageParts.has(part)) {
+        this.imageStore.acquire(part);
+      }
+    }
+    this.visibleImageParts.clear();
+    for (const part of nextVisible) this.visibleImageParts.add(part);
+
+    for (const part of nextVisible) {
       if (this.imageStore.cache.has(part) || this.loadingParts.has(part)) {
         continue;
       }
       this.loadingParts.add(part);
-      this.imageStore.acquire(part);
       const gen = this.loadGeneration;
-      this.imageStore.load(part).then((updated: boolean) => {
+      // 根据图片在当前视口中的投影面积下采样；保留 2 倍余量，捏合放大时
+      // ImageStore 会按既有升级策略重新解码更高清版本，避免首屏固定解码 4MP。
+      const desiredPixels = Math.max(262_144, Math.min(4_000_000, parts.get(part) ?? 262_144));
+      this.imageStore.load(part, desiredPixels).then((updated: boolean) => {
         this.loadingParts.delete(part);
         if (updated && !this.isDisappeared && this.loadGeneration === gen) {
           this.scheduleRedraw();
@@ -2196,7 +2222,8 @@ struct PptxSlidesView {
     ctx.translate(left - this.offsetX, top - this.offsetY);
     ctx.scale(scale, scale);
 
-    const neededImageParts: string[] = [];
+    // part -> 当前帧所需解码像素。相同图片可能多次出现，只保留最高显示需求。
+    const neededImageParts: Map<string, number> = new Map();
 
     for (let i = 0; i < this.pageLayouts.length; i++) {
       const layout = this.pageLayouts[i];
@@ -2228,7 +2255,11 @@ struct PptxSlidesView {
       if (layout.page.elements) {
         for (const element of layout.page.elements) {
           if (element.type === 'IMAGE' && element.image) {
-            neededImageParts.push(element.image);
+            // 当前屏幕投影面积的 2 倍作为解码预算，为旋转、裁剪与一次缩放升级留余量。
+            const projectedPixels = Math.max(1, Math.ceil(element.width * scale) * Math.ceil(element.height * scale));
+            const desiredPixels = Math.min(4_000_000, Math.max(262_144, projectedPixels * 2));
+            const previous = neededImageParts.get(element.image) ?? 0;
+            if (desiredPixels > previous) neededImageParts.set(element.image, desiredPixels);
           }
           CanvasElementDrawer.drawElement(ctx, element, this.imageStore.cache);
         }
@@ -2263,9 +2294,7 @@ struct PptxSlidesView {
 
     ctx.restore();
 
-    if (neededImageParts.length > 0) {
-      this.requestVisibleImages(neededImageParts);
-    }
+    this.requestVisibleImages(neededImageParts);
   }
 
   private currentSlideAccessibilityLabel(): string {
