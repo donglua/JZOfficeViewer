@@ -1244,7 +1244,7 @@ export struct SpreadsheetView {
           GestureGroup(
             GestureMode.Parallel,
             // 双击快速缩放：已放大则恢复 1.0x，否则放大为 2.0x（完全对齐安卓端）
-            TapGesture({ count: 2 })
+            TapGesture({ count: 2, distanceThreshold: 3 })
               .onAction((event: GestureEvent) => {
                 this.stopFling();
                 const focusX = event.fingerList && event.fingerList.length > 0
@@ -1295,6 +1295,7 @@ export struct SpreadsheetView {
             PanGesture()
               .onActionStart(() => {
                 this.stopFling();
+                this.stopZoomTween();
                 this.panStartX = this.offsetX;
                 this.panStartY = this.offsetY;
               })

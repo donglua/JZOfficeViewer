@@ -1,7 +1,5 @@
-import {
-  PptxViewportPage,
-  resolvePptxCurrentPage
-} from '../../viewer-ohos/src/main/ets/render/PptxViewport';
+import { resolvePptxCurrentPage } from '../../viewer-ohos/src/main/ets/render/PptxViewport.ts';
+import type { PptxViewportPage } from '../../viewer-ohos/src/main/ets/render/PptxViewport.ts';
 
 let checks = 0;
 

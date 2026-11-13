@@ -831,7 +831,7 @@ struct DocxFlowView {
       .gesture(
         GestureGroup(
           GestureMode.Parallel,
-          TapGesture({ count: 2 })
+          TapGesture({ count: 2, distanceThreshold: 3 })
             .onAction((event: GestureEvent) => {
               this.isGesturing = false;
               const focusX = event.fingerList && event.fingerList.length > 0
@@ -2300,7 +2300,7 @@ struct PptxSlidesView {
         .gesture(
           GestureGroup(
             GestureMode.Parallel,
-            TapGesture({ count: 2 })
+            TapGesture({ count: 2, distanceThreshold: 3 })
               .onAction((event: GestureEvent) => {
                 this.stopFling();
                 const focusX = event.fingerList && event.fingerList.length > 0
@@ -2349,6 +2349,7 @@ struct PptxSlidesView {
               .onActionStart(() => {
                 if (this.isPinching) return;
                 this.stopFling();
+                this.stopZoomTween();
                 this.panStartX = this.offsetX;
                 this.panStartY = this.offsetY;
               })
