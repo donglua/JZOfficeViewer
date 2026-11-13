@@ -21,7 +21,7 @@ const MAX_SECTION_BLOCKS: usize = 500;
 const MAX_CELLS: usize = 5000;
 const MAX_COLUMNS: usize = 32;
 const MAX_ROWS: usize = 500;
-const MAX_COORDINATE: f32 = 1200.0;
+pub(crate) const MAX_COORDINATE: f32 = 1200.0;
 /// Word 默认页边距（点），用于未声明 sectPr/pgMar 的文档
 const DEFAULT_MARGIN: f32 = 72.0;
 pub(super) const MAX_TEXT: usize = 8 * 1024 * 1024;
@@ -42,7 +42,11 @@ const SECTION_LIMIT: BlockLimit = BlockLimit {
     message: "DOCX header/footer exceeds 500 blocks",
 };
 
-pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> {
+pub(crate) fn parse(
+    package: &mut Package,
+    main_part: &str,
+    scope: crate::Scope,
+) -> Result<Document> {
     let root = package.xml(main_part)?;
     if root.name != "document" {
         return Err(Error::Invalid("Invalid DOCX document root"));
@@ -99,6 +103,7 @@ pub(crate) fn parse(package: &mut Package, main_part: &str) -> Result<Document> 
         block_limit: FLOW_LIMIT,
         last_style_id: None,
         last_contextual: false,
+        budget: scope.block_budget(),
     };
     parser.body(body)?;
     // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）。
@@ -120,11 +125,19 @@ struct Parser<'a> {
     block_limit: BlockLimit,
     pub(super) last_style_id: Option<String>,
     pub(super) last_contextual: bool,
+    /// 剩余可解析的正文块预算；首屏缩略图只排版少量块即可返回
+    pub(super) budget: Option<usize>,
 }
 
 impl Parser<'_> {
     fn body(&mut self, parent: &Node) -> Result<()> {
+        if self.out_of_budget() {
+            return Ok(());
+        }
         for node in &parent.children {
+            if self.out_of_budget() {
+                break;
+            }
             match node.name.as_str() {
                 "p" => {
                     for block in self.paragraph(node, false)? {
@@ -165,6 +178,12 @@ impl Parser<'_> {
         }
         self.document.blocks.push(element);
         Ok(())
+    }
+
+    /// 首屏预算是否已经用尽。用尽后停止继续解析正文，已解析的前缀足以生成封面。
+    fn out_of_budget(&self) -> bool {
+        self.budget
+            .is_some_and(|budget| self.document.blocks.len() >= budget)
     }
 
     /// 流式正文的可用宽度：扣除左右页边距。未从 sectPr 读到边距时按 Word 默认 72pt 回退，
@@ -230,6 +249,11 @@ impl Parser<'_> {
         }
         None
     }
+}
+
+/// 按文档顺序收集 body 下全部节属性，供元数据速读复用同一套节定位规则
+pub(crate) fn sections(body: &Node) -> Vec<&Node> {
+    section::properties(body)
 }
 
 fn alternate(node: &Node) -> Option<&Node> {

@@ -200,3 +200,17 @@ export interface SearchMatch {
   endChar: number;
   snippet: string;
 }
+
+/**
+ * core 元数据协议（与 `metadata_path_to_json` 输出一一对应）
+ * 元数据不含可绘制内容，因此不复用 OfficeDocument 渲染模型。
+ */
+export interface MetadataInfo {
+  readonly schemaVersion: number;
+  readonly kind: Kind;
+  readonly pageCount: number;
+  readonly width: number;
+  readonly height: number;
+  readonly sheetNames: string[];
+  readonly warnings: string[];
+}

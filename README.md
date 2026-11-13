@@ -124,7 +124,8 @@ preview.open(uri, object : OfficePreviewView.Listener {
   container.addView(sheetTabs)
   ```
 - **无头元数据读取（`OfficeMetadata`）**：
-  无需初始化 View 即可在后台离线读取文档格式、页数、尺寸（点单位）及工作表名称列表：
+  无需初始化 View 即可在后台离线读取文档格式、页数、尺寸（点单位）及工作表名称列表。
+  该接口只读取判定格式与页数所需的少量 ZIP 部件，不构建正文、样式与几何模型，适用于文档列表与批量信息采集：
   ```kotlin
   import cn.jingzhuan.lib.office.OfficeMetadata
 
@@ -136,7 +137,8 @@ preview.open(uri, object : OfficePreviewView.Listener {
   })
   ```
 - **离屏封面/缩略图生成（`OfficeThumbnail`）**：
-  脱离 UI 视图直接在后台工作线程渲染文档首页（DOCX / PPTX / XLSX）为指定最大边界的 Bitmap（自动按原比例缩放）：
+  脱离 UI 视图直接在后台工作线程渲染文档首页（DOCX / PPTX / XLSX）为指定最大边界的 Bitmap（自动按原比例缩放）。
+  渲染走首屏范围解析：PPTX 只渲染首张幻灯片，XLSX 只解析首个工作表，DOCX 只排版到首页视口底部：
   ```kotlin
   import cn.jingzhuan.lib.office.OfficeThumbnail
 
@@ -148,6 +150,7 @@ preview.open(uri, object : OfficePreviewView.Listener {
   })
   ```
 - **生命周期清理**：在 `Activity.onDestroy()` 或 `Fragment.onDestroyView()` 中调用 `preview.clear()`，及时释放图片缓存并清理私有暂存文件。
+- **解析结果复用**：元数据读取、缩略图与预览打开共享同一份按 文件路径 + 大小 + 修改时间 命中的解析缓存。同一文件先后执行「元数据 → 封面 → 打开预览」时不会重复解析；更完整的解析结果可直接服务封面请求。文件被替换后按大小与修改时间自动失效。
 
 ### 3. 在线链接预览与缓存管理
 

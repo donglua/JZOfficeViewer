@@ -41,6 +41,64 @@ pub extern "system" fn Java_cn_jingzhuan_lib_office_NativeCore_parse(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_cn_jingzhuan_lib_office_NativeCore_parseFirstViewport(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    path: JString<'_>,
+) -> jstring {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<jstring, String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        let json = jz_office_core::parse_path_scoped_to_json(
+            Path::new(&path),
+            jz_office_core::Scope::FirstViewport,
+        )
+        .map_err(|e| e.to_string())?;
+        env.new_string(json)
+            .map(JString::into_raw)
+            .map_err(|e| e.to_string())
+    }));
+    into_jni_string_or_throw(env, result, "Document parser failed")
+}
+
+#[no_mangle]
+pub extern "system" fn Java_cn_jingzhuan_lib_office_NativeCore_metadata(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    path: JString<'_>,
+) -> jstring {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<jstring, String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        let json =
+            jz_office_core::metadata_path_to_json(Path::new(&path)).map_err(|e| e.to_string())?;
+        env.new_string(json)
+            .map(JString::into_raw)
+            .map_err(|e| e.to_string())
+    }));
+    into_jni_string_or_throw(env, result, "Document metadata reader failed")
+}
+
+#[no_mangle]
+pub extern "system" fn Java_cn_jingzhuan_lib_office_NativeCore_prewarmSearchIndex(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    path: JString<'_>,
+) {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        jz_office_core::prewarm_search_index(Path::new(&path)).map_err(|e| e.to_string())
+    }));
+    let message = match result {
+        Ok(Ok(())) => return,
+        Ok(Err(error)) => error,
+        Err(_) => "Document search index prewarm failed".to_owned(),
+    };
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    let _ = env.throw_new("java/io/IOException", message);
+}
+
+#[no_mangle]
 pub extern "system" fn Java_cn_jingzhuan_lib_office_NativeCore_search(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,

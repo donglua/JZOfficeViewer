@@ -32,11 +32,16 @@ final class OfficePackage implements Closeable {
     private long readBytes;
     private final Map<String, Long> readSizes = new HashMap<>();
 
-    private OfficePackage(OfficeCache.Entry cache, OfficeDocument document) {
+    /** 用已解码的模型包装缓存文件；缩略图等调用方先按首屏范围解析，再交给渲染层读图 */
+    OfficePackage(OfficeCache.Entry cache, OfficeDocument document) {
         this.cache = cache; this.file = cache.getFile(); this.document = document;
     }
 
-    static OfficePackage open(Context context, Uri uri) throws IOException {
+    /**
+     * 把文档落到本进程的缓存文件，返回持有该文件的缓存条目，调用方负责 close。
+     * 元数据速读与缩略图渲染只需要文件路径，不必走完整解析，因此单独暴露这一步。
+     */
+    static OfficeCache.Entry materialize(Context context, Uri uri) throws IOException {
         String scheme = uri.getScheme();
         if (!"content".equals(scheme) && !"file".equals(scheme)) throw new IOException("Only content:// and file:// URIs are supported");
         OfficeCache.Entry retained = "file".equals(scheme) && uri.getPath() != null
@@ -63,9 +68,21 @@ final class OfficePackage implements Closeable {
                 }
             }
             checkCancelled();
-            OfficeDocument document = DocumentDecoder.decode(NativeCore.parse(file.getAbsolutePath()));
+            complete = true;
+            return cache;
+        } finally {
+            if (!complete) {
+                cache.close();
+            }
+        }
+    }
+
+    static OfficePackage open(Context context, Uri uri) throws IOException {
+        OfficeCache.Entry cache = materialize(context, uri);
+        boolean complete = false;
+        try {
+            OfficePackage opened = new OfficePackage(cache, DocumentDecoder.decode(NativeCore.parse(cache.getFile().getAbsolutePath())));
             checkCancelled();
-            OfficePackage opened = new OfficePackage(cache, document);
             complete = true;
             return opened;
         } finally {

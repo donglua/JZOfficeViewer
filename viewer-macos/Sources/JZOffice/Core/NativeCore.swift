@@ -34,6 +34,55 @@ public enum NativeCore {
         }.value
     }
 
+    /// 同步首屏解析本地文档路径为 `OfficeDocument` 模型（仅供封面缩略图使用）
+    ///
+    /// PPTX 只渲染首张幻灯片，XLSX 只解析首个工作表，DOCX 只解析首屏正文块。
+    public static func parseFirstViewport(at path: String) throws -> OfficeDocument {
+        let json = try parseFirstViewportJSON(at: path)
+        return try decodeDocument(from: json)
+    }
+
+    /// 同步首屏解析本地文档路径为原始 JSON 字符串
+    public static func parseFirstViewportJSON(at path: String) throws -> String {
+        try invokeJSON(path: path, label: "Empty parser output") { cPath in
+            jz_office_parse_first_viewport(cPath)
+        }
+    }
+
+    /// 同步轻量元数据速读为原始 JSON 字符串
+    public static func metadataJSON(at path: String) throws -> String {
+        try invokeJSON(path: path, label: "Empty metadata output") { cPath in
+            jz_office_metadata_path(cPath)
+        }
+    }
+
+    /// 调用返回 `JZStringResult` 的 C-ABI 入口，统一处理路径校验、错误转换与内存释放
+    private static func invokeJSON(
+        path: String,
+        label: String,
+        _ call: (UnsafePointer<CChar>) -> JZStringResult
+    ) throws -> String {
+        guard !path.isEmpty else {
+            throw OfficeError.invalidArguments("File path cannot be empty")
+        }
+        let result = path.withCString { cPath in call(cPath) }
+        defer {
+            if let dataPtr = result.data {
+                jz_office_free_string(dataPtr)
+            }
+            if let errPtr = result.error {
+                jz_office_free_string(errPtr)
+            }
+        }
+        if let errPtr = result.error {
+            throw OfficeError.parseFailed(String(cString: errPtr))
+        }
+        guard let dataPtr = result.data else {
+            throw OfficeError.parseFailed(label)
+        }
+        return String(cString: dataPtr)
+    }
+
     /// 同步解析本地文档路径为原始 JSON 字符串
     public static func parseJSON(at path: String) throws -> String {
         guard !path.isEmpty else {
@@ -70,6 +119,20 @@ public enum NativeCore {
         } catch {
             throw OfficeError.parseFailed("Document decode failed: \(error.localizedDescription)")
         }
+    }
+
+    /// 显式预热全文检索索引。默认解析不会调用；仅应在确认即将搜索时使用。
+    public static func prewarmSearchIndex(at path: String) throws {
+        _ = try invokeJSON(path: path, label: "Empty search index prewarm output") { cPath in
+            jz_office_prewarm_search_index(cPath)
+        }
+    }
+
+    /// 异步预热全文检索索引，不阻塞调用线程。
+    public static func prewarmSearchIndexAsync(at path: String) async throws {
+        try await Task.detached(priority: .utility) {
+            try prewarmSearchIndex(at: path)
+        }.value
     }
 
     /// 同步在指定本地文档路径中执行大小写不敏感的全文检索

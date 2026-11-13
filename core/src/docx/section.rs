@@ -109,12 +109,15 @@ impl Parser<'_> {
         let saved_limit = std::mem::replace(&mut self.block_limit, super::SECTION_LIMIT);
         let saved_style_id = self.last_style_id.take();
         let saved_contextual = std::mem::replace(&mut self.last_contextual, false);
+        // 页眉页脚是封面的一部分，不受正文首屏预算约束
+        let saved_budget = self.budget.take();
         // 临时交换 blocks，让 body() 把解析结果写入临时 Vec；text_bytes 在 body() 内正常累计
         let saved = std::mem::take(&mut self.document.blocks);
         let result = self.body(&root);
         let blocks = std::mem::replace(&mut self.document.blocks, saved);
         self.last_style_id = saved_style_id;
         self.last_contextual = saved_contextual;
+        self.budget = saved_budget;
         self.block_limit = saved_limit;
         self.relationships = saved_relationships;
         result?;

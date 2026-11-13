@@ -51,6 +51,24 @@ export declare function parse(path: string): string
 /** 异步解析接口（使用鸿蒙底层 libuv Worker 线程池，不阻塞 ArkUI 主线程） */
 export declare function parseAsync(path: string, abortSignal?: AbortSignal | undefined | null): Promise<string>
 
+/** 同步首屏解析接口（对齐 Android NativeCore.parseFirstViewport） */
+export declare function parseFirstViewport(path: string): string
+
+/** 异步首屏解析接口：只排版首页/首张幻灯片/首个工作表，用于封面缩略图 */
+export declare function parseFirstViewportAsync(path: string, abortSignal?: AbortSignal | undefined | null): Promise<string>
+
+/** 同步轻量元数据速读接口（对齐 Android NativeCore.metadata） */
+export declare function readMetadata(path: string): string
+
+/** 异步轻量元数据速读：只读取格式与页数所需的部件 */
+export declare function readMetadataAsync(path: string, abortSignal?: AbortSignal | undefined | null): Promise<string>
+
+/** 同步预热全文检索索引。默认解析不会调用，调用方应仅在后台空闲时显式使用。 */
+export declare function prewarmSearchIndexForPath(path: string): void
+
+/** 异步预热全文检索索引，不阻塞 ArkUI 主线程。 */
+export declare function prewarmSearchIndexAsync(path: string, abortSignal?: AbortSignal | undefined | null): Promise<void>
+
 /** 同步读取文档 ZIP 包内指定部件字节流 */
 export declare function readPart(path: string, part: string): ArrayBuffer
 

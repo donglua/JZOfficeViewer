@@ -64,7 +64,17 @@ final class OfficeRenderer {
     }
 
     void layout(OfficeDocument document) {
+        layout(document, 0);
+    }
+
+    /**
+     * 排版文档；{@code viewportHeight} 大于 0 时按首屏限定排版范围。
+     * DOCX 是连续流，正文块可以超出视口任意长：只为封面排版时，越过视口底部后即可停止，
+     * 已排好的前缀与完整排版的前缀逐块一致。PPTX / XLSX 由页与表本身限定，此参数无作用。
+     */
+    void layout(OfficeDocument document, float viewportHeight) {
         clear(); this.document = document; width = Math.max(1, document.width);
+        boolean limitViewport = viewportHeight > 0;
         if (document.kind == OfficeDocument.Kind.DOCX) {
             float maxMargin = Math.max(36, (width - 120) / 2);
             float marginLeft = Math.min(maxMargin, document.marginLeft > 0 ? document.marginLeft : 72);
@@ -84,6 +94,7 @@ final class OfficeRenderer {
             if (!document.headerBlocks.isEmpty()) y += 10; // 页眉与正文间距
             // 正文
             for (OfficeDocument.Element source : document.blocks) {
+                if (limitViewport && y > viewportHeight) break;
                 Element drawn = element(source, contentWidth, true, document);
                 drawn.x = contentX; drawn.y = y;
                 if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (contentWidth - drawn.width) / 2;
@@ -99,7 +110,9 @@ final class OfficeRenderer {
                 position(drawn, true);
                 page.elements.add(drawn); y += drawn.height + 6;
             }
-            page.height = Math.max(300, y + 32); page.ready = true; pages.add(page); height = page.height;
+            page.height = Math.max(300, y + 32); page.ready = true; pages.add(page);
+            // 首屏排版只保证视口内的高度，超出部分本就不参与封面绘制
+            height = limitViewport ? Math.min(page.height, viewportHeight) : page.height;
         } else {
             for (OfficeDocument.Page source : document.pages) {
                 Page page = new Page(); page.y = height;

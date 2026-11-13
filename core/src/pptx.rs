@@ -26,6 +26,8 @@ use colors::Theme;
 use parts::{Cache, Part};
 use render::Render;
 
+pub(crate) const MAX_SLIDES: usize = 100;
+
 #[derive(Default)]
 struct Budget {
     objects: usize,
@@ -51,7 +53,7 @@ impl Budget {
     }
 }
 
-pub(crate) fn parse(pkg: &mut Package, main_part: &str) -> Result<Document> {
+pub(crate) fn parse(pkg: &mut Package, main_part: &str, scope: crate::Scope) -> Result<Document> {
     let presentation = Part::read(pkg, main_part)?;
     if presentation.root.name != "presentation" {
         return Err(Error::Invalid("Invalid PPTX presentation part"));
@@ -76,13 +78,19 @@ pub(crate) fn parse(pkg: &mut Package, main_part: &str) -> Result<Document> {
     if count == 0 {
         return Err(Error::Invalid("PPTX has no slides"));
     }
-    if count > 100 {
+    if count > MAX_SLIDES {
         return Err(Error::Limit("PPTX exceeds 100 slides"));
     }
     let mut cache = Cache::default();
     let default_theme = cache.related(pkg, Some(&presentation), "theme")?;
     let mut budget = Budget::default();
-    for id in ids.named("sldId") {
+    // 首屏范围只渲染首张幻灯片：封面只需要第一页，其余页的渲染结果会被丢弃
+    let limit = if scope == crate::Scope::FirstViewport {
+        1
+    } else {
+        count
+    };
+    for id in ids.named("sldId").take(limit) {
         let path = presentation
             .rels
             .get(relation_id(id, "id"))
@@ -145,7 +153,7 @@ pub(crate) fn parse(pkg: &mut Package, main_part: &str) -> Result<Document> {
     Ok(doc)
 }
 
-fn slide_dimension(value: &str) -> Result<f32> {
+pub(crate) fn slide_dimension(value: &str) -> Result<f32> {
     geometry::points(value)
         .filter(|v| *v > 0.0 && *v <= 14400.0)
         .ok_or(Error::Invalid("Invalid PPTX slide dimensions"))

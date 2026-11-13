@@ -18,22 +18,14 @@ export interface OfficeMetadataInfo {
  * 无需初始化 UI 视图组件。
  */
 export async function readOfficeMetadata(filePath: string): Promise<OfficeMetadataInfo> {
-  const doc: model.OfficeDocument = await NativeCore.parseDocumentAsync(filePath);
-  const isXlsx = doc.kind === 'XLSX';
-  const isPptx = doc.kind === 'PPTX';
-  const pageCount = isXlsx ? (doc.sheets ? doc.sheets.length : 0)
-    : isPptx ? (doc.pages ? doc.pages.length : 0) : 1;
-  const sheetNames = isXlsx && doc.sheets ? doc.sheets.map((s: model.Sheet) => s.name) : [];
-  let docHeight = 0;
-  if (isPptx && doc.pages && doc.pages.length > 0) {
-    docHeight = doc.pages[0].height;
-  }
+  // 只读取格式与页数所需的部件，不构建正文、样式与几何模型
+  const info: model.MetadataInfo = await NativeCore.readMetadataAsync(filePath);
   return {
-    format: doc.kind,
-    pageCount: pageCount,
-    sheetNames: sheetNames,
-    warnings: doc.warnings ? doc.warnings.slice() : [],
-    width: doc.width || 0,
-    height: docHeight
+    format: info.kind,
+    pageCount: info.pageCount,
+    sheetNames: info.sheetNames ? info.sheetNames.slice() : [],
+    warnings: info.warnings ? info.warnings.slice() : [],
+    width: info.width || 0,
+    height: info.height || 0
   };
 }

@@ -59,10 +59,13 @@ public final class OfficeThumbnail {
             throw new IllegalArgumentException("Target width and height must be positive, got " + maxTargetWidth + "x" + maxTargetHeight);
         }
 
+        OfficeCache.Entry cache = null;
         OfficePackage pkg = null;
         try {
-            pkg = OfficePackage.open(context.getApplicationContext(), uri);
-            OfficeDocument document = pkg.document;
+            cache = OfficePackage.materialize(context.getApplicationContext(), uri);
+            // 封面只取首页：走首屏解析，避免为一张缩略图承担整篇文档的解析成本
+            OfficeDocument document = DocumentDecoder.decode(NativeCore.parseFirstViewport(cache.getFile().getAbsolutePath()));
+            pkg = new OfficePackage(cache, document);
             if (document.kind == OfficeDocument.Kind.PPTX) {
                 return renderPptxThumbnail(pkg, document, maxTargetWidth, maxTargetHeight);
             } else if (document.kind == OfficeDocument.Kind.DOCX) {
@@ -76,6 +79,7 @@ public final class OfficeThumbnail {
             throw new IOException("Not enough memory to render thumbnail", oom);
         } finally {
             if (pkg != null) pkg.close();
+            else if (cache != null) cache.close();
         }
     }
 
@@ -116,12 +120,14 @@ public final class OfficeThumbnail {
     }
 
     private static Bitmap renderDocxThumbnail(OfficePackage pkg, OfficeDocument doc, int maxW, int maxH) throws IOException {
-        OfficeRenderer renderer = new OfficeRenderer();
-        renderer.layout(doc);
-
-        float docW = renderer.width > 0 ? renderer.width : (doc.width > 0 ? doc.width : 595);
+        float docW = doc.width > 0 ? doc.width : 595;
         // DOCX 单页 A4 比例高度约为宽度的 1.414 倍，取第一屏视口高度
         float docH = docW * 1.414f;
+
+        OfficeRenderer renderer = new OfficeRenderer();
+        // 只为第一屏排版：正文块越过视口底部后不再测量，封面像素不受影响
+        renderer.layout(doc, docH);
+        if (renderer.width > 0) docW = renderer.width;
 
         float scale = Math.min((float) maxW / docW, (float) maxH / docH);
         int outW = Math.max(1, Math.round(docW * scale));

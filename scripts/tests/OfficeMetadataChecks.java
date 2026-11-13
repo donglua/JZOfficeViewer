@@ -1,7 +1,5 @@
 package cn.jingzhuan.lib.office;
 
-import java.util.Arrays;
-
 public final class OfficeMetadataChecks {
     private static int passed;
 
@@ -9,14 +7,51 @@ public final class OfficeMetadataChecks {
         checkDocxMetadata();
         checkPptxMetadata();
         checkXlsxMetadata();
+        checkProtocolGuards();
         checkNullGuards();
         System.out.println("PASS OfficeMetadataChecks (" + passed + " assertions)");
     }
 
+    /** core 元数据协议：只携带元数据字段，不含行列与样式 */
+    private static String metadataJson(String kind, int pageCount, float width, float height,
+            String sheetNames, String warnings) {
+        return "{\"schemaVersion\":9,\"kind\":\"" + kind + "\",\"pageCount\":" + pageCount
+            + ",\"width\":" + width + ",\"height\":" + height
+            + ",\"sheetNames\":" + sheetNames + ",\"warnings\":" + warnings + "}";
+    }
+
+    private static void checkProtocolGuards() {
+        try {
+            OfficeMetadata meta = MetadataDecoder.decode(metadataJson("DOCX", 1, 595, 0, "[]", "[]"));
+            check(meta.pageCount == 1 && meta.width == 595f, "Protocol decodes required fields");
+            check(meta.sheetNames.isEmpty() && meta.warnings.isEmpty(), "Protocol empty lists decode");
+        } catch (Exception error) {
+            throw new AssertionError("Valid metadata rejected: " + error, error);
+        }
+        reject("{\"schemaVersion\":8,\"kind\":\"DOCX\",\"pageCount\":1,\"width\":1,\"height\":0,"
+            + "\"sheetNames\":[],\"warnings\":[]}", "Unsupported core model version");
+        reject("{\"kind\":\"DOCX\",\"pageCount\":1,\"width\":1,\"height\":0,"
+            + "\"sheetNames\":[],\"warnings\":[]}", null);
+        reject(metadataJson("DOCX", 1, -5, 0, "[]", "[]"), null);
+        reject(metadataJson("DOCX", -1, 5, 0, "[]", "[]"), null);
+        reject(metadataJson("DOCX", 1, 5, 0, "[]", "[]").replace("\"height\":0", "\"height\":1e40"), null);
+    }
+
+    private static void reject(String json, String expectedMessage) {
+        try {
+            MetadataDecoder.decode(json);
+            throw new AssertionError("Accepted invalid metadata: " + json);
+        } catch (Exception error) {
+            if (expectedMessage != null && !expectedMessage.equals(error.getMessage())) {
+                throw new AssertionError("Unexpected rejection message: " + error.getMessage());
+            }
+            passed++;
+        }
+    }
+
     private static void checkDocxMetadata() throws Exception {
-        String json = "{\"schemaVersion\":9,\"kind\":\"DOCX\",\"width\":595.0,\"warnings\":[\"test warning\"],\"blocks\":[],\"pages\":[],\"sheets\":[],\"cellStyles\":[]}";
-        OfficeDocument doc = DocumentDecoder.decode(json);
-        OfficeMetadata meta = OfficeMetadata.fromDocument(doc);
+        OfficeMetadata meta = MetadataDecoder.decode(
+            metadataJson("DOCX", 1, 595.0f, 0, "[]", "[\"test warning\"]"));
         check("DOCX".equals(meta.format), "DOCX format matches");
         check(meta.pageCount == 1, "DOCX pageCount is 1");
         check(meta.sheetNames.isEmpty(), "DOCX has no sheet names");
@@ -25,12 +60,7 @@ public final class OfficeMetadataChecks {
     }
 
     private static void checkPptxMetadata() throws Exception {
-        String json = "{\"schemaVersion\":9,\"kind\":\"PPTX\",\"width\":960.0,\"warnings\":[],\"blocks\":[],"
-            + "\"pages\":[{\"width\":960.0,\"height\":540.0,\"background\":-1,\"elements\":[]},"
-            + "{\"width\":960.0,\"height\":540.0,\"background\":-1,\"elements\":[]}],"
-            + "\"sheets\":[],\"cellStyles\":[]}";
-        OfficeDocument doc = DocumentDecoder.decode(json);
-        OfficeMetadata meta = OfficeMetadata.fromDocument(doc);
+        OfficeMetadata meta = MetadataDecoder.decode(metadataJson("PPTX", 2, 960.0f, 540.0f, "[]", "[]"));
         check("PPTX".equals(meta.format), "PPTX format matches");
         check(meta.pageCount == 2, "PPTX pageCount is 2");
         check(meta.sheetNames.isEmpty(), "PPTX has no sheet names");
@@ -39,12 +69,8 @@ public final class OfficeMetadataChecks {
     }
 
     private static void checkXlsxMetadata() throws Exception {
-        String json = "{\"schemaVersion\":9,\"kind\":\"XLSX\",\"width\":1.0,\"warnings\":[],\"blocks\":[],\"pages\":[],"
-            + "\"cellStyles\":[{\"fontSize\":11,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,\"fill\":0,\"alignment\":3,\"verticalAlignment\":\"BOTTOM\",\"wrap\":false,\"borders\":[null,null,null,null]}],"
-            + "\"sheets\":[{\"name\":\"Summary\",\"rowHeights\":[20],\"columnWidths\":[10],\"cells\":[],\"merges\":[]},"
-            + "{\"name\":\"Details\",\"rowHeights\":[20],\"columnWidths\":[10],\"cells\":[],\"merges\":[]}]}";
-        OfficeDocument doc = DocumentDecoder.decode(json);
-        OfficeMetadata meta = OfficeMetadata.fromDocument(doc);
+        OfficeMetadata meta = MetadataDecoder.decode(
+            metadataJson("XLSX", 2, 1.0f, 0, "[\"Summary\",\"Details\"]", "[]"));
         check("XLSX".equals(meta.format), "XLSX format matches");
         check(meta.pageCount == 2, "XLSX pageCount is 2");
         check(meta.sheetNames.size() == 2, "XLSX has 2 sheets");

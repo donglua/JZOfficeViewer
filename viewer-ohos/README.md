@@ -269,10 +269,10 @@ import {
   OfficeMetadataInfo
 } from '@jzdy/office';
 
-// 1. 无头元数据速读
+// 1. 无头元数据速读（只读取格式与页数所需的部件，不构建正文与样式模型）
 const info: OfficeMetadataInfo = await readOfficeMetadata(filePath);
 
-// 2. 离屏封面/缩略图生成（支持 DOCX / PPTX / XLSX，使用完毕后调用 pixelMap.release()）
+// 2. 离屏封面/缩略图生成（走首屏解析，使用完毕后调用 pixelMap.release()）
 const pixelMap = await renderOfficeThumbnail(filePath, 240, 320);
 
 // 3. 多工作表切换标签栏（仅需传入 controller 即可自动订阅联动，非 XLSX 文档自动隐藏）

@@ -25,6 +25,9 @@ shrink_staticlib() {
     local tmp_o="${BUILD_OUT_DIR}/jz_office_${arch}.o"
     xcrun ld -r -S -x -arch "${arch}" -platform_version macos 14.0.0 14.0.0 \
         -exported_symbol _jz_office_parse_path \
+        -exported_symbol _jz_office_parse_first_viewport \
+        -exported_symbol _jz_office_metadata_path \
+        -exported_symbol _jz_office_prewarm_search_index \
         -exported_symbol _jz_office_search_path \
         -exported_symbol _jz_office_read_part \
         -exported_symbol _jz_office_evict_cache \

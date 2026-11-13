@@ -1,4 +1,5 @@
-import { parse, parseAsync, search, searchAsync, readPart, readPartAsync, clearCache, evictCache, AbortSignal } from 'libjz_office_ohos.so';
+import { parse, parseAsync, parseFirstViewportAsync, readMetadataAsync as readMetadataAsyncNative, prewarmSearchIndexAsync, search, searchAsync, readPart, readPartAsync, clearCache, evictCache, AbortSignal } from 'libjz_office_ohos.so';
+import { MetadataInfo } from './OfficeModel';
 import { OfficeDocument, SearchMatch } from './OfficeModel';
 
 export class NativeCore {
@@ -30,6 +31,59 @@ export class NativeCore {
       throw new Error(`Unsupported core model version: ${doc.schemaVersion}`);
     }
     return doc;
+  }
+
+  /**
+   * 异步首屏解析本地沙箱路径下的 Office 文档（仅供封面缩略图使用）。
+   *
+   * PPTX 只渲染首张幻灯片，XLSX 只解析首个工作表，DOCX 只解析首屏正文块；
+   * 封面只需要首页内容，因此无需承担整篇文档的解析成本。
+   * @param path 沙箱中的本地文件路径
+   * @param signal 可选的中断信号
+   */
+  public static async parseDocumentFirstViewportAsync(
+    path: string,
+    signal?: AbortSignal
+  ): Promise<OfficeDocument> {
+    const rawJson: string = await parseFirstViewportAsync(path, signal);
+    const doc = JSON.parse(rawJson) as OfficeDocument;
+    if (doc.schemaVersion !== 9) {
+      throw new Error(`Unsupported core model version: ${doc.schemaVersion}`);
+    }
+    return doc;
+  }
+
+  /**
+   * 异步轻量速读本地沙箱路径下 Office 文档的元数据。
+   *
+   * 只读取判定格式与页数所需的少量部件，不构建正文、样式与几何模型。
+   * 返回值为独立的元数据协议，不含可绘制内容。
+   * @param path 沙箱中的本地文件路径
+   * @param signal 可选的中断信号
+   */
+  public static async readMetadataAsync(
+    path: string,
+    signal?: AbortSignal
+  ): Promise<MetadataInfo> {
+    const rawJson: string = await readMetadataAsyncNative(path, signal);
+    const info = JSON.parse(rawJson) as MetadataInfo;
+    if (info.schemaVersion !== 9) {
+      throw new Error(`Unsupported core model version: ${info.schemaVersion}`);
+    }
+    return info;
+  }
+
+  /**
+   * 可选地在后台预热指定文档的全文检索索引。
+   * 默认解析不会调用；只有预期立即搜索时才应使用。
+   * @param path 沙箱中的本地文件路径
+   * @param signal 可选的中断信号
+   */
+  public static async prewarmSearchIndexAsync(
+    path: string,
+    signal?: AbortSignal
+  ): Promise<void> {
+    await prewarmSearchIndexAsync(path, signal);
   }
 
   /**

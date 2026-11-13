@@ -1,5 +1,14 @@
 # 更新日志
 
+## 未发布
+
+### 性能
+
+- **元数据与缩略图的轻量路径（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - 新增 native 轻量元数据接口（`metadata_path_to_json` / `NativeCore.metadata` / `readMetadataAsync` / `jz_office_metadata_path`），元数据速读只读取判定格式与页数所需的少量 ZIP 部件，不再触发整篇文档的样式、几何与文本解析，输出独立的紧凑协议。
+  - 缩略图改走首屏范围解析：PPTX 只渲染首张幻灯片，XLSX 只解析首个工作表，DOCX 只解析首屏正文块并在排版越过首页视口底部后停止。封面像素与完整解析一致，但不再承担整篇文档的解析与排版成本。
+  - 新增按 文件路径 + 大小 + 修改时间 + 解析范围 命中的解析结果缓存。同一文件连续执行「元数据 → 缩略图 → 打开预览」不再重复解析；更完整的解析结果可直接服务封面请求，文件内容变化后自动失效。`clear_package_cache` / `evict_package_cache` 一并清理该缓存，避免检索索引与解析结果错配。
+
 ## 0.13.1
 
 发布页面：[v0.13.1 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.13.1)。

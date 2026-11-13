@@ -21,6 +21,40 @@ fn parse_path_to_json(path: &str) -> Result<String> {
     }
 }
 
+fn parse_first_viewport_to_json(path: &str) -> Result<String> {
+    let result = catch_unwind(AssertUnwindSafe(
+        || -> std::result::Result<String, String> {
+            jz_office_core::parse_path_scoped_to_json(
+                Path::new(path),
+                jz_office_core::Scope::FirstViewport,
+            )
+            .map_err(|e| e.to_string())
+        },
+    ));
+
+    match result {
+        Ok(Ok(json)) => Ok(json),
+        Ok(Err(error)) => Err(Error::from_reason(error)),
+        Err(_) => Err(Error::from_reason("Document parser failed".to_owned())),
+    }
+}
+
+fn metadata_to_json(path: &str) -> Result<String> {
+    let result = catch_unwind(AssertUnwindSafe(
+        || -> std::result::Result<String, String> {
+            jz_office_core::metadata_path_to_json(Path::new(path)).map_err(|e| e.to_string())
+        },
+    ));
+
+    match result {
+        Ok(Ok(json)) => Ok(json),
+        Ok(Err(error)) => Err(Error::from_reason(error)),
+        Err(_) => Err(Error::from_reason(
+            "Document metadata reader failed".to_owned(),
+        )),
+    }
+}
+
 fn search_path_to_json(path: &str, query: &str) -> Result<String> {
     let result = catch_unwind(AssertUnwindSafe(
         || -> std::result::Result<String, String> {
@@ -100,6 +134,118 @@ pub fn parse_async(
     abort_signal: Option<AbortSignal>,
 ) -> AsyncTask<ParseDocumentTask> {
     AsyncTask::with_optional_signal(ParseDocumentTask { path }, abort_signal)
+}
+
+pub struct ParseFirstViewportTask {
+    path: String,
+}
+
+#[napi]
+impl Task for ParseFirstViewportTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        parse_first_viewport_to_json(&self.path)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// 异步首屏解析接口：只排版首页/首张幻灯片/首个工作表，用于封面缩略图
+#[napi]
+pub fn parse_first_viewport_async(
+    path: String,
+    abort_signal: Option<AbortSignal>,
+) -> AsyncTask<ParseFirstViewportTask> {
+    AsyncTask::with_optional_signal(ParseFirstViewportTask { path }, abort_signal)
+}
+
+/// 同步首屏解析接口（对齐 Android NativeCore.parseFirstViewport）
+#[napi]
+pub fn parse_first_viewport(path: String) -> Result<String> {
+    parse_first_viewport_to_json(&path)
+}
+
+pub struct MetadataTask {
+    path: String,
+}
+
+#[napi]
+impl Task for MetadataTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        metadata_to_json(&self.path)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// 异步轻量元数据速读：只读取格式与页数所需的部件
+#[napi]
+pub fn read_metadata_async(
+    path: String,
+    abort_signal: Option<AbortSignal>,
+) -> AsyncTask<MetadataTask> {
+    AsyncTask::with_optional_signal(MetadataTask { path }, abort_signal)
+}
+
+/// 同步轻量元数据速读接口（对齐 Android NativeCore.metadata）
+#[napi]
+pub fn read_metadata(path: String) -> Result<String> {
+    metadata_to_json(&path)
+}
+
+fn prewarm_search_index(path: &str) -> Result<()> {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        jz_office_core::prewarm_search_index(Path::new(path)).map_err(|e| e.to_string())
+    }));
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(Error::from_reason(error)),
+        Err(_) => Err(Error::from_reason(
+            "Document search index prewarm failed".to_owned(),
+        )),
+    }
+}
+
+/// 同步预热全文检索索引。默认解析不会调用，调用方应仅在后台空闲时显式使用。
+#[napi]
+pub fn prewarm_search_index_for_path(path: String) -> Result<()> {
+    prewarm_search_index(&path)
+}
+
+pub struct PrewarmSearchIndexTask {
+    path: String,
+}
+
+#[napi]
+impl Task for PrewarmSearchIndexTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        prewarm_search_index(&self.path)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// 异步预热全文检索索引，不阻塞 ArkUI 主线程。
+#[napi]
+pub fn prewarm_search_index_async(
+    path: String,
+    abort_signal: Option<AbortSignal>,
+) -> AsyncTask<PrewarmSearchIndexTask> {
+    AsyncTask::with_optional_signal(PrewarmSearchIndexTask { path }, abort_signal)
 }
 
 /// 同步全文检索接口（对齐 Android NativeCore.search）

@@ -90,7 +90,21 @@ final class OfficeThumbnailChecks {
             }
             asyncResult.recycle();
 
-            // 3. 非法参数校验
+            // 3. 首屏解析路径：多页文档的封面与完整解析的首屏一致，且不承担整篇排版成本
+            Bitmap coverOnce = OfficeThumbnail.decode(context, pptxUri, 240, 180);
+            Bitmap coverTwice = OfficeThumbnail.decode(context, pptxUri, 240, 180);
+            if (coverOnce == null || coverTwice == null) {
+                throw new AssertionError("PPTX cover rendering returned null");
+            }
+            if (coverOnce.getWidth() != coverTwice.getWidth() || coverOnce.getHeight() != coverTwice.getHeight()) {
+                throw new AssertionError("Repeated PPTX covers must keep identical dimensions, got "
+                    + coverOnce.getWidth() + "x" + coverOnce.getHeight() + " and "
+                    + coverTwice.getWidth() + "x" + coverTwice.getHeight());
+            }
+            coverOnce.recycle();
+            coverTwice.recycle();
+
+            // 4. 非法参数校验
             try {
                 OfficeThumbnail.decode(null, uri, 100, 100);
                 throw new AssertionError("decode(null, uri) should throw IllegalArgumentException");
@@ -111,7 +125,7 @@ final class OfficeThumbnailChecks {
                 throw new AssertionError("decode with targetHeight=-1 should throw IllegalArgumentException");
             } catch (IllegalArgumentException ignored) { }
 
-            return "PASS OfficeThumbnailChecks synchronous and asynchronous thumbnail rendering passed\n";
+            return "PASS OfficeThumbnailChecks synchronous, asynchronous and repeated cover rendering passed\n";
         } finally {
             file.delete();
         }

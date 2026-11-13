@@ -27,7 +27,8 @@ export async function renderOfficeThumbnail(
     throw new Error(`Target width and height must be positive, got ${maxTargetWidth}x${maxTargetHeight}`);
   }
 
-  const doc: model.OfficeDocument = await NativeCore.parseDocumentAsync(filePath);
+  // 封面只取首页：走首屏解析，避免为一张缩略图承担整篇文档的解析成本
+  const doc: model.OfficeDocument = await NativeCore.parseDocumentFirstViewportAsync(filePath);
   if (doc.kind === 'PPTX') {
     return await renderPptxThumbnail(filePath, doc, maxTargetWidth, maxTargetHeight);
   } else if (doc.kind === 'DOCX') {

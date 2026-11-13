@@ -43,7 +43,8 @@ public enum OfficeThumbnail {
             throw OfficeError.invalidArguments("pageNumber must be >= 1, got \(pageNumber)")
         }
         let path = url.path
-        let doc = try NativeCore.parseDocument(at: path)
+        // 封面只取首页：走首屏解析，避免为一张缩略图承担整篇文档的解析成本
+        let doc = try NativeCore.parseFirstViewport(at: path)
         switch doc.kind {
         case .pptx:
             return try renderPptxThumbnail(filePath: path, doc: doc, pageIndex: pageNumber - 1, maxSize: maxSize)

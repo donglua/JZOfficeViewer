@@ -2,7 +2,7 @@ pub mod support;
 
 use jz_office_core::{
     clear_package_cache, evict_package_cache, model::Kind, parse_path, parse_path_to_json,
-    parse_reader, search_path, search_path_to_json, Package,
+    parse_reader, prewarm_search_index, search_path, search_path_to_json, Package,
 };
 use std::{
     fs,
@@ -195,6 +195,7 @@ fn pptx_color_fixture_matches_solid_reference_through_path_api() -> TestResult {
 fn search_path_to_json_contract_and_cache_across_all_formats() -> TestResult {
     // 1. PPTX: 检索 "first"（忽略大小写）
     let pptx_file = TemporaryFile::new("search.pptx", &archive(&pptx::parts())?)?;
+    // 打开/序列化文档不会预建搜索索引；首次搜索应自行按需建立。
     let _ = parse_path_to_json(&pptx_file.path)?;
     let raw_json = search_path_to_json(&pptx_file.path, "first")?;
     let parsed: serde_json::Value = serde_json::from_str(&raw_json)?;
@@ -212,8 +213,9 @@ fn search_path_to_json_contract_and_cache_across_all_formats() -> TestResult {
     // 空关键词返回空 JSON 数组
     assert_eq!(search_path_to_json(&pptx_file.path, "")?, "[]");
 
-    // 2. XLSX: 检索综合样例或基础表格
+    // 2. XLSX: 显式预热是可选优化，不影响后续检索结果。
     let xlsx_file = TemporaryFile::new("search.xlsx", &archive(&support::xlsx_showcase::parts())?)?;
+    prewarm_search_index(&xlsx_file.path)?;
     let xlsx_matches = search_path(&xlsx_file.path, "JZ")?;
     let xlsx_json: serde_json::Value =
         serde_json::from_str(&search_path_to_json(&xlsx_file.path, "JZ")?)?;

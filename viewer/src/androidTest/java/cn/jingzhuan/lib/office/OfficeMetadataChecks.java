@@ -85,7 +85,16 @@ final class OfficeMetadataChecks {
                 throw new AssertionError("OfficeMetadata.readAsync returned unexpected metadata");
             }
 
-            // 3. 空参数校验
+            // 3. 同一文件连续读取应复用底层解析结果，且返回值保持一致
+            OfficeMetadata first = OfficeMetadata.read(context, uri);
+            OfficeMetadata second = OfficeMetadata.read(context, uri);
+            if (!first.format.equals(second.format) || first.pageCount != second.pageCount
+                || first.width != second.width || first.height != second.height
+                || !first.sheetNames.equals(second.sheetNames) || !first.warnings.equals(second.warnings)) {
+                throw new AssertionError("Repeated metadata reads must agree");
+            }
+
+            // 4. 空参数校验
             try {
                 OfficeMetadata.read(null, uri);
                 throw new AssertionError("read(null, uri) should throw IllegalArgumentException");
@@ -96,7 +105,7 @@ final class OfficeMetadataChecks {
                 throw new AssertionError("read(context, null) should throw IllegalArgumentException");
             } catch (IllegalArgumentException ignored) { }
 
-            return "PASS OfficeMetadataChecks synchronous and asynchronous read passed\n";
+            return "PASS OfficeMetadataChecks synchronous, asynchronous and repeated read passed\n";
         } finally {
             file.delete();
         }

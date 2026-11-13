@@ -996,8 +996,8 @@ final class DocumentDecoder {
         return va;
     }
 
-    /** Zero-DOM single-pass JSON cursor over a String. */
-    private static final class Cursor {
+    /** Zero-DOM single-pass JSON cursor over a String. 由元数据解码器共用 */
+    static final class Cursor {
         private final String s;
         private final int len;
         private int pos;

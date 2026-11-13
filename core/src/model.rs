@@ -1,6 +1,11 @@
 pub use crate::spreadsheet::{Cell, CellRange, CellStyle, Sheet};
 use serde::Serialize;
 
+/// 当前跨语言模型版本，需与 Android `DocumentDecoder` 及鸿蒙 `NativeCore` / `OfficeModel` 的校验值同步
+pub const fn schema_version() -> u32 {
+    9
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum Kind {
     DOCX,
@@ -187,7 +192,7 @@ pub struct Document {
 impl Document {
     pub fn new(kind: Kind) -> Self {
         Self {
-            schema_version: 9,
+            schema_version: schema_version(),
             kind,
             width: 595.0,
             pages: Vec::new(),

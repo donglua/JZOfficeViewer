@@ -11,7 +11,12 @@ use std::time::SystemTime;
 /// 单次全文检索返回的最大命中条数上限，防止超短词在巨型文档中产生过大 JSON 载荷
 pub const MAX_SEARCH_MATCHES: usize = 1_000;
 
-const MAX_CACHED_DOCUMENTS: usize = 4;
+/// 进程内最多保留的全文检索索引数量。
+pub const MAX_CACHED_SEARCH_INDEXES: usize = 4;
+/// 进程内缓存的检索文本总字节上限，避免少量大型文档长期占用过多内存。
+pub const MAX_CACHED_SEARCH_INDEX_BYTES: usize = 16 * 1024 * 1024;
+/// 单份索引允许缓存的最大文本条目数，限制大量短文本产生的索引元数据开销。
+pub const MAX_CACHED_SEARCH_INDEX_ENTRIES: usize = 100_000;
 const SNIPPET_CONTEXT_CHARS: usize = 20;
 const SNIPPET_MATCH_MAX_CHARS: usize = 60;
 
@@ -29,6 +34,7 @@ struct SearchEntry {
 #[derive(Debug, Clone, Default)]
 pub struct SearchIndex {
     entries: Vec<SearchEntry>,
+    text_bytes: usize,
 }
 
 struct CachedIndexEntry {
@@ -41,6 +47,7 @@ struct CachedIndexEntry {
 #[derive(Default)]
 struct IndexCache {
     entries: VecDeque<Arc<CachedIndexEntry>>,
+    text_bytes: usize,
 }
 
 static GLOBAL_INDEX_CACHE: OnceLock<Mutex<IndexCache>> = OnceLock::new();
@@ -52,27 +59,24 @@ fn get_cache() -> &'static Mutex<IndexCache> {
 pub(crate) fn clear_cache() {
     if let Ok(mut cache) = get_cache().lock() {
         cache.entries.clear();
+        cache.text_bytes = 0;
     }
 }
 
 pub(crate) fn evict_cache(path: &Path) {
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if let Ok(mut cache) = get_cache().lock() {
+        let removed_bytes: usize = cache
+            .entries
+            .iter()
+            .filter(|item| item.path == canonical || item.path == path)
+            .map(|item| item.index.text_bytes)
+            .sum();
         cache
             .entries
             .retain(|item| item.path != canonical && item.path != path);
+        cache.text_bytes = cache.text_bytes.saturating_sub(removed_bytes);
     }
-}
-
-pub(crate) fn cache_document(path: &Path, document: &Document) {
-    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let Ok(metadata) = fs::metadata(&canonical) else {
-        return;
-    };
-    let len = metadata.len();
-    let modified = metadata.modified().ok();
-    let index = Arc::new(SearchIndex::from_document(document));
-    store_in_cache(canonical, len, modified, index);
 }
 
 fn store_in_cache(
@@ -81,11 +85,29 @@ fn store_in_cache(
     modified: Option<SystemTime>,
     index: Arc<SearchIndex>,
 ) {
+    if index.text_bytes > MAX_CACHED_SEARCH_INDEX_BYTES
+        || index.entries.len() > MAX_CACHED_SEARCH_INDEX_ENTRIES
+    {
+        return;
+    }
     if let Ok(mut cache) = get_cache().lock() {
+        let replaced_bytes: usize = cache
+            .entries
+            .iter()
+            .filter(|item| item.path == canonical)
+            .map(|item| item.index.text_bytes)
+            .sum();
         cache.entries.retain(|item| item.path != canonical);
-        while cache.entries.len() >= MAX_CACHED_DOCUMENTS {
-            cache.entries.pop_front();
+        cache.text_bytes = cache.text_bytes.saturating_sub(replaced_bytes);
+        while cache.entries.len() >= MAX_CACHED_SEARCH_INDEXES
+            || cache.text_bytes.saturating_add(index.text_bytes) > MAX_CACHED_SEARCH_INDEX_BYTES
+        {
+            let Some(item) = cache.entries.pop_front() else {
+                break;
+            };
+            cache.text_bytes = cache.text_bytes.saturating_sub(item.index.text_bytes);
         }
+        cache.text_bytes = cache.text_bytes.saturating_add(index.text_bytes);
         cache.entries.push_back(Arc::new(CachedIndexEntry {
             path: canonical,
             len,
@@ -129,6 +151,14 @@ fn get_or_build_index(path: &Path) -> Result<Arc<SearchIndex>> {
     Ok(index)
 }
 
+/// 显式预热指定路径的全文检索索引。
+///
+/// 默认解析不会建立索引；调用方仅应在确认即将搜索且有空闲资源时调用本函数。
+pub fn prewarm_search_index(path: &Path) -> Result<()> {
+    let _ = get_or_build_index(path)?;
+    Ok(())
+}
+
 /// 在已解析的 `Document` 内存模型中执行大小写不敏感的全文检索
 #[must_use]
 pub fn search_document(document: &Document, query: &str) -> Vec<SearchMatch> {
@@ -138,12 +168,12 @@ pub fn search_document(document: &Document, query: &str) -> Vec<SearchMatch> {
     SearchIndex::from_document(document).search(query)
 }
 
-/// 在指定路径的文档中执行大小写不敏感的全文检索（自动复用最近解析的轻量文本索引缓存）
+/// 在指定路径的文档中执行大小写不敏感的全文检索（首次检索时按需建立轻量文本索引）
 pub fn search_path(path: &Path, query: &str) -> Result<Vec<SearchMatch>> {
-    let index = get_or_build_index(path)?;
     if query.is_empty() {
         return Ok(Vec::new());
     }
+    let index = get_or_build_index(path)?;
     Ok(index.search(query))
 }
 
@@ -199,7 +229,11 @@ impl SearchIndex {
                 }
             }
         }
-        Self { entries }
+        let text_bytes = entries.iter().map(|entry| entry.text.len()).sum();
+        Self {
+            entries,
+            text_bytes,
+        }
     }
 
     /// 在索引中检索 `query`（忽略大小写），返回最多 `MAX_SEARCH_MATCHES` 条命中结果
@@ -577,6 +611,59 @@ mod tests {
         assert_eq!(matches[0].end_char, 12);
         assert_eq!(matches[1].start_char, 20);
         assert_eq!(matches[1].end_char, 26);
+    }
+
+    #[test]
+    fn search_index_tracks_retained_text_bytes() {
+        let mut doc = Document::new(Kind::XLSX);
+        doc.sheets.push(Sheet {
+            name: "Sheet1".to_owned(),
+            row_heights: vec![20.0],
+            column_widths: vec![64.0],
+            cells: vec![Cell {
+                row: 0,
+                column: 0,
+                text: "检索文本".to_owned(),
+                style: 0,
+                numeric: false,
+            }],
+            merges: Vec::new(),
+            geometry: None,
+        });
+
+        let index = SearchIndex::from_document(&doc);
+        assert_eq!(index.text_bytes, "检索文本".len());
+    }
+
+    #[test]
+    fn oversized_indexes_are_not_retained_in_the_cache() {
+        let mut doc = Document::new(Kind::XLSX);
+        doc.sheets.push(Sheet {
+            name: "Sheet1".to_owned(),
+            row_heights: vec![20.0],
+            column_widths: vec![64.0],
+            cells: vec![Cell {
+                row: 0,
+                column: 0,
+                text: "x".repeat(MAX_CACHED_SEARCH_INDEX_BYTES + 1),
+                style: 0,
+                numeric: false,
+            }],
+            merges: Vec::new(),
+            geometry: None,
+        });
+        let index = Arc::new(SearchIndex::from_document(&doc));
+        let path = PathBuf::from("oversized-search-index.xlsx");
+
+        clear_cache();
+        store_in_cache(path.clone(), 1, None, Arc::clone(&index));
+        let cache = get_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.text_bytes, 0);
+        drop(cache);
+        assert_eq!(index.search("xxx").len(), MAX_SEARCH_MATCHES);
     }
 
     #[test]

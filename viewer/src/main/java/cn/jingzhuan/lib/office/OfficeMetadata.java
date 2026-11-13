@@ -67,15 +67,18 @@ public final class OfficeMetadata {
     /**
      * 同步读取指定文档的元数据。
      * 严禁在主线程执行，必须在后台工作线程中调用。
+     *
+     * 只读取判定格式与页数所需的少量 ZIP 部件，不构建正文、样式与几何模型；
+     * 结果按 文件路径 + 大小 + 修改时间 复用，连续读取同一文件不会重复解析。
      */
     public static OfficeMetadata read(Context context, Uri uri) throws IOException {
         if (context == null || uri == null) throw new IllegalArgumentException("Context and URI cannot be null");
-        OfficePackage pkg = null;
+        OfficeCache.Entry cache = null;
         try {
-            pkg = OfficePackage.open(context.getApplicationContext(), uri);
-            return fromDocument(pkg.document);
+            cache = OfficePackage.materialize(context.getApplicationContext(), uri);
+            return MetadataDecoder.decode(NativeCore.metadata(cache.getFile().getAbsolutePath()));
         } finally {
-            if (pkg != null) pkg.close();
+            if (cache != null) cache.close();
         }
     }
 

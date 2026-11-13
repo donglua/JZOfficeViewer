@@ -70,6 +70,101 @@ pub unsafe extern "C" fn jz_office_parse_path(path_utf8: *const c_char) -> JZStr
     }
 }
 
+/// 首屏解析指定路径的 Office 文档：PPTX 只渲染首张幻灯片，XLSX 只解析首个工作表，
+/// DOCX 只解析首屏正文块，用于封面缩略图。
+///
+/// # Safety
+/// `path_utf8` 必须为有效的以 `\0` 结尾的 C 字符串指针；返回值中的 `data` 或 `error` 必须通过 `jz_office_free_string` 释放。
+#[no_mangle]
+pub unsafe extern "C" fn jz_office_parse_first_viewport(
+    path_utf8: *const c_char,
+) -> JZStringResult {
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<String, String> {
+        // SAFETY: 委托 c_str_to_string 检查空指针并按 C 字符串解析。
+        let path_str = unsafe { c_str_to_string(path_utf8)? };
+        jz_office_core::parse_path_scoped_to_json(
+            Path::new(&path_str),
+            jz_office_core::Scope::FirstViewport,
+        )
+        .map_err(|e| e.to_string())
+    }));
+
+    match outcome {
+        Ok(Ok(json)) => JZStringResult {
+            data: into_c_string_ptr(json),
+            error: std::ptr::null_mut(),
+        },
+        Ok(Err(err)) => JZStringResult {
+            data: std::ptr::null_mut(),
+            error: into_c_string_ptr(err),
+        },
+        Err(_) => JZStringResult {
+            data: std::ptr::null_mut(),
+            error: into_c_string_ptr("Document parser panicked".to_owned()),
+        },
+    }
+}
+
+/// 轻量元数据速读：只读取判定格式与页数所需的部件，返回与完整解析同形的 JSON 模型。
+///
+/// # Safety
+/// `path_utf8` 必须为有效的以 `\0` 结尾的 C 字符串指针；返回值中的 `data` 或 `error` 必须通过 `jz_office_free_string` 释放。
+#[no_mangle]
+pub unsafe extern "C" fn jz_office_metadata_path(path_utf8: *const c_char) -> JZStringResult {
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<String, String> {
+        // SAFETY: 委托 c_str_to_string 检查空指针并按 C 字符串解析。
+        let path_str = unsafe { c_str_to_string(path_utf8)? };
+        jz_office_core::metadata_path_to_json(Path::new(&path_str)).map_err(|e| e.to_string())
+    }));
+
+    match outcome {
+        Ok(Ok(json)) => JZStringResult {
+            data: into_c_string_ptr(json),
+            error: std::ptr::null_mut(),
+        },
+        Ok(Err(err)) => JZStringResult {
+            data: std::ptr::null_mut(),
+            error: into_c_string_ptr(err),
+        },
+        Err(_) => JZStringResult {
+            data: std::ptr::null_mut(),
+            error: into_c_string_ptr("Document metadata reader panicked".to_owned()),
+        },
+    }
+}
+
+/// 显式预热指定路径的全文检索索引。默认解析不会调用；仅应由确认即将搜索的调用方使用。
+///
+/// # Safety
+/// `path_utf8` 必须为有效的以 `\0` 结尾的 C 字符串指针；返回值中的 `data` 或 `error` 必须通过 `jz_office_free_string` 释放。
+#[no_mangle]
+pub unsafe extern "C" fn jz_office_prewarm_search_index(
+    path_utf8: *const c_char,
+) -> JZStringResult {
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<String, String> {
+        // SAFETY: 委托 c_str_to_string 检查空指针并按 C 字符串解析。
+        let path_str = unsafe { c_str_to_string(path_utf8)? };
+        jz_office_core::prewarm_search_index(Path::new(&path_str))
+            .map(|()| "true".to_owned())
+            .map_err(|e| e.to_string())
+    }));
+
+    match outcome {
+        Ok(Ok(json)) => JZStringResult {
+            data: into_c_string_ptr(json),
+            error: std::ptr::null_mut(),
+        },
+        Ok(Err(err)) => JZStringResult {
+            data: std::ptr::null_mut(),
+            error: into_c_string_ptr(err),
+        },
+        Err(_) => JZStringResult {
+            data: std::ptr::null_mut(),
+            error: into_c_string_ptr("Document search index prewarm panicked".to_owned()),
+        },
+    }
+}
+
 /// 在指定路径的 Office 文档中执行全文检索（忽略大小写），返回 `SearchMatch` 数组的 JSON 字符串。
 ///
 /// # Safety
