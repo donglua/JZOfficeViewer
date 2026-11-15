@@ -1,7 +1,7 @@
 mod chart;
 mod chart_data;
-mod colors;
-mod drawing;
+pub(crate) mod colors;
+pub(crate) mod drawing;
 mod geometry;
 mod gradient;
 mod inheritance;
@@ -11,7 +11,7 @@ mod path;
 mod preset_geometry;
 mod render;
 mod round_rect;
-mod styles;
+pub(crate) mod styles;
 mod table;
 mod text;
 mod text_fill;

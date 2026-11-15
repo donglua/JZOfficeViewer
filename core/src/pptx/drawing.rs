@@ -40,6 +40,26 @@ pub(super) fn prepare(element: &mut Element, page: &Page, doc: &mut Document) ->
     true
 }
 
+/// Computes local rotation/flip transform (without translating by `element.x`/`element.y`)
+/// and linear gradient endpoints for DOCX shapes rendered within external flow coordinates.
+pub(crate) fn prepare_local(element: &mut Element) {
+    if element.rotation != 0.0 || element.flip_h || element.flip_v {
+        let (x, y) = (element.x, element.y);
+        element.x = 0.0;
+        element.y = 0.0;
+        element.transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let local = element_transform(element);
+        element.x = x;
+        element.y = y;
+        if local.iter().all(|v| v.is_finite() && v.abs() <= 100_000.0) {
+            element.transform = local;
+        }
+    }
+    if let Some(fill) = &mut element.fill_gradient {
+        fill.points = gradient_points(fill, [element.width, element.height]);
+    }
+}
+
 fn element_transform(element: &Element) -> [f32; 6] {
     let [a, b, c, d, tx, ty] = element.transform;
     let translated = [

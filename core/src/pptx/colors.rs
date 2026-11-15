@@ -4,36 +4,70 @@ use crate::xml::{self, Node};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-pub(super) struct Theme {
-    source: Option<Rc<Part>>,
+enum ThemeSource {
+    Part(Rc<Part>),
+    Node(Node),
+}
+
+impl ThemeSource {
+    fn root(&self) -> &Node {
+        match self {
+            Self::Part(part) => &part.root,
+            Self::Node(node) => node,
+        }
+    }
+}
+
+pub(crate) struct Theme {
+    source: Option<ThemeSource>,
     colors: HashMap<String, u32>,
     mapping: HashMap<String, String>,
 }
 
-impl Theme {
-    pub fn new(source: Option<Rc<Part>>, doc: &mut Document) -> Self {
-        let mut result = Self {
-            source: source.clone(),
-            colors: HashMap::new(),
-            mapping: HashMap::new(),
-        };
-        result.colors.insert("dk1".to_owned(), 0xff000000);
-        result.colors.insert("lt1".to_owned(), 0xffffffff);
+impl Default for Theme {
+    fn default() -> Self {
+        let mut colors = HashMap::new();
+        colors.insert("dk1".to_owned(), 0xff00_0000);
+        colors.insert("lt1".to_owned(), 0xffff_ffff);
+        let mut mapping = HashMap::new();
         for (key, value) in [
             ("tx1", "dk1"),
             ("bg1", "lt1"),
             ("tx2", "dk2"),
             ("bg2", "lt2"),
         ] {
-            result.mapping.insert(key.to_owned(), value.to_owned());
+            mapping.insert(key.to_owned(), value.to_owned());
         }
-        if let Some(scheme) = source
-            .as_deref()
-            .and_then(|p| p.root.child("themeElements"))
+        Self {
+            source: None,
+            colors,
+            mapping,
+        }
+    }
+}
+
+impl Theme {
+    pub(super) fn new(source: Option<Rc<Part>>, doc: &mut Document) -> Self {
+        Self::init(source.map(ThemeSource::Part), doc)
+    }
+
+    pub(crate) fn from_node(root: Option<&Node>, doc: &mut Document) -> Self {
+        Self::init(root.cloned().map(ThemeSource::Node), doc)
+    }
+
+    fn init(source: Option<ThemeSource>, doc: &mut Document) -> Self {
+        let mut result = Self {
+            source,
+            ..Self::default()
+        };
+        if let Some(scheme) = result
+            .source
+            .as_ref()
+            .and_then(|s| s.root().child("themeElements"))
             .and_then(|n| n.child("clrScheme"))
         {
             for entry in &scheme.children {
-                let color = result.color(entry, 0xff202124, doc);
+                let color = result.color(entry, 0xff20_2124, doc);
                 result.colors.insert(entry.name.clone(), color);
             }
         }
@@ -123,8 +157,8 @@ impl Theme {
 
     pub fn format_list(&self, name: &str) -> Option<&Node> {
         self.source
-            .as_deref()?
-            .root
+            .as_ref()?
+            .root()
             .child("themeElements")?
             .child("fmtScheme")?
             .child(name)

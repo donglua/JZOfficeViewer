@@ -3,7 +3,7 @@ use super::geometry::points;
 use crate::model::{Document, Element, ElementType};
 use crate::xml::Node;
 
-pub(super) struct Styles<'a> {
+pub(crate) struct Styles<'a> {
     pub doc: &'a mut Document,
     pub theme: &'a Theme,
 }

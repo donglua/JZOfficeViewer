@@ -189,16 +189,25 @@ impl Flow {
             self.current.after = 0.0;
             self.flush()?;
         }
-        let mut img_para = self.template.clone();
-        img_para.image = image.image;
-        img_para.image_width = Some(image.width);
-        img_para.image_height = Some(image.height);
-        self.push(Element {
-            width: self.width,
-            padding: 0.0,
-            paragraphs: vec![img_para],
-            ..Element::default()
-        })?;
+        if image.image.is_none() && !image.paragraphs.is_empty() {
+            self.push(Element {
+                width: self.width,
+                padding: 0.0,
+                paragraphs: image.paragraphs,
+                ..Element::default()
+            })?;
+        } else {
+            let mut img_para = self.template.clone();
+            img_para.image = image.image;
+            img_para.image_width = Some(image.width);
+            img_para.image_height = Some(image.height);
+            self.push(Element {
+                width: self.width,
+                padding: 0.0,
+                paragraphs: vec![img_para],
+                ..Element::default()
+            })?;
+        }
         self.current = self.template.clone();
         self.current.before = 0.0;
         self.current.bullet.clear();

@@ -15,6 +15,7 @@ pub(super) struct Styles {
     default_paragraph: String,
     pub default_character: String,
     pub theme_fonts: super::theme::ThemeFonts,
+    pub theme: crate::pptx::colors::Theme,
     pub line_pitch: f32,
 }
 
@@ -34,6 +35,7 @@ impl Styles {
             None
         };
         result.theme_fonts = super::theme::ThemeFonts::parse(theme_root.as_ref());
+        result.theme = crate::pptx::colors::Theme::from_node(theme_root.as_ref(), document);
         let Some(root) = package.optional_xml(&part)? else {
             return Ok(result);
         };

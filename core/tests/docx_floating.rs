@@ -7,32 +7,47 @@ use support::checks;
 use support::package::{archive, content_types, relationships, xml, Parts, TestResult, PNG};
 
 fn docx_parts(body: &str) -> Parts {
+    docx_parts_with_theme(body, None)
+}
+
+fn docx_parts_with_theme(body: &str, theme_xml: Option<&str>) -> Parts {
     let document = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
- xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+ xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+ xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+ xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">
   <w:body>{body}<w:sectPr><w:pgSz w:w="11900" w:h="16840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body>
 </w:document>"#
     );
-    vec![
-        xml(
-            "[Content_Types].xml",
-            &content_types(&[("word/document.xml", "wordprocessingml.document.main")]),
-        ),
+    let mut rels = vec![("rImage", "image", "media/pixel.png")];
+    let mut types = vec![("word/document.xml", "wordprocessingml.document.main")];
+    if theme_xml.is_some() {
+        rels.push(("rTheme", "theme", "theme/theme1.xml"));
+        types.push(("word/theme/theme1.xml", "theme"));
+    }
+    let mut parts = vec![
+        xml("[Content_Types].xml", &content_types(&types)),
         xml(
             "_rels/.rels",
             &relationships(&[("rOffice", "officeDocument", "word/document.xml")]),
         ),
         xml("word/document.xml", &document),
-        xml(
-            "word/_rels/document.xml.rels",
-            &relationships(&[("rImage", "image", "media/pixel.png")]),
-        ),
+        xml("word/_rels/document.xml.rels", &relationships(&rels)),
         ("word/media/pixel.png", PNG.to_vec()),
-    ]
+    ];
+    if let Some(theme) = theme_xml {
+        parts.push(xml("word/theme/theme1.xml", theme));
+    }
+    parts
+}
+
+fn parse_docx_with_theme(body: &str, theme_xml: &str) -> TestResult<Document> {
+    let bytes = archive(&docx_parts_with_theme(body, Some(theme_xml)))?;
+    Ok(parse_reader(Cursor::new(bytes))?)
 }
 
 fn parse_docx(body: &str) -> TestResult<Document> {
@@ -212,5 +227,121 @@ fn anchor_inside_paragraph_preserves_unbroken_paragraph_flow() -> TestResult {
         checks::text(&doc.blocks[1].paragraphs),
         "First part second part"
     );
+    Ok(())
+}
+
+#[test]
+fn parses_wps_shape_with_theme_gradient_and_group_coordinates() -> TestResult {
+    let theme = r#"<?xml version="1.0" encoding="UTF-8"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office">
+  <a:themeElements>
+    <a:clrScheme name="Custom">
+      <a:dk1><a:srgbClr val="112233"/></a:dk1>
+      <a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>
+      <a:dk2><a:srgbClr val="445566"/></a:dk2>
+      <a:lt2><a:srgbClr val="EEEEEE"/></a:lt2>
+      <a:accent1><a:srgbClr val="336699"/></a:accent1>
+      <a:accent2><a:srgbClr val="CC4422"/></a:accent2>
+    </a:clrScheme>
+    <a:fmtScheme name="Office">
+      <a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>
+      <a:lnStyleLst><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst>
+    </a:fmtScheme>
+  </a:themeElements>
+</a:theme>"#;
+
+    let grad_shape = r#"<w:p><w:r><w:drawing><wp:anchor behindDoc="1">
+  <wp:positionH relativeFrom="column"><wp:align>left</wp:align></wp:positionH>
+  <wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>
+  <wp:extent cx="1270000" cy="635000"/>
+  <wp:wrapNone/>
+  <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+    <wps:wsp>
+      <wps:spPr>
+        <a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm>
+        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+        <a:gradFill>
+          <a:gsLst>
+            <a:gs pos="0"><a:schemeClr val="accent1"/></a:gs>
+            <a:gs pos="100000"><a:schemeClr val="accent2"/></a:gs>
+          </a:gsLst>
+          <a:lin ang="0" scaled="1"/>
+        </a:gradFill>
+        <a:ln w="12700"><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:ln>
+      </wps:spPr>
+    </wps:wsp>
+  </a:graphicData></a:graphic>
+</wp:anchor></w:drawing></w:r></w:p>"#;
+
+    let group_shapes = r#"<w:p><w:r><w:drawing><wp:anchor distL="127000" distR="127000">
+  <wp:positionH relativeFrom="column"><wp:align>left</wp:align></wp:positionH>
+  <wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>
+  <wp:extent cx="2540000" cy="1270000"/>
+  <wp:wrapSquare wrapText="bothSides"/>
+  <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">
+    <wpg:wgp>
+      <wpg:grpSpPr>
+        <a:xfrm>
+          <a:off x="0" y="0"/><a:ext cx="2540000" cy="1270000"/>
+          <a:chOff x="0" y="0"/><a:chExt cx="2540000" cy="1270000"/>
+        </a:xfrm>
+      </wpg:grpSpPr>
+      <wps:wsp>
+        <wps:spPr>
+          <a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="1270000"/></a:xfrm>
+          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+          <a:solidFill><a:schemeClr val="accent1"/></a:solidFill>
+        </wps:spPr>
+      </wps:wsp>
+      <wps:wsp>
+        <wps:spPr>
+          <a:xfrm><a:off x="1270000" y="254000"/><a:ext cx="1270000" cy="635000"/></a:xfrm>
+          <a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom>
+          <a:solidFill><a:schemeClr val="accent2"/></a:solidFill>
+        </wps:spPr>
+        <wps:txbx><w:txbxContent>
+          <w:p><w:r><w:t>Group Pill</w:t></w:r></w:p>
+        </w:txbxContent></wps:txbx>
+      </wps:wsp>
+    </wpg:wgp>
+  </a:graphicData></a:graphic>
+</wp:anchor></w:drawing></w:r></w:p>"#;
+
+    let body = format!("{grad_shape}{group_shapes}");
+    let doc = parse_docx_with_theme(&body, theme)?;
+    assert_eq!(doc.blocks.len(), 3);
+
+    // Shape 0: theme gradient + behindDoc + wrapNone
+    let grad = &doc.blocks[0];
+    assert!(matches!(grad.kind, ElementType::RECT));
+    assert_eq!(grad.wrap_mode, WrapMode::None);
+    assert!(grad.behind_doc);
+    checks::near(grad.width, 100.0);
+    checks::near(grad.height, 50.0);
+    assert_eq!(grad.stroke, 0xFF33_6699);
+    let fill_grad = grad.fill_gradient.as_ref().ok_or("missing gradient fill")?;
+    assert_eq!(fill_grad.colors, vec![0xFF33_6699, 0xFFCC_4422]);
+    assert!(fill_grad.points[2] > fill_grad.points[0]);
+
+    // Shape 1 & 2: group children mapped into (margin_left = 72pt) anchor coordinates
+    let child_rect = &doc.blocks[1];
+    assert!(matches!(child_rect.kind, ElementType::RECT));
+    assert_eq!(child_rect.wrap_mode, WrapMode::Square);
+    assert_eq!(child_rect.fill, 0xFF33_6699);
+    checks::near(child_rect.x, 72.0);
+    checks::near(child_rect.y, 0.0);
+    checks::near(child_rect.width, 100.0);
+    checks::near(child_rect.height, 100.0);
+
+    let child_ellipse = &doc.blocks[2];
+    assert!(matches!(child_ellipse.kind, ElementType::ELLIPSE));
+    assert_eq!(child_ellipse.wrap_mode, WrapMode::Square);
+    assert_eq!(child_ellipse.fill, 0xFFCC_4422);
+    checks::near(child_ellipse.x, 72.0 + 100.0);
+    checks::near(child_ellipse.y, 20.0);
+    checks::near(child_ellipse.width, 100.0);
+    checks::near(child_ellipse.height, 50.0);
+    assert_eq!(checks::text(&child_ellipse.paragraphs), "Group Pill");
+
     Ok(())
 }
