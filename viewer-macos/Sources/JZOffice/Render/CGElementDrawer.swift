@@ -426,9 +426,50 @@ public enum CGElementDrawer {
         }
     }
 
+    // MARK: - DOCX 浮动布局与文字环绕
+
+    public enum DocxWrapSide: Int, Sendable, Equatable {
+        case left = -1
+        case right = 1
+    }
+
+    public struct DocxWrapObstacle: Sendable, Equatable {
+        public var left: CGFloat
+        public var right: CGFloat
+        public var top: CGFloat
+        public var bottom: CGFloat
+        public var side: DocxWrapSide
+
+        public init(left: CGFloat, right: CGFloat, top: CGFloat, bottom: CGFloat, side: DocxWrapSide) {
+            self.left = left
+            self.right = right
+            self.top = top
+            self.bottom = bottom
+            self.side = side
+        }
+    }
+
+    public struct DocxBlockPlacement: Sendable {
+        public let elementIndex: Int
+        public let element: OfficeElement
+        public let frame: CGRect
+        public let isFloating: Bool
+        public let behindDoc: Bool
+        public let obstacles: [DocxWrapObstacle]
+    }
+
+    public struct DocxLayoutPlan: Sendable {
+        public let placements: [DocxBlockPlacement]
+        public let zOrder: [Int]
+        public let yOffsets: [CGFloat]
+        public let contentHeight: CGFloat
+    }
+
     // MARK: - CoreText 段落排版与绘制
 
-    private struct LaidOutLine {
+    internal struct LaidOutLine {
+        let paraIndex: Int
+        let localCharRange: NSRange
         let ctLine: CTLine
         let width: CGFloat
         let ascent: CGFloat
@@ -451,20 +492,58 @@ public enum CGElementDrawer {
         let paragraphHeight: CGFloat
     }
 
+    internal static func resolveLineIndents(
+        lineIndex: Int,
+        firstIndent: CGFloat,
+        baseIndent: CGFloat,
+        rightIndent: CGFloat,
+        lineTop: CGFloat,
+        estLineH: CGFloat,
+        availableWidth: CGFloat,
+        wrap: Bool,
+        obstacles: [DocxWrapObstacle]
+    ) -> (left: CGFloat, right: CGFloat) {
+        var left = lineIndex == 0 ? firstIndent : baseIndent
+        var right = rightIndent
+        if wrap && !obstacles.isEmpty {
+            let lineBottom = lineTop + estLineH
+            for obs in obstacles where obs.bottom > lineTop && obs.top < lineBottom {
+                switch obs.side {
+                case .left:
+                    left = max(left, max(0, obs.right))
+                case .right:
+                    right = max(right, max(0, availableWidth - obs.left))
+                }
+            }
+            let minLineW = max(1, min(availableWidth, 24))
+            let maxSum = max(0, availableWidth - minLineW)
+            if left + right > maxSum {
+                left = min(left, maxSum)
+                right = min(right, max(0, maxSum - left))
+            }
+        }
+        return (left, right)
+    }
+
     public static func measureParagraphsHeight(
         _ paragraphs: [OfficeParagraph],
         availableWidth: CGFloat,
-        wrap: Bool
+        wrap: Bool,
+        obstacles: [DocxWrapObstacle] = []
     ) -> CGFloat {
-        let lines = layoutParagraphs(paragraphs, availableWidth: availableWidth, wrap: wrap)
+        let lines = layoutParagraphs(paragraphs, availableWidth: availableWidth, wrap: wrap, obstacles: obstacles)
         return lines.reduce(0) { $0 + $1.before + $1.height + $1.after }
     }
 
-    private static func drawParagraphs(in ctx: CGContext, element: OfficeElement) {
+    private static func drawParagraphs(
+        in ctx: CGContext,
+        element: OfficeElement,
+        obstacles: [DocxWrapObstacle] = []
+    ) {
         let padding = max(0, element.padding)
         let availW = max(1, element.width - padding * 2)
         let wrap = element.textWrap
-        let lines = layoutParagraphs(element.paragraphs, availableWidth: availW, wrap: wrap)
+        let lines = layoutParagraphs(element.paragraphs, availableWidth: availW, wrap: wrap, obstacles: obstacles)
         guard !lines.isEmpty else { return }
 
         let totalH = lines.reduce(0) { $0 + $1.before + $1.height + $1.after }
@@ -589,33 +668,52 @@ public enum CGElementDrawer {
         ctx.restoreGState()
     }
 
-    private static func layoutParagraphs(
+    internal static func layoutParagraphs(
         _ paragraphs: [OfficeParagraph],
         availableWidth: CGFloat,
-        wrap: Bool
+        wrap: Bool,
+        obstacles: [DocxWrapObstacle] = []
     ) -> [LaidOutLine] {
         var result: [LaidOutLine] = []
-        for para in paragraphs {
+        var flowY: CGFloat = 0
+        for (pIdx, para) in paragraphs.enumerated() {
             let baseIndent = max(0, para.indent)
             let firstIndent = max(0, baseIndent + para.firstLineIndent)
             let rightIndent = max(0, para.rightIndent)
+            let paraBefore = max(0, para.before)
+            let paraAfter = max(0, para.after)
+            flowY += paraBefore
 
             let attrString = buildAttributedString(for: para)
+            let defaultSize = para.runs.first?.size ?? 12
+            let estLineH = computeLineHeight(para: para, naturalHeight: max(10, defaultSize * 1.2))
             guard attrString.length > 0 else {
-                let defaultSize = para.runs.first?.size ?? 12
                 let emptyLine = CTLineCreateWithAttributedString(NSAttributedString(string: " "))
                 let h = computeLineHeight(para: para, naturalHeight: defaultSize * 1.2)
+                let (leftInd, rightInd) = resolveLineIndents(
+                    lineIndex: 0,
+                    firstIndent: firstIndent,
+                    baseIndent: baseIndent,
+                    rightIndent: rightIndent,
+                    lineTop: flowY,
+                    estLineH: h,
+                    availableWidth: availableWidth,
+                    wrap: wrap,
+                    obstacles: obstacles
+                )
                 result.append(LaidOutLine(
+                    paraIndex: pIdx,
+                    localCharRange: NSRange(location: 0, length: 0),
                     ctLine: emptyLine,
                     width: 0,
                     ascent: defaultSize * 0.8,
                     descent: defaultSize * 0.2,
                     height: h,
                     alignment: para.alignment,
-                    leftIndent: firstIndent,
-                    rightIndent: rightIndent,
-                    before: max(0, para.before),
-                    after: max(0, para.after),
+                    leftIndent: leftInd,
+                    rightIndent: rightInd,
+                    before: paraBefore,
+                    after: paraAfter,
                     isLast: true,
                     paraBackground: para.background,
                     borderTop: para.borderTop,
@@ -627,6 +725,7 @@ public enum CGElementDrawer {
                     isParagraphEnd: true,
                     paragraphHeight: h
                 ))
+                flowY += h + paraAfter
                 continue
             }
 
@@ -637,8 +736,18 @@ public enum CGElementDrawer {
             var paraLines: [LaidOutLine] = []
 
             while startIdx < totalLen {
-                let leftInd = lineIndex == 0 ? firstIndent : baseIndent
-                let limitW = wrap ? Double(max(8, availableWidth - leftInd - rightIndent)) : 1_000_000.0
+                let (leftInd, rightInd) = resolveLineIndents(
+                    lineIndex: lineIndex,
+                    firstIndent: firstIndent,
+                    baseIndent: baseIndent,
+                    rightIndent: rightIndent,
+                    lineTop: flowY,
+                    estLineH: estLineH,
+                    availableWidth: availableWidth,
+                    wrap: wrap,
+                    obstacles: obstacles
+                )
+                let limitW = wrap ? Double(max(min(availableWidth, 8), availableWidth - leftInd - rightInd)) : 1_000_000.0
                 let count = max(1, CTTypesetterSuggestLineBreak(typesetter, startIdx, limitW))
                 let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: startIdx, length: count))
 
@@ -652,6 +761,8 @@ public enum CGElementDrawer {
                 let isFirst = startIdx == 0
                 let isLast = (startIdx + count) >= totalLen
                 paraLines.append(LaidOutLine(
+                    paraIndex: pIdx,
+                    localCharRange: NSRange(location: startIdx, length: count),
                     ctLine: ctLine,
                     width: w,
                     ascent: ascent,
@@ -659,9 +770,9 @@ public enum CGElementDrawer {
                     height: lineH,
                     alignment: para.alignment,
                     leftIndent: leftInd,
-                    rightIndent: rightIndent,
-                    before: isFirst ? max(0, para.before) : 0,
-                    after: isLast ? max(0, para.after) : 0,
+                    rightIndent: rightInd,
+                    before: isFirst ? paraBefore : 0,
+                    after: isLast ? paraAfter : 0,
                     isLast: isLast,
                     paraBackground: para.background,
                     borderTop: para.borderTop,
@@ -673,13 +784,17 @@ public enum CGElementDrawer {
                     isParagraphEnd: isLast,
                     paragraphHeight: 0
                 ))
+                flowY += lineH
                 startIdx += count
                 lineIndex += 1
             }
 
+            flowY += paraAfter
             let paraH = paraLines.reduce(0) { $0 + $1.height }
             for (i, pl) in paraLines.enumerated() {
                 result.append(LaidOutLine(
+                    paraIndex: pl.paraIndex,
+                    localCharRange: pl.localCharRange,
                     ctLine: pl.ctLine,
                     width: pl.width,
                     ascent: pl.ascent,
@@ -881,76 +996,304 @@ public enum CGElementDrawer {
 
     // MARK: - 全文检索高亮矩形计算
 
-    public static func computeDocxBlockYOffsets(in doc: OfficeDocument) -> [CGFloat] {
-        guard doc.kind == .docx else { return [] }
-        let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
+    private static func localizeObstacles(
+        _ obstacles: [DocxWrapObstacle],
+        originX: CGFloat,
+        originY: CGFloat
+    ) -> [DocxWrapObstacle] {
+        obstacles.compactMap { obs in
+            guard obs.bottom > originY else { return nil }
+            return DocxWrapObstacle(
+                left: obs.left - originX,
+                right: obs.right - originX,
+                top: obs.top - originY,
+                bottom: obs.bottom - originY,
+                side: obs.side
+            )
+        }
+    }
+
+    private static func pruneObstacles(_ obstacles: inout [DocxWrapObstacle], aboveY y: CGFloat) {
+        obstacles.removeAll { $0.bottom <= y }
+    }
+
+    private static func maxObstacleBottom(_ obstacles: [DocxWrapObstacle]) -> CGFloat {
+        obstacles.reduce(0) { max($0, $1.bottom) }
+    }
+
+    public static func layoutDocxBlocks(
+        in doc: OfficeDocument,
+        maxHeight: CGFloat? = nil
+    ) -> DocxLayoutPlan {
+        guard doc.kind == .docx else {
+            return DocxLayoutPlan(placements: [], zOrder: [], yOffsets: [], contentHeight: 0)
+        }
+
         let docW = doc.width > 0 ? doc.width : 595
-        let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
+        let marginL: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
         let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
-        let availW = max(100, docW - marginX - marginR)
-        var curY: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
-        var offsets: [CGFloat] = []
-        offsets.reserveCapacity(allBlocks.count)
-        for b in allBlocks {
-            offsets.append(curY)
-            let elW = b.width > 0 ? min(availW, b.width) : availW
-            var elH = b.height
-            if elH <= 0 {
-                if b.type == .table && !b.rows.isEmpty {
-                    var tbl = b
+        let marginTop: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
+        let marginBottom: CGFloat = doc.marginBottom > 0 ? doc.marginBottom : 24
+        let availW = max(100, docW - marginL - marginR)
+
+        let totalCount = doc.headerBlocks.count + doc.blocks.count + doc.footerBlocks.count
+        var placements: [DocxBlockPlacement] = []
+        placements.reserveCapacity(totalCount)
+        var behindIndices: [Int] = []
+        var flowIndices: [Int] = []
+        var frontIndices: [Int] = []
+        var curY: CGFloat = marginTop
+        var maxBottom: CGFloat = marginTop
+        var globalIndex = 0
+
+        let sections: [[OfficeElement]] = [doc.headerBlocks, doc.blocks, doc.footerBlocks]
+        for (sectionIdx, section) in sections.enumerated() {
+            let sectionMinY = sectionIdx == 0 ? min(marginTop, 24) : curY
+            var activeObstacles: [DocxWrapObstacle] = []
+
+            for block in section {
+                let isFloating = block.wrapMode != .inline
+                if let limitY = maxHeight, !isFloating && curY >= limitY - 16 {
+                    break
+                }
+
+                if !isFloating {
+                    pruneObstacles(&activeObstacles, aboveY: curY)
+                    if block.type == .table && !activeObstacles.isEmpty {
+                        curY = max(curY, maxObstacleBottom(activeObstacles) + 8)
+                        activeObstacles.removeAll()
+                    }
+                }
+
+                let elW: CGFloat
+                if isFloating {
+                    let rawW: CGFloat
+                    if block.width > 0 {
+                        rawW = block.width
+                    } else if block.type == .text {
+                        rawW = min(availW, 240)
+                    } else {
+                        rawW = 80
+                    }
+                    elW = min(docW, max(1, rawW))
+                } else {
+                    elW = block.width > 0 ? min(availW, block.width) : availW
+                }
+
+                let blockMaxWidth = isFloating ? docW : availW
+                var elH = block.height
+                if elH > 0 {
+                    if block.width > blockMaxWidth && block.width > 0 {
+                        elH = block.height * (elW / block.width)
+                    }
+                } else if block.type == .line {
+                    elH = 0
+                } else if block.type == .table && !block.rows.isEmpty {
+                    var tbl = block
                     tbl.width = elW
                     elH = measureTableHeight(element: tbl)
-                } else if !b.paragraphs.isEmpty {
-                    elH = measureParagraphsHeight(b.paragraphs, availableWidth: elW, wrap: true) + 8
-                } else {
-                    elH = 80
                 }
+
+                if isFloating {
+                    if elH <= 0 && block.type != .line {
+                        if !block.paragraphs.isEmpty {
+                            let padding = max(0, block.padding)
+                            let availTextW = max(1, elW - padding * 2)
+                            elH = measureParagraphsHeight(block.paragraphs, availableWidth: availTextW, wrap: block.textWrap) + max(8, padding * 2)
+                        } else {
+                            elH = 80
+                        }
+                    }
+
+                    let floatX: CGFloat
+                    switch block.horizontalAlign {
+                    case 1:
+                        floatX = marginL
+                    case 2:
+                        floatX = max(0, marginL + (availW - elW) / 2.0)
+                    case 3:
+                        floatX = max(0, marginL + availW - elW)
+                    default:
+                        floatX = max(0, min(max(0, docW - elW), block.x))
+                    }
+
+                    let floatY = max(sectionMinY, curY + block.y)
+                    let placedY: CGFloat
+                    if block.wrapMode == .topAndBottom {
+                        let clearY = max(curY, maxObstacleBottom(activeObstacles))
+                        placedY = max(floatY, clearY + max(0, block.distTop))
+                        curY = max(curY, placedY + elH + max(0, block.distBottom) + 8)
+                        pruneObstacles(&activeObstacles, aboveY: curY)
+                    } else {
+                        placedY = floatY
+                        if block.wrapMode != .none {
+                            let obsTop = placedY - max(0, block.distTop)
+                            let obsBottom = placedY + elH + max(0, block.distBottom)
+                            let obsLeft = floatX - max(0, block.distLeft)
+                            let obsRight = floatX + elW + max(0, block.distRight)
+                            let side: DocxWrapSide
+                            if block.horizontalAlign == 1 {
+                                side = .left
+                            } else if block.horizontalAlign == 3 {
+                                side = .right
+                            } else {
+                                side = (floatX + elW * 0.5 <= marginL + availW * 0.5) ? .left : .right
+                            }
+                            if obsLeft <= marginL + 40 && obsRight >= marginL + availW - 40 {
+                                curY = max(curY, obsBottom + 8)
+                                pruneObstacles(&activeObstacles, aboveY: curY)
+                            } else {
+                                activeObstacles.append(DocxWrapObstacle(
+                                    left: obsLeft,
+                                    right: obsRight,
+                                    top: obsTop,
+                                    bottom: obsBottom,
+                                    side: side
+                                ))
+                            }
+                        }
+                    }
+
+                    let frame = CGRect(x: floatX, y: placedY, width: elW, height: elH)
+                    let placementIdx = placements.count
+                    placements.append(DocxBlockPlacement(
+                        elementIndex: globalIndex,
+                        element: block,
+                        frame: frame,
+                        isFloating: true,
+                        behindDoc: block.behindDoc,
+                        obstacles: []
+                    ))
+                    if block.behindDoc {
+                        behindIndices.append(placementIdx)
+                    } else {
+                        frontIndices.append(placementIdx)
+                    }
+                    maxBottom = max(maxBottom, frame.maxY)
+                } else {
+                    let blockX = marginL
+                    if !activeObstacles.isEmpty && block.type != .text {
+                        var clearBottom = curY
+                        for obs in activeObstacles {
+                            if blockX < obs.right && blockX + elW > obs.left {
+                                clearBottom = max(clearBottom, obs.bottom + 8)
+                            }
+                        }
+                        if clearBottom > curY {
+                            curY = clearBottom
+                            pruneObstacles(&activeObstacles, aboveY: curY)
+                        }
+                    }
+
+                    var localObstacles: [DocxWrapObstacle] = []
+                    if elH <= 0 && block.type != .line {
+                        if !block.paragraphs.isEmpty {
+                            let padding = max(0, block.padding)
+                            let availTextW = max(1, elW - padding * 2)
+                            if block.type == .text && !activeObstacles.isEmpty {
+                                localObstacles = localizeObstacles(
+                                    activeObstacles,
+                                    originX: blockX + padding,
+                                    originY: curY + padding
+                                )
+                            }
+                            elH = measureParagraphsHeight(
+                                block.paragraphs,
+                                availableWidth: availTextW,
+                                wrap: true,
+                                obstacles: localObstacles
+                            ) + max(8, padding * 2)
+                        } else {
+                            elH = 80
+                        }
+                    }
+
+                    let frame = CGRect(x: blockX, y: curY, width: elW, height: elH)
+                    let placementIdx = placements.count
+                    placements.append(DocxBlockPlacement(
+                        elementIndex: globalIndex,
+                        element: block,
+                        frame: frame,
+                        isFloating: false,
+                        behindDoc: false,
+                        obstacles: localObstacles
+                    ))
+                    flowIndices.append(placementIdx)
+                    curY += elH + 8
+                    maxBottom = max(maxBottom, curY)
+                }
+
+                globalIndex += 1
             }
-            curY += elH + 8
+
+            if !activeObstacles.isEmpty {
+                curY = max(curY, maxObstacleBottom(activeObstacles) + 8)
+                activeObstacles.removeAll()
+                maxBottom = max(maxBottom, curY)
+            }
         }
-        return offsets
+
+        return DocxLayoutPlan(
+            placements: placements,
+            zOrder: behindIndices + flowIndices + frontIndices,
+            yOffsets: placements.map { $0.frame.minY },
+            contentHeight: maxBottom + marginBottom
+        )
+    }
+
+    public static func drawDocxPlacement(
+        in ctx: CGContext,
+        placement: DocxBlockPlacement,
+        images: [String: CGImage]
+    ) {
+        var el = placement.element
+        el.x = 0
+        el.y = 0
+        el.width = placement.frame.width
+        el.height = placement.frame.height
+        if !placement.isFloating && el.type == .text {
+            el.textWrap = true
+        }
+
+        ctx.saveGState()
+        ctx.translateBy(x: placement.frame.minX, y: placement.frame.minY)
+        if el.type == .text && !placement.obstacles.isEmpty {
+            if el.transform.count >= 6 {
+                let m = el.transform
+                ctx.concatenate(CGAffineTransform(a: m[0], b: m[1], c: m[2], d: m[3], tx: m[4], ty: m[5]))
+            }
+            if let fillColor = argbToCGColor(el.fill) {
+                ctx.setFillColor(fillColor)
+                ctx.fill(CGRect(x: 0, y: 0, width: max(0, el.width), height: max(0, el.height)))
+            }
+            drawParagraphs(in: ctx, element: el, obstacles: placement.obstacles)
+        } else {
+            drawElement(in: ctx, element: el, images: images)
+        }
+        ctx.restoreGState()
+    }
+
+    public static func computeDocxBlockYOffsets(in doc: OfficeDocument) -> [CGFloat] {
+        layoutDocxBlocks(in: doc).yOffsets
     }
 
     public static func computeHighlightRects(
         for match: OfficeSearchMatch,
         in doc: OfficeDocument,
-        docxBlockYOffsets: [CGFloat]? = nil
+        docxBlockYOffsets: [CGFloat]? = nil,
+        docxPlan: DocxLayoutPlan? = nil
     ) -> [CGRect] {
         switch doc.kind {
         case .docx:
-            let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
-            guard match.elementIndex >= 0 && match.elementIndex < allBlocks.count else { return [] }
-            let docW = doc.width > 0 ? doc.width : 595
-            let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
-            let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
-            let availW = max(100, docW - marginX - marginR)
-            let curY: CGFloat
-            if let offsets = docxBlockYOffsets, match.elementIndex < offsets.count {
-                curY = offsets[match.elementIndex]
-            } else {
-                var calculatedY: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
-                for i in 0..<match.elementIndex {
-                    let b = allBlocks[i]
-                    let elW = b.width > 0 ? min(availW, b.width) : availW
-                    var elH = b.height
-                    if elH <= 0 {
-                        if b.type == .table && !b.rows.isEmpty {
-                            var tbl = b
-                            tbl.width = elW
-                            elH = measureTableHeight(element: tbl)
-                        } else if !b.paragraphs.isEmpty {
-                            elH = measureParagraphsHeight(b.paragraphs, availableWidth: elW, wrap: true) + 8
-                        } else {
-                            elH = 80
-                        }
-                    }
-                    calculatedY += elH + 8
-                }
-                curY = calculatedY
-            }
+            let plan = docxPlan ?? layoutDocxBlocks(in: doc)
+            guard match.elementIndex >= 0 && match.elementIndex < plan.placements.count else { return [] }
+            let placement = plan.placements[match.elementIndex]
+            let block = placement.element
+            let elW = placement.frame.width
+            let elH = placement.frame.height
+            let blockOriginX = placement.frame.minX
+            let blockOriginY = placement.frame.minY
 
-            let block = allBlocks[match.elementIndex]
-            let elW = block.width > 0 ? min(availW, block.width) : availW
             if block.type == .table && !block.rows.isEmpty {
                 guard let r = match.row, let c = match.column,
                       r >= 0, r < block.rows.count, c >= 0, c < block.rows[r].count else { return [] }
@@ -969,7 +1312,7 @@ public enum CGElementDrawer {
                 let anchorC = m?.startColumn ?? c
                 let x1 = colX[anchorC]
                 let x2 = m != nil ? colX[min(cols, m!.endColumn + 1)] : colX[anchorC + 1]
-                let cellX = marginX + x1
+                let cellX = blockOriginX + x1
                 let cellW = max(1, x2 - x1)
                 let availCellW = max(1, cellW - 10)
                 let cellH = rowTops[min(block.rows.count, (m?.endRow ?? r) + 1)] - rowTops[anchorR]
@@ -986,7 +1329,7 @@ public enum CGElementDrawer {
                     contentHeight += measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
                 }
                 let vOffset: CGFloat = cellH > contentHeight + 10 ? max(5, (cellH - contentHeight) / 2.0) : 5
-                let cellOrigin = CGPoint(x: cellX + 5, y: curY + rowTops[anchorR] + vOffset)
+                let cellOrigin = CGPoint(x: cellX + 5, y: blockOriginY + rowTops[anchorR] + vOffset)
                 return charHighlightRects(
                     paragraphs: cellParas,
                     targetParagraphIndex: match.paragraphIndex,
@@ -998,13 +1341,15 @@ public enum CGElementDrawer {
                 )
             } else {
                 guard match.paragraphIndex >= 0 && match.paragraphIndex < block.paragraphs.count else { return [] }
-                var elH = block.height
-                if elH <= 0 {
-                    elH = measureParagraphsHeight(block.paragraphs, availableWidth: elW, wrap: true) + 8
-                }
                 let padding = max(0, block.padding)
                 let availBlockW = max(1, elW - padding * 2)
-                let totalH = measureParagraphsHeight(block.paragraphs, availableWidth: availBlockW, wrap: true)
+                let wrap = placement.isFloating ? block.textWrap : true
+                let totalH = measureParagraphsHeight(
+                    block.paragraphs,
+                    availableWidth: availBlockW,
+                    wrap: wrap,
+                    obstacles: placement.obstacles
+                )
                 var offsetY = padding
                 let remaining = max(0, elH - padding * 2 - totalH)
                 switch block.verticalAlignment {
@@ -1015,16 +1360,26 @@ public enum CGElementDrawer {
                 case .top:
                     break
                 }
-                let origin = CGPoint(x: marginX + padding, y: curY + offsetY)
-                return charHighlightRects(
+                let localOrigin = CGPoint(x: padding, y: offsetY)
+                let localRects = charHighlightRects(
                     paragraphs: block.paragraphs,
                     targetParagraphIndex: match.paragraphIndex,
                     startChar: match.startChar,
                     endChar: match.endChar,
                     availableWidth: availBlockW,
-                    wrap: true,
-                    origin: origin
+                    wrap: wrap,
+                    origin: localOrigin,
+                    obstacles: placement.obstacles
                 )
+                let blockAffine: CGAffineTransform
+                if block.transform.count >= 6 {
+                    let m = block.transform
+                    blockAffine = CGAffineTransform(a: m[0], b: m[1], c: m[2], d: m[3], tx: m[4], ty: m[5])
+                        .concatenating(CGAffineTransform(translationX: blockOriginX, y: blockOriginY))
+                } else {
+                    blockAffine = CGAffineTransform(translationX: blockOriginX, y: blockOriginY)
+                }
+                return localRects.map { $0.applying(blockAffine) }
             }
 
         case .pptx:
@@ -1151,93 +1506,52 @@ public enum CGElementDrawer {
         endChar: Int,
         availableWidth: CGFloat,
         wrap: Bool,
-        origin: CGPoint
+        origin: CGPoint,
+        obstacles: [DocxWrapObstacle] = []
     ) -> [CGRect] {
+        let lines = layoutParagraphs(paragraphs, availableWidth: availableWidth, wrap: wrap, obstacles: obstacles)
         var curY = origin.y
-        for (pIdx, para) in paragraphs.enumerated() {
-            let baseIndent = max(0, para.indent)
-            let firstIndent = max(0, baseIndent + para.firstLineIndent)
-            let rightIndent = max(0, para.rightIndent)
+        var rects: [CGRect] = []
+        for line in lines {
+            curY += line.before
+            if line.paraIndex == targetParagraphIndex {
+                let lineStart = line.localCharRange.location
+                let lineEnd = lineStart + line.localCharRange.length
+                let selStart = max(startChar, lineStart)
+                let selEnd = min(endChar, lineEnd)
 
-            let attrString = buildAttributedString(for: para)
-            let totalLen = attrString.length
-
-            guard totalLen > 0 else {
-                let defaultSize = para.runs.first?.size ?? 12
-                let h = computeLineHeight(para: para, naturalHeight: defaultSize * 1.2)
-                curY += max(0, para.before) + h + max(0, para.after)
-                continue
-            }
-
-            let typesetter = CTTypesetterCreateWithAttributedString(attrString as CFAttributedString)
-            var startIdx = 0
-            var lineIndex = 0
-            let isTargetPara = (pIdx == targetParagraphIndex)
-            var rects: [CGRect] = []
-
-            while startIdx < totalLen {
-                let leftInd = lineIndex == 0 ? firstIndent : baseIndent
-                let limitW = wrap ? Double(max(8, availableWidth - leftInd - rightIndent)) : 1_000_000.0
-                let count = max(1, CTTypesetterSuggestLineBreak(typesetter, startIdx, limitW))
-                let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: startIdx, length: count))
-
-                var ascent: CGFloat = 0
-                var descent: CGFloat = 0
-                var leading: CGFloat = 0
-                let w = CGFloat(CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading))
-                let natural = max(10, ascent + descent + max(0, leading))
-                let lineH = computeLineHeight(para: para, naturalHeight: natural)
-
-                let before = lineIndex == 0 ? max(0, para.before) : 0
-                let isLast = (startIdx + count) >= totalLen
-                let after = isLast ? max(0, para.after) : 0
-
-                curY += before
-
-                if isTargetPara {
-                    let lineStart = startIdx
-                    let lineEnd = startIdx + count
-                    let selStart = max(startChar, lineStart)
-                    let selEnd = min(endChar, lineEnd)
-
-                    if selStart < selEnd {
-                        let lineAvailW = max(1, availableWidth - leftInd - rightIndent)
-                        var lineX = origin.x + leftInd
-                        if para.alignment == 1 {
-                            lineX += (lineAvailW - w) / 2.0
-                        } else if para.alignment == 2 {
-                            lineX += lineAvailW - w
-                        }
-
-                        let effectiveLine: CTLine
-                        if para.alignment == 3 && !isLast, let justified = CTLineCreateJustifiedLine(ctLine, 1.0, Double(lineAvailW)) {
-                            effectiveLine = justified
-                        } else {
-                            effectiveLine = ctLine
-                        }
-
-                        let x1 = CTLineGetOffsetForStringIndex(effectiveLine, selStart - lineStart, nil)
-                        let x2 = CTLineGetOffsetForStringIndex(effectiveLine, selEnd - lineStart, nil)
-                        let rect = CGRect(
-                            x: lineX + min(x1, x2),
-                            y: curY,
-                            width: max(2.0, abs(x2 - x1)),
-                            height: lineH
-                        )
-                        rects.append(rect)
+                if selStart < selEnd {
+                    let lineAvailW = max(1, availableWidth - line.leftIndent - line.rightIndent)
+                    var lineX = origin.x + line.leftIndent
+                    if line.alignment == 1 {
+                        lineX += (lineAvailW - line.width) / 2.0
+                    } else if line.alignment == 2 {
+                        lineX += lineAvailW - line.width
                     }
+
+                    let effectiveLine: CTLine
+                    if line.alignment == 3 && !line.isLast,
+                       let justified = CTLineCreateJustifiedLine(line.ctLine, 1.0, Double(lineAvailW)) {
+                        effectiveLine = justified
+                    } else {
+                        effectiveLine = line.ctLine
+                    }
+
+                    let x1 = CTLineGetOffsetForStringIndex(effectiveLine, selStart - lineStart, nil)
+                    let x2 = CTLineGetOffsetForStringIndex(effectiveLine, selEnd - lineStart, nil)
+                    rects.append(CGRect(
+                        x: lineX + min(x1, x2),
+                        y: curY,
+                        width: max(2.0, abs(x2 - x1)),
+                        height: line.height
+                    ))
                 }
-
-                curY += lineH + after
-                startIdx += count
-                lineIndex += 1
+            } else if line.paraIndex > targetParagraphIndex {
+                break
             }
-
-            if isTargetPara {
-                return rects
-            }
+            curY += line.height + line.after
         }
-        return []
+        return rects
     }
 
     // MARK: - XLSX 电子表格绘制（复用 Rust SheetGeometry 预计算偏移与合并区域）

@@ -31,13 +31,13 @@ public final class OfficePreviewController: ObservableObject {
     @Published internal var document: OfficeDocument? {
         didSet {
             if let doc = document, doc.kind == .docx {
-                docxBlockYOffsets = CGElementDrawer.computeDocxBlockYOffsets(in: doc)
+                docxLayoutPlan = CGElementDrawer.layoutDocxBlocks(in: doc)
             } else {
-                docxBlockYOffsets = nil
+                docxLayoutPlan = nil
             }
         }
     }
-    private var docxBlockYOffsets: [CGFloat]?
+    internal var docxLayoutPlan: CGElementDrawer.DocxLayoutPlan?
     @Published internal var imageCache: [String: CGImage] = [:]
     @Published internal var isLoading: Bool = true
     @Published internal var errorMessage: String?
@@ -231,7 +231,7 @@ public final class OfficePreviewController: ObservableObject {
         let rects = CGElementDrawer.computeHighlightRects(
             for: match,
             in: doc,
-            docxBlockYOffsets: docxBlockYOffsets
+            docxPlan: docxLayoutPlan
         )
         if let first = rects.first {
             targetHighlightRect = rects.reduce(first) { $0.union($1) }
@@ -381,30 +381,8 @@ public struct OfficePreviewView: View {
             return CGSize(width: maxW, height: max(405, totalH))
         case .docx:
             let docW = doc.width > 0 ? doc.width : 595
-            let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
-            let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
-            let marginTop: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
-            let marginBottom: CGFloat = doc.marginBottom > 0 ? doc.marginBottom : 24
-            let availW = max(100, docW - marginX - marginR)
-            var curY = marginTop
-            for block in (doc.headerBlocks + doc.blocks + doc.footerBlocks) {
-                let elW = block.width > 0 ? min(availW, block.width) : availW
-                var elH = block.height
-                if elH <= 0 {
-                    if block.type == .table && !block.rows.isEmpty {
-                        var tbl = block
-                        tbl.width = elW
-                        elH = CGElementDrawer.measureTableHeight(element: tbl)
-                    } else if !block.paragraphs.isEmpty {
-                        elH = CGElementDrawer.measureParagraphsHeight(block.paragraphs, availableWidth: elW, wrap: true) + 8
-                    } else {
-                        elH = 80
-                    }
-                }
-                curY += elH + 8
-            }
-            curY += marginBottom
-            return CGSize(width: docW, height: max(docW * 1.414, curY))
+            let plan = controller.docxLayoutPlan ?? CGElementDrawer.layoutDocxBlocks(in: doc)
+            return CGSize(width: docW, height: max(docW * 1.414, plan.contentHeight))
         case .xlsx:
             let idx = max(0, min(doc.sheets.count - 1, controller.currentPage - 1))
             guard idx < doc.sheets.count else { return CGSize(width: 800, height: 600) }
@@ -544,7 +522,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     var onFindNext: (() -> Void)?
     var onFindPrevious: (() -> Void)?
 
-    private var docxBlockYOffsets: [CGFloat]?
+    internal var docxLayoutPlan: CGElementDrawer.DocxLayoutPlan?
     private var lastScrolledMatchIndex: Int = -1
     private var textLayout: DocumentTextLayout?
     private var selection: TextSelection?
@@ -634,8 +612,8 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             selection = nil
         }
         document = newDoc
-        if isDocChanged || docxBlockYOffsets == nil {
-            docxBlockYOffsets = newDoc.kind == .docx ? CGElementDrawer.computeDocxBlockYOffsets(in: newDoc) : nil
+        if isDocChanged || docxLayoutPlan == nil {
+            docxLayoutPlan = newDoc.kind == .docx ? CGElementDrawer.layoutDocxBlocks(in: newDoc) : nil
             textLayout = nil
             selection = nil
             window?.invalidateCursorRects(for: self)
@@ -658,6 +636,13 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         )
         let prefetch = docVisible.insetBy(dx: 0, dy: -docVisible.height * 0.75)
         return (docVisible, prefetch)
+    }
+
+    private func expandedDocxHitRect(_ placement: CGElementDrawer.DocxBlockPlacement) -> CGRect {
+        let m = placement.element.transform
+        let rotated = m.count >= 6 && (abs(m[1]) > 0.001 || abs(m[2]) > 0.001 || m[0] < 0 || m[3] < 0)
+        let pad = rotated ? max(8, max(placement.frame.width, placement.frame.height) * 0.5) : 8
+        return placement.frame.insetBy(dx: -pad, dy: -pad)
     }
 
     func collectWantedParts(in docVisible: CGRect, prefetch: CGRect) -> (visible: [String], prefetch: [String]) {
@@ -687,37 +672,25 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             }
 
         case .docx:
-            guard let offsets = docxBlockYOffsets else { return ([], []) }
-            let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
-            let docW = doc.width > 0 ? doc.width : 595
-            let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
-            for (i, block) in allBlocks.enumerated() where i < offsets.count {
-                let bY = offsets[i]
-                let bH: CGFloat
-                if block.height > 0 {
-                    bH = block.height
-                } else if i + 1 < offsets.count {
-                    bH = max(80, offsets[i + 1] - bY - 8)
-                } else {
-                    bH = 80
-                }
-                let blockRect = CGRect(x: marginX, y: bY, width: docW, height: bH)
-                let isVisible = blockRect.intersects(docVisible)
-                let isPrefetch = blockRect.intersects(prefetch)
+            guard let plan = docxLayoutPlan else { return ([], []) }
+            for placement in plan.placements {
+                let hitRect = expandedDocxHitRect(placement)
+                let isVisible = hitRect.intersects(docVisible)
+                let isPrefetch = hitRect.intersects(prefetch)
+                guard isVisible || isPrefetch else { continue }
 
-                if isVisible || isPrefetch {
-                    if block.type == .image, let part = block.image {
-                        if isVisible { visibleImages.append(part) }
-                        else { prefetchImages.append(part) }
-                    }
-                    if block.type == .table {
-                        for row in block.rows {
-                            for cell in row {
-                                for p in cell {
-                                    if let part = p.image {
-                                        if isVisible { visibleImages.append(part) }
-                                        else { prefetchImages.append(part) }
-                                    }
+                let block = placement.element
+                if block.type == .image, let part = block.image {
+                    if isVisible { visibleImages.append(part) }
+                    else { prefetchImages.append(part) }
+                }
+                if block.type == .table {
+                    for row in block.rows {
+                        for cell in row {
+                            for p in cell {
+                                if let part = p.image {
+                                    if isVisible { visibleImages.append(part) }
+                                    else { prefetchImages.append(part) }
                                 }
                             }
                         }
@@ -793,7 +766,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 let rects = CGElementDrawer.computeHighlightRects(
                     for: results[currentIndex],
                     in: doc,
-                    docxBlockYOffsets: docxBlockYOffsets
+                    docxPlan: docxLayoutPlan
                 )
                 if let first = rects.first {
                     let union = rects.reduce(first) { $0.union($1) }
@@ -909,45 +882,13 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             let docH = bounds.height / safeZoom
             ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
             ctx.fill(CGRect(x: 0, y: 0, width: docW, height: docH))
-            let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
-            let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
-            let availW = max(100, docW - marginX - marginR)
-            var curY: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
-            let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
-            for (i, block) in allBlocks.enumerated() {
-                let elW = block.width > 0 ? min(availW, block.width) : availW
-                var elH = block.height
-                if let offsets = docxBlockYOffsets, i < offsets.count {
-                    curY = offsets[i]
-                    if elH <= 0 && i + 1 < offsets.count {
-                        elH = max(0, offsets[i + 1] - offsets[i] - 8)
-                    }
-                }
-                if elH <= 0 {
-                    if block.type == .table && !block.rows.isEmpty {
-                        var tbl = block
-                        tbl.width = elW
-                        elH = CGElementDrawer.measureTableHeight(element: tbl)
-                    } else if !block.paragraphs.isEmpty {
-                        elH = CGElementDrawer.measureParagraphsHeight(block.paragraphs, availableWidth: elW, wrap: true) + 8
-                    } else {
-                        elH = 80
-                    }
-                }
-                let blockRect = CGRect(x: marginX, y: curY, width: elW, height: elH)
-                if !blockRect.intersects(docVisible) {
-                    curY += elH + 8
+            let plan = docxLayoutPlan ?? CGElementDrawer.layoutDocxBlocks(in: doc)
+            for idx in plan.zOrder {
+                let placement = plan.placements[idx]
+                if !expandedDocxHitRect(placement).intersects(docVisible) {
                     continue
                 }
-                var positioned = block
-                positioned.x = marginX
-                positioned.y = curY
-                positioned.width = elW
-                positioned.height = elH
-                positioned.transform = [1, 0, 0, 1, marginX, curY]
-                positioned.textWrap = true
-                CGElementDrawer.drawElement(in: ctx, element: positioned, images: activeImages)
-                curY += elH + 8
+                CGElementDrawer.drawDocxPlacement(in: ctx, placement: placement, images: activeImages)
             }
         case .xlsx:
             let idx = max(0, min(doc.sheets.count - 1, currentPage - 1))
@@ -976,9 +917,12 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 }
                 let isCurrent = (index == currentMatchIndex)
                 if !isCurrent {
-                    if doc.kind == .docx, let offsets = docxBlockYOffsets, match.elementIndex < offsets.count {
-                        let blockY = offsets[match.elementIndex]
-                        if blockY > docVisibleRect.maxY + 50 || blockY + 1200 < docVisibleRect.minY {
+                    if doc.kind == .docx, let placements = docxLayoutPlan?.placements,
+                       match.elementIndex >= 0, match.elementIndex < placements.count {
+                        let placement = placements[match.elementIndex]
+                        let blockY = placement.frame.minY
+                        let blockBottom = max(placement.frame.maxY, blockY + 1200)
+                        if blockY > docVisibleRect.maxY + 50 || blockBottom < docVisibleRect.minY {
                             continue
                         }
                     }
@@ -986,7 +930,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 let rects = CGElementDrawer.computeHighlightRects(
                     for: match,
                     in: doc,
-                    docxBlockYOffsets: docxBlockYOffsets
+                    docxPlan: docxLayoutPlan
                 )
                 for r in rects {
                     if !isCurrent && !r.intersects(docVisibleRect) {

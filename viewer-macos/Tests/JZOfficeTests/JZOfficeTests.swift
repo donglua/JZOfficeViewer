@@ -1062,6 +1062,224 @@ struct JZOfficeTests {
         #expect(hasNonWhitePixel(img))
     }
 
+    @Test("DOCX 浮动环绕字段解码与默认值兼容")
+    func docxFloatingWrapDecodingAndDefaults() throws {
+        let json = """
+        {
+          "schemaVersion": 9,
+          "kind": "DOCX",
+          "width": 595,
+          "blocks": [
+            {
+              "type": "TEXT",
+              "paragraphs": [{ "runs": [{ "text": "Plain inline", "size": 12 }] }]
+            },
+            {
+              "type": "IMAGE",
+              "x": 120,
+              "y": 16,
+              "width": 100,
+              "height": 80,
+              "image": "word/media/image1.png",
+              "wrapMode": "SQUARE",
+              "horizontalAlign": 3,
+              "behindDoc": true,
+              "distTop": 4,
+              "distBottom": 6,
+              "distLeft": 10,
+              "distRight": 12
+            },
+            {
+              "type": "RECT",
+              "width": 80,
+              "height": 40,
+              "wrapMode": "TOP_AND_BOTTOM",
+              "horizontalAlign": 99,
+              "distTop": -5,
+              "distBottom": 2500
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let doc = try JSONDecoder().decode(OfficeDocument.self, from: json)
+        #expect(doc.blocks.count == 3)
+
+        let inlineEl = doc.blocks[0]
+        #expect(inlineEl.wrapMode == .inline)
+        #expect(inlineEl.horizontalAlign == 0)
+        #expect(inlineEl.behindDoc == false)
+        #expect(inlineEl.distTop == 0)
+        #expect(inlineEl.distBottom == 0)
+        #expect(inlineEl.distLeft == 0)
+        #expect(inlineEl.distRight == 0)
+
+        let floatImg = doc.blocks[1]
+        #expect(floatImg.wrapMode == .square)
+        #expect(floatImg.horizontalAlign == 3)
+        #expect(floatImg.behindDoc == true)
+        #expect(floatImg.distTop == 4)
+        #expect(floatImg.distBottom == 6)
+        #expect(floatImg.distLeft == 10)
+        #expect(floatImg.distRight == 12)
+
+        let clampedEl = doc.blocks[2]
+        #expect(clampedEl.wrapMode == .topAndBottom)
+        #expect(clampedEl.horizontalAlign == 0)
+        #expect(clampedEl.distTop == 0)
+        #expect(clampedEl.distBottom == 1200)
+    }
+
+    @Test("DOCX 浮动布局、Z-Order、文字环绕高亮与固定尺寸 Shape 渲染")
+    func docxFloatingLayoutAndShapeRendering() throws {
+        let json = """
+        {
+          "schemaVersion": 9,
+          "kind": "DOCX",
+          "width": 595,
+          "marginLeft": 40,
+          "marginRight": 40,
+          "marginTop": 40,
+          "marginBottom": 40,
+          "blocks": [
+            {
+              "type": "IMAGE",
+              "width": 120,
+              "height": 90,
+              "image": "word/media/float1.png",
+              "wrapMode": "SQUARE",
+              "horizontalAlign": 1,
+              "behindDoc": true,
+              "distRight": 10
+            },
+            {
+              "type": "TEXT",
+              "paragraphs": [{
+                "runs": [{
+                  "text": "WrappedBodyText word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23 word24 word25 word26 word27 word28",
+                  "size": 12
+                }]
+              }]
+            },
+            {
+              "type": "RECT",
+              "width": 200,
+              "height": 60,
+              "fill": 4280391411,
+              "stroke": 4278190080,
+              "strokeWidth": 1.5,
+              "wrapMode": "TOP_AND_BOTTOM",
+              "horizontalAlign": 2,
+              "distTop": 6,
+              "distBottom": 8
+            },
+            {
+              "type": "TEXT",
+              "paragraphs": [{
+                "runs": [{ "text": "AfterTopBottom", "size": 12 }]
+              }]
+            },
+            {
+              "type": "RECT",
+              "x": 300,
+              "y": 0,
+              "width": 150,
+              "height": 70,
+              "padding": 8,
+              "fill": 4294959296,
+              "stroke": 4278190080,
+              "strokeWidth": 1.5,
+              "verticalAlignment": "CENTER",
+              "wrapMode": "NONE",
+              "behindDoc": false,
+              "paragraphs": [{
+                "alignment": 1,
+                "runs": [{ "text": "Floating Shape Box", "size": 12, "color": 4278190080 }]
+              }]
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let doc = try JSONDecoder().decode(OfficeDocument.self, from: json)
+        let plan = CGElementDrawer.layoutDocxBlocks(in: doc)
+        #expect(plan.placements.count == 5)
+        #expect(plan.zOrder == [0, 1, 3, 2, 4])
+
+        // 左侧浮动图位于左页边距处
+        let floatPlacement = plan.placements[0]
+        #expect(floatPlacement.frame.minX == 40)
+        #expect(floatPlacement.frame.width == 120)
+        #expect(floatPlacement.behindDoc == true)
+
+        // 被环绕段落存在左侧障碍物，高度大于无障碍排版
+        let wrappedPlacement = plan.placements[1]
+        #expect(wrappedPlacement.obstacles.count == 1)
+        #expect(wrappedPlacement.obstacles[0].side == .left)
+        let availTextW = wrappedPlacement.frame.width - 8
+        let wrappedH = CGElementDrawer.measureParagraphsHeight(
+            wrappedPlacement.element.paragraphs,
+            availableWidth: availTextW,
+            wrap: true,
+            obstacles: wrappedPlacement.obstacles
+        )
+        let plainH = CGElementDrawer.measureParagraphsHeight(
+            wrappedPlacement.element.paragraphs,
+            availableWidth: availTextW,
+            wrap: true
+        )
+        #expect(wrappedH > plainH)
+
+        // 高亮矩形受左侧障碍物右推
+        let searchMatch = OfficeSearchMatch(pageIndex: 0, elementIndex: 1, paragraphIndex: 0, startChar: 0, endChar: 15, snippet: "WrappedBodyText")
+        let rects = CGElementDrawer.computeHighlightRects(for: searchMatch, in: doc, docxPlan: plan)
+        #expect(!rects.isEmpty)
+        #expect(rects[0].minX >= 40 + 120 + 10)
+
+        // TOP_AND_BOTTOM 与固定尺寸 shape
+        let topBottomPlacement = plan.placements[2]
+        let afterPlacement = plan.placements[3]
+        #expect(afterPlacement.frame.minY >= topBottomPlacement.frame.maxY + 8)
+
+        let shapePlacement = plan.placements[4]
+        #expect(shapePlacement.frame.minX == 300)
+        #expect(shapePlacement.frame.width == 150)
+        #expect(shapePlacement.frame.height == 70)
+
+        // TextSelectionModel 覆盖浮动与环绕文本
+        let textLayout = DocumentTextLayout.build(from: doc)
+        if let allRange = textLayout.allTextRange() {
+            let selected = textLayout.selectedText(for: allRange)
+            #expect(selected.contains("WrappedBodyText"))
+            #expect(selected.contains("Floating Shape Box"))
+        } else {
+            Issue.record("Expected non-nil allTextRange")
+        }
+
+        // 离屏绘制所有层
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var bytes = [UInt8](repeating: 255, count: 595 * 400 * 4)
+        let ctx = CGContext(
+            data: &bytes,
+            width: 595,
+            height: 400,
+            bitsPerComponent: 8,
+            bytesPerRow: 595 * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        let testImg = createTestCGImage(width: 40, height: 30)
+        for idx in plan.zOrder {
+            CGElementDrawer.drawDocxPlacement(
+                in: ctx,
+                placement: plan.placements[idx],
+                images: ["word/media/float1.png": testImg]
+            )
+        }
+        let img = ctx.makeImage()!
+        #expect(hasNonWhitePixel(img))
+    }
+
     private func createTestCGImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         var bytes = [UInt8](repeating: 128, count: width * height * 4)

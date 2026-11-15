@@ -139,47 +139,39 @@ public final class DocumentTextLayout: @unchecked Sendable {
 
         switch document.kind {
         case .docx:
-            let docW = document.width > 0 ? document.width : 595
-            let marginX: CGFloat = document.marginLeft > 0 ? document.marginLeft : 24
-            let marginR: CGFloat = document.marginRight > 0 ? document.marginRight : 24
-            let availW = max(100, docW - marginX - marginR)
-            var curY: CGFloat = document.marginTop > 0 ? document.marginTop : 24
-
-            let allElements = document.headerBlocks + document.blocks + document.footerBlocks
-            for block in allElements {
-                let elW = block.width > 0 ? min(availW, block.width) : availW
-                var elH = block.height
-                if elH <= 0 {
-                    if block.type == .table && !block.rows.isEmpty {
-                        var tbl = block
-                        tbl.width = elW
-                        elH = CGElementDrawer.measureTableHeight(element: tbl)
-                    } else if !block.paragraphs.isEmpty {
-                        elH = CGElementDrawer.measureParagraphsHeight(block.paragraphs, availableWidth: elW, wrap: true) + 8
-                    } else {
-                        elH = 80
-                    }
+            let plan = CGElementDrawer.layoutDocxBlocks(in: document)
+            for placement in plan.placements {
+                var positioned = placement.element
+                positioned.x = 0
+                positioned.y = 0
+                positioned.width = placement.frame.width
+                positioned.height = placement.frame.height
+                if !placement.isFloating && positioned.type == .text {
+                    positioned.textWrap = true
                 }
 
-                var positioned = block
-                positioned.x = marginX
-                positioned.y = curY
-                positioned.width = elW
-                positioned.height = elH
-                positioned.transform = [1, 0, 0, 1, marginX, curY]
-                positioned.textWrap = true
+                let localAffine: CGAffineTransform
+                if positioned.transform.count >= 6 {
+                    let m = positioned.transform
+                    localAffine = CGAffineTransform(a: m[0], b: m[1], c: m[2], d: m[3], tx: m[4], ty: m[5])
+                } else {
+                    localAffine = .identity
+                }
+                let combined = localAffine.concatenating(
+                    CGAffineTransform(translationX: placement.frame.minX, y: placement.frame.minY)
+                )
+                positioned.transform = [combined.a, combined.b, combined.c, combined.d, combined.tx, combined.ty]
 
-                if block.type == .table && !block.rows.isEmpty {
+                if positioned.type == .table && !positioned.rows.isEmpty {
                     let tableBlocks = buildTableBlocks(element: positioned, baseIndex: blockIdx)
                     blocks.append(contentsOf: tableBlocks)
                     blockIdx += tableBlocks.count
                 } else if !positioned.paragraphs.isEmpty {
-                    if let layout = buildParagraphsBlock(element: positioned, blockIndex: blockIdx) {
+                    if let layout = buildParagraphsBlock(element: positioned, blockIndex: blockIdx, obstacles: placement.obstacles) {
                         blocks.append(layout)
                         blockIdx += 1
                     }
                 }
-                curY += elH + 8
             }
 
         case .pptx:
@@ -219,7 +211,8 @@ public final class DocumentTextLayout: @unchecked Sendable {
 
     private static func buildParagraphsBlock(
         element: OfficeElement,
-        blockIndex: Int
+        blockIndex: Int,
+        obstacles: [CGElementDrawer.DocxWrapObstacle] = []
     ) -> TextBlockLayout? {
         guard !element.paragraphs.isEmpty else { return nil }
 
@@ -230,6 +223,7 @@ public final class DocumentTextLayout: @unchecked Sendable {
         var lines: [TextLineLayout] = []
         var fullTextParts: [String] = []
         var paraBaseOffset = 0
+        var flowY: CGFloat = 0
 
         // 1. 预先排版并收集所有段落行
         struct ParaLineData {
@@ -253,13 +247,20 @@ public final class DocumentTextLayout: @unchecked Sendable {
             let baseIndent = max(0, para.indent)
             let firstIndent = max(0, baseIndent + para.firstLineIndent)
             let rightIndent = max(0, para.rightIndent)
+            let paraBefore = max(0, para.before)
+            let paraAfter = max(0, para.after)
+            flowY += paraBefore
 
             let attrString = CGElementDrawer.buildAttributedString(for: para)
             let paraStr = attrString.string
             fullTextParts.append(paraStr)
 
+            let defaultSize = para.runs.first?.size ?? 12
+            let estLineH = CGElementDrawer.computeLineHeight(para: para, naturalHeight: max(10, defaultSize * 1.2))
             let totalLen = attrString.length
             guard totalLen > 0 else {
+                let h = CGElementDrawer.computeLineHeight(para: para, naturalHeight: defaultSize * 1.2)
+                flowY += h + paraAfter
                 paraBaseOffset += 1 // 空行算换行
                 continue
             }
@@ -269,8 +270,18 @@ public final class DocumentTextLayout: @unchecked Sendable {
             var lineIndex = 0
 
             while startIdx < totalLen {
-                let leftInd = lineIndex == 0 ? firstIndent : baseIndent
-                let limitW = wrap ? Double(max(8, availW - leftInd - rightIndent)) : 1_000_000.0
+                let (leftInd, rightInd) = CGElementDrawer.resolveLineIndents(
+                    lineIndex: lineIndex,
+                    firstIndent: firstIndent,
+                    baseIndent: baseIndent,
+                    rightIndent: rightIndent,
+                    lineTop: flowY,
+                    estLineH: estLineH,
+                    availableWidth: availW,
+                    wrap: wrap,
+                    obstacles: obstacles
+                )
+                let limitW = wrap ? Double(max(min(availW, 8), availW - leftInd - rightInd)) : 1_000_000.0
                 let count = max(1, CTTypesetterSuggestLineBreak(typesetter, startIdx, limitW))
                 let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: startIdx, length: count))
 
@@ -292,17 +303,20 @@ public final class DocumentTextLayout: @unchecked Sendable {
                     height: lineH,
                     alignment: para.alignment,
                     leftIndent: leftInd,
-                    rightIndent: rightIndent,
-                    before: isFirst ? max(0, para.before) : 0,
-                    after: isLast ? max(0, para.after) : 0,
+                    rightIndent: rightInd,
+                    before: isFirst ? paraBefore : 0,
+                    after: isLast ? paraAfter : 0,
                     isLast: isLast,
                     localCharRange: NSRange(location: startIdx, length: count),
                     paraBaseOffset: paraBaseOffset
                 ))
 
+                flowY += lineH
                 startIdx += count
                 lineIndex += 1
             }
+
+            flowY += paraAfter
 
             paraBaseOffset += totalLen
             if pIdx < element.paragraphs.count - 1 {

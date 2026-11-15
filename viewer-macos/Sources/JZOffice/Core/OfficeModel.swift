@@ -30,6 +30,15 @@ public enum OfficeLineSpacingRule: String, Codable, Sendable {
     case atLeast = "AT_LEAST"
 }
 
+public enum OfficeWrapMode: String, Codable, Sendable {
+    case inline = "INLINE"
+    case square = "SQUARE"
+    case tight = "TIGHT"
+    case through = "THROUGH"
+    case topAndBottom = "TOP_AND_BOTTOM"
+    case none = "NONE"
+}
+
 public enum OfficePathCommandOp: String, Codable, Sendable {
     case move = "MOVE"
     case line = "LINE"
@@ -256,10 +265,18 @@ public struct OfficeElement: Codable, Sendable {
     public var paths: [OfficePath]
     public var fillGradient: OfficeGradientFill?
     public var merges: [OfficeCellRange]
+    public var wrapMode: OfficeWrapMode
+    public var horizontalAlign: Int
+    public var behindDoc: Bool
+    public var distTop: CGFloat
+    public var distBottom: CGFloat
+    public var distLeft: CGFloat
+    public var distRight: CGFloat
 
     enum CodingKeys: String, CodingKey {
         case type, x, y, width, height, transform, padding, fill, stroke, strokeWidth
         case image, imageBounds, verticalAlignment, textWrap, paragraphs, rows, columnWidths, cellFills, paths, fillGradient, merges
+        case wrapMode, horizontalAlign, behindDoc, distTop, distBottom, distLeft, distRight
     }
 
     public init(
@@ -283,7 +300,14 @@ public struct OfficeElement: Codable, Sendable {
         cellFills: [[UInt32]] = [],
         paths: [OfficePath] = [],
         fillGradient: OfficeGradientFill? = nil,
-        merges: [OfficeCellRange] = []
+        merges: [OfficeCellRange] = [],
+        wrapMode: OfficeWrapMode = .inline,
+        horizontalAlign: Int = 0,
+        behindDoc: Bool = false,
+        distTop: CGFloat = 0,
+        distBottom: CGFloat = 0,
+        distLeft: CGFloat = 0,
+        distRight: CGFloat = 0
     ) {
         self.type = type
         self.x = x
@@ -306,6 +330,13 @@ public struct OfficeElement: Codable, Sendable {
         self.paths = paths
         self.fillGradient = fillGradient
         self.merges = merges
+        self.wrapMode = wrapMode
+        self.horizontalAlign = horizontalAlign
+        self.behindDoc = behindDoc
+        self.distTop = distTop
+        self.distBottom = distBottom
+        self.distLeft = distLeft
+        self.distRight = distRight
     }
 
     public init(from decoder: Decoder) throws {
@@ -331,6 +362,19 @@ public struct OfficeElement: Codable, Sendable {
         self.paths = try c.decodeIfPresent([OfficePath].self, forKey: .paths) ?? []
         self.fillGradient = try c.decodeIfPresent(OfficeGradientFill.self, forKey: .fillGradient)
         self.merges = try c.decodeIfPresent([OfficeCellRange].self, forKey: .merges) ?? []
+        self.wrapMode = try c.decodeIfPresent(OfficeWrapMode.self, forKey: .wrapMode) ?? .inline
+        let rawHAlign = try c.decodeIfPresent(Int.self, forKey: .horizontalAlign) ?? 0
+        self.horizontalAlign = (0...3).contains(rawHAlign) ? rawHAlign : 0
+        self.behindDoc = try c.decodeIfPresent(Bool.self, forKey: .behindDoc) ?? false
+        self.distTop = Self.clampWrapDistance(try c.decodeIfPresent(CGFloat.self, forKey: .distTop))
+        self.distBottom = Self.clampWrapDistance(try c.decodeIfPresent(CGFloat.self, forKey: .distBottom))
+        self.distLeft = Self.clampWrapDistance(try c.decodeIfPresent(CGFloat.self, forKey: .distLeft))
+        self.distRight = Self.clampWrapDistance(try c.decodeIfPresent(CGFloat.self, forKey: .distRight))
+    }
+
+    private static func clampWrapDistance(_ value: CGFloat?) -> CGFloat {
+        guard let value, value.isFinite else { return 0 }
+        return max(0, min(1200, value))
     }
 }
 

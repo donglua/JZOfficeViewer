@@ -153,36 +153,10 @@ public enum OfficeThumbnail {
         ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: docW, height: docH))
 
-        let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
-        let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
-        let availW = max(100, docW - marginX - marginR)
-        var curY: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
         let cache = imageStore.snapshot
-
-        for block in allBlocks {
-            if curY >= docH - 16 { break }
-            let elW = block.width > 0 ? min(availW, block.width) : availW
-            var elH = block.height
-            if elH <= 0 {
-                if block.type == .table && !block.rows.isEmpty {
-                    var tableBlock = block
-                    tableBlock.width = elW
-                    elH = CGElementDrawer.measureTableHeight(element: tableBlock)
-                } else if !block.paragraphs.isEmpty {
-                    elH = CGElementDrawer.measureParagraphsHeight(block.paragraphs, availableWidth: elW, wrap: true) + 8
-                } else {
-                    elH = 80
-                }
-            }
-            var positioned = block
-            positioned.x = marginX
-            positioned.y = curY
-            positioned.width = elW
-            positioned.height = elH
-            positioned.transform = [1, 0, 0, 1, marginX, curY]
-            positioned.textWrap = true
-            CGElementDrawer.drawElement(in: ctx, element: positioned, images: cache)
-            curY += elH + 8
+        let plan = CGElementDrawer.layoutDocxBlocks(in: doc, maxHeight: docH)
+        for idx in plan.zOrder {
+            CGElementDrawer.drawDocxPlacement(in: ctx, placement: plan.placements[idx], images: cache)
         }
 
         guard let cgImage = ctx.makeImage() else {

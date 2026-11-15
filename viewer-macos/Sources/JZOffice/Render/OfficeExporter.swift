@@ -62,33 +62,8 @@ public enum OfficeExporter {
             }
         case .docx:
             let docW = doc.width > 0 ? doc.width : 595
-            let marginX: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
-            let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
-            let marginTop: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
-            let marginBottom: CGFloat = doc.marginBottom > 0 ? doc.marginBottom : 24
-            let availW = max(100, docW - marginX - marginR)
-            let allBlocks = doc.headerBlocks + doc.blocks + doc.footerBlocks
-
-            var measuredBlocks: [(OfficeElement, CGFloat)] = []
-            var totalH: CGFloat = marginTop + marginBottom
-            for block in allBlocks {
-                let elW = block.width > 0 ? min(availW, block.width) : availW
-                var elH = block.height
-                if elH <= 0 {
-                    if block.type == .table && !block.rows.isEmpty {
-                        var tbl = block
-                        tbl.width = elW
-                        elH = CGElementDrawer.measureTableHeight(element: tbl)
-                    } else if !block.paragraphs.isEmpty {
-                        elH = CGElementDrawer.measureParagraphsHeight(block.paragraphs, availableWidth: elW, wrap: true) + 8
-                    } else {
-                        elH = 80
-                    }
-                }
-                measuredBlocks.append((block, elH))
-                totalH += elH + 8
-            }
-            let pageH = max(docW * 1.414, totalH)
+            let plan = CGElementDrawer.layoutDocxBlocks(in: doc)
+            let pageH = max(docW * 1.414, plan.contentHeight)
             var mediaBox = CGRect(x: 0, y: 0, width: docW, height: pageH)
             pdfCtx.beginPage(mediaBox: &mediaBox)
             pdfCtx.saveGState()
@@ -97,18 +72,8 @@ public enum OfficeExporter {
             pdfCtx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
             pdfCtx.fill(mediaBox)
 
-            var curY = marginTop
-            for (block, elH) in measuredBlocks {
-                let elW = block.width > 0 ? min(availW, block.width) : availW
-                var positioned = block
-                positioned.x = marginX
-                positioned.y = curY
-                positioned.width = elW
-                positioned.height = elH
-                positioned.transform = [1, 0, 0, 1, marginX, curY]
-                positioned.textWrap = true
-                CGElementDrawer.drawElement(in: pdfCtx, element: positioned, images: cache)
-                curY += elH + 8
+            for idx in plan.zOrder {
+                CGElementDrawer.drawDocxPlacement(in: pdfCtx, placement: plan.placements[idx], images: cache)
             }
             pdfCtx.restoreGState()
             pdfCtx.endPage()
