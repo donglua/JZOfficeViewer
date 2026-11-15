@@ -1,4 +1,4 @@
-use jz_office_core::model::{is_zero_u32, Paragraph, Run};
+use jz_office_core::model::{is_zero_u32, Element, Paragraph, Run, WrapMode};
 
 #[test]
 fn helper_is_zero_u32_identifies_zero() {
@@ -84,5 +84,47 @@ fn custom_paragraph_and_run_serialize_background_and_borders_in_json(
 
     let json_run = serde_json::to_value(&run)?;
     assert_eq!(json_run["background"], 0xFF00_FFFFu32);
+    Ok(())
+}
+
+#[test]
+fn default_element_omits_floating_fields_and_custom_serializes_in_json(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let default_el = Element::default();
+    let json_default = serde_json::to_value(&default_el)?;
+    for key in [
+        "wrapMode",
+        "horizontalAlign",
+        "behindDoc",
+        "distTop",
+        "distBottom",
+        "distLeft",
+        "distRight",
+    ] {
+        assert!(
+            json_default.get(key).is_none(),
+            "default element should omit {key}, got {:?}",
+            json_default.get(key)
+        );
+    }
+
+    let custom_el = Element {
+        wrap_mode: WrapMode::TopAndBottom,
+        horizontal_align: 2,
+        behind_doc: true,
+        dist_top: 4.5,
+        dist_bottom: 6.0,
+        dist_left: 9.0,
+        dist_right: 12.0,
+        ..Default::default()
+    };
+    let json_custom = serde_json::to_value(&custom_el)?;
+    assert_eq!(json_custom["wrapMode"], "TOP_AND_BOTTOM");
+    assert_eq!(json_custom["horizontalAlign"], 2);
+    assert_eq!(json_custom["behindDoc"], true);
+    assert_eq!(json_custom["distTop"], 4.5);
+    assert_eq!(json_custom["distBottom"], 6.0);
+    assert_eq!(json_custom["distLeft"], 9.0);
+    assert_eq!(json_custom["distRight"], 12.0);
     Ok(())
 }

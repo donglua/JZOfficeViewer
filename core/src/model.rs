@@ -91,6 +91,30 @@ pub fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 
+#[must_use]
+pub const fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum WrapMode {
+    #[default]
+    Inline,
+    Square,
+    Tight,
+    Through,
+    TopAndBottom,
+    None,
+}
+
+impl WrapMode {
+    #[must_use]
+    pub const fn is_inline(&self) -> bool {
+        matches!(self, Self::Inline)
+    }
+}
+
 pub fn contains_east_asian(text: &str) -> bool {
     text.chars().any(|c| {
         matches!(
@@ -299,6 +323,20 @@ pub struct Element {
     pub paths: Vec<Path>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill_gradient: Option<GradientFill>,
+    #[serde(skip_serializing_if = "WrapMode::is_inline")]
+    pub wrap_mode: WrapMode,
+    #[serde(skip_serializing_if = "is_zero_u8")]
+    pub horizontal_align: u8,
+    #[serde(skip_serializing_if = "is_false")]
+    pub behind_doc: bool,
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub dist_top: f32,
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub dist_bottom: f32,
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub dist_left: f32,
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub dist_right: f32,
 }
 
 impl Default for Element {
@@ -329,6 +367,13 @@ impl Default for Element {
             cell_fills: Vec::new(),
             paths: Vec::new(),
             fill_gradient: None,
+            wrap_mode: WrapMode::Inline,
+            horizontal_align: 0,
+            behind_doc: false,
+            dist_top: 0.0,
+            dist_bottom: 0.0,
+            dist_left: 0.0,
+            dist_right: 0.0,
         }
     }
 }
