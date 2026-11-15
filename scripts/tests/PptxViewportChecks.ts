@@ -1,5 +1,11 @@
-import { resolvePptxCurrentPage } from '../../viewer-ohos/src/main/ets/render/PptxViewport.ts';
-import type { PptxViewportPage } from '../../viewer-ohos/src/main/ets/render/PptxViewport.ts';
+import {
+  resolvePptxCurrentPage,
+  resolvePptxVisibleRange
+} from '../../viewer-ohos/src/main/ets/render/PptxViewport.ts';
+import type {
+  PptxViewportPage,
+  PptxVisibleRange
+} from '../../viewer-ohos/src/main/ets/render/PptxViewport.ts';
 
 let checks = 0;
 
@@ -7,6 +13,13 @@ function expectEqual(actual: number, expected: number, message: string): void {
   checks++;
   if (actual !== expected) {
     throw new Error(`${message}: 期望 ${expected}，实际 ${actual}`);
+  }
+}
+
+function expectRange(actual: PptxVisibleRange, start: number, end: number, message: string): void {
+  checks++;
+  if (actual.start !== start || actual.end !== end) {
+    throw new Error(`${message}: 期望 [${start}, ${end})，实际 [${actual.start}, ${actual.end})`);
   }
 }
 
@@ -58,5 +71,15 @@ expectEqual(
 );
 
 expectEqual(resolvePptxCurrentPage([], 1, 0, 0, 0, 100), 0, '空文档页码为零');
+
+expectRange(resolvePptxVisibleRange(pages, -12, 80), 0, 1, '顶部视口只返回首页');
+expectRange(resolvePptxVisibleRange(pages, 90, 130), 0, 2, '跨页视口返回相交页面');
+expectRange(resolvePptxVisibleRange(pages, 101, 115), 1, 1, '页间空隙不返回页面');
+expectRange(resolvePptxVisibleRange(pages, 232, 332), 2, 3, '边界相等时包含末页');
+expectRange(resolvePptxVisibleRange([], 0, 100), 0, 0, '空文档可见范围为空');
+
+const longPages: PptxViewportPage[] = [];
+for (let i = 0; i < 100; i++) longPages.push({ y: i * 116, height: 100 });
+expectRange(resolvePptxVisibleRange(longPages, 5800, 5900), 50, 51, '长文档二分定位中间页');
 
 console.log(`PPTX viewport checks passed: ${checks}`);

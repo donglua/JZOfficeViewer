@@ -18,7 +18,9 @@ export class ImageStore {
   private readonly refCounts: Map<string, number> = new Map();
   private readonly sampledFlags: Map<string, boolean> = new Map();
   private readonly decodedBudgets: Map<string, number> = new Map();
-  private readonly pending: Map<string, Promise<DecodedImageResult | null>> = new Map();
+  // 同一 part 的解码、缓存提交与旧 PixelMap 释放必须由唯一任务完成；仅共享解码
+  // 结果会让多个调用方重复提交甚至 double-release。
+  private readonly pending: Map<string, Promise<boolean>> = new Map();
   private readonly failedParts: Set<string> = new Set();
 
   private totalPixels: number = 0;
@@ -86,41 +88,42 @@ export class ImageStore {
     }
   }
 
+  /** 判断指定部件是否尚未缓存，或当前下采样版本需要按显示面积升级。 */
+  public needsLoad(part: string, desiredMaxPixels: number = 4_000_000): boolean {
+    if (this.closed || !this.filePath || !part || this.failedParts.has(part)) return false;
+    const cached = this.pixelMaps.get(part);
+    if (!cached) return true;
+    const isSampled = this.sampledFlags.get(part) ?? false;
+    const currentBudget = this.decodedBudgets.get(part) ?? 0;
+    return isSampled && desiredMaxPixels > currentBudget * 1.5;
+  }
+
   /**
    * 异步加载指定部件图片；若存在高清升级或首次就绪，返回 true
    */
   public async load(part: string, desiredMaxPixels: number = 4_000_000): Promise<boolean> {
-    if (this.closed || !this.filePath || !part || this.failedParts.has(part)) {
+    if (!this.needsLoad(part, desiredMaxPixels)) {
+      this.touch(part);
       return false;
     }
 
-    const cached = this.pixelMaps.get(part);
-    const isSampled = this.sampledFlags.get(part) ?? false;
-    const currentBudget = this.decodedBudgets.get(part) ?? 0;
+    const existingTask = this.pending.get(part);
+    if (existingTask) return await existingTask;
 
-    // 若缓存命中且无需高清升级，直接返回
-    if (cached) {
-      if (!isSampled || desiredMaxPixels <= currentBudget * 1.5) {
-        this.touch(part);
-        return false;
-      }
-    }
-
-    let task = this.pending.get(part);
-    if (!task) {
-      task = this.decodeWithBudget(part, desiredMaxPixels);
-      this.pending.set(part, task);
-    }
-
-    let result: DecodedImageResult | null = null;
+    const task = this.decodeAndCommit(part, desiredMaxPixels);
+    this.pending.set(part, task);
     try {
-      result = await task;
+      return await task;
     } finally {
       if (this.pending.get(part) === task) {
         this.pending.delete(part);
       }
     }
+  }
 
+  /** 唯一 owner 负责从解码到缓存提交的完整生命周期。 */
+  private async decodeAndCommit(part: string, desiredMaxPixels: number): Promise<boolean> {
+    const result = await this.decodeWithBudget(part, desiredMaxPixels);
     if (!result) {
       if (!this.closed && (this.refCounts.get(part) ?? 0) > 0) {
         this.failedParts.add(part);
@@ -130,15 +133,6 @@ export class ImageStore {
 
     if (this.closed) {
       result.pixelMap.release();
-      return false;
-    }
-
-    const oldPixelMap = this.pixelMaps.get(part);
-    const oldPixels = this.pixelCounts.get(part) ?? 0;
-
-    // 若已有旧图且当前解码结果像素未增加，保留旧图
-    if (oldPixelMap && result.pixelMap === oldPixelMap) {
-      this.touch(part);
       return false;
     }
 
@@ -157,7 +151,13 @@ export class ImageStore {
       return false;
     }
 
-    // 替换为新 PixelMap，扣减旧像素并释放旧图
+    // getImageInfo 可能挂起，旧缓存必须在 await 后重新读取，避免释放已被替换的对象。
+    const oldPixelMap = this.pixelMaps.get(part);
+    const oldPixels = this.pixelCounts.get(part) ?? 0;
+    if (oldPixelMap === result.pixelMap) {
+      this.touch(part);
+      return false;
+    }
     if (oldPixelMap) {
       this.totalPixels = Math.max(0, this.totalPixels - oldPixels);
       oldPixelMap.release();

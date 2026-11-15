@@ -3,6 +3,48 @@ export interface PptxViewportPage {
   readonly height: number;
 }
 
+export interface PptxVisibleRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * 返回与视口相交的连续页范围（end 为开区间）。要求页面的 y 与 y + height
+ * 均单调递增（PPTX 纵向布局满足），使用二分避免长演示文稿每帧扫描所有页面。
+ */
+export function resolvePptxVisibleRange(
+  pages: PptxViewportPage[],
+  visibleTop: number,
+  visibleBottom: number
+): PptxVisibleRange {
+  if (pages.length === 0 || visibleBottom < visibleTop) return { start: 0, end: 0 };
+
+  let low = 0;
+  let high = pages.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    const page = pages[mid];
+    if (page.y + page.height < visibleTop) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  const start = low;
+
+  low = start;
+  high = pages.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (pages[mid].y <= visibleBottom) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  return { start, end: low };
+}
+
 /**
  * 根据视口位置计算当前幻灯片页码。
  * 顶部与底部优先使用边界页码，避免小页面并排显示时“可见面积最大页”停留在相邻页。

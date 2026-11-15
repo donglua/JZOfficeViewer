@@ -8,7 +8,11 @@ import { CanvasElementDrawer, OfficeRect } from './CanvasElementDrawer';
 import { ImageStore } from './ImageStore';
 import { SpreadsheetView } from './SpreadsheetView';
 import { OfficeSearchBar } from './OfficeSearchBar';
-import { PptxViewportPage, resolvePptxCurrentPage } from './PptxViewport';
+import {
+  PptxViewportPage,
+  resolvePptxCurrentPage,
+  resolvePptxVisibleRange
+} from './PptxViewport';
 
 class ArrayDataSource<T> implements IDataSource {
   private readonly items: T[];
@@ -2182,14 +2186,14 @@ struct PptxSlidesView {
     for (const part of nextVisible) this.visibleImageParts.add(part);
 
     for (const part of nextVisible) {
-      if (this.imageStore.cache.has(part) || this.loadingParts.has(part)) {
+      // 根据图片在当前视口中的投影面积下采样；保留 2 倍余量，捏合放大时
+      // ImageStore 会按 1.5 倍阈值升级更高清版本，避免首屏固定解码 4MP。
+      const desiredPixels = Math.max(262_144, Math.min(4_000_000, parts.get(part) ?? 262_144));
+      if (this.loadingParts.has(part) || !this.imageStore.needsLoad(part, desiredPixels)) {
         continue;
       }
       this.loadingParts.add(part);
       const gen = this.loadGeneration;
-      // 根据图片在当前视口中的投影面积下采样；保留 2 倍余量，捏合放大时
-      // ImageStore 会按既有升级策略重新解码更高清版本，避免首屏固定解码 4MP。
-      const desiredPixels = Math.max(262_144, Math.min(4_000_000, parts.get(part) ?? 262_144));
       this.imageStore.load(part, desiredPixels).then((updated: boolean) => {
         this.loadingParts.delete(part);
         if (updated && !this.isDisappeared && this.loadGeneration === gen) {
@@ -2225,13 +2229,11 @@ struct PptxSlidesView {
     // part -> 当前帧所需解码像素。相同图片可能多次出现，只保留最高显示需求。
     const neededImageParts: Map<string, number> = new Map();
 
-    for (let i = 0; i < this.pageLayouts.length; i++) {
+    // 页面 y 单调递增，先二分定位可见区间。长 PPTX 每帧只访问屏内通常 1～2 页，
+    // 避免此前从首页线性扫到末页造成的滚动开销。
+    const visibleRange = resolvePptxVisibleRange(this.pageLayouts, visibleTop, visibleBottom);
+    for (let i = visibleRange.start; i < visibleRange.end; i++) {
       const layout = this.pageLayouts[i];
-      // 视口裁剪：只绘制可见范围内的幻灯片
-      if (layout.y + layout.height < visibleTop || layout.y > visibleBottom) {
-        continue;
-      }
-
       const slideLeft = (this.contentWidth - layout.width) / 2;
 
       ctx.save();
