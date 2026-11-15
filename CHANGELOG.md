@@ -2,6 +2,11 @@
 
 ## 未发布
 
+### 细节修复与交互优化
+
+- **鸿蒙端惯性滑动按下即停（`viewer-ohos`）**：
+  - PPTX 与 XLSX 自绘视图原先只在 `PanGesture.onActionStart` 中终止惯性，而该回调需手指移动超过识别距离才触发，导致滑动惯性尚未衰减完时按住屏幕，内容仍继续滑走。改为在 `onTouch` 的 `TouchType.Down` 立即停止惯性，与 Android `GestureDetector.onDown` 的 `scroller.forceFinished(true)` 行为对齐。
+
 ### 性能
 
 - **元数据与缩略图的轻量路径（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：

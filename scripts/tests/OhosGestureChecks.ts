@@ -44,10 +44,23 @@ function checkPanCancelsZoomTween(path: string, label: string): void {
   expect(startBody.includes('this.stopZoomTween();'), `${label} 单指 Pan 开始必须取消旧缩放补间`);
 }
 
+/** 惯性运行中手指按下必须立刻停住；只靠 PanGesture.onActionStart 会等到移动超过识别距离才响应 */
+function checkTouchDownStopsFling(path: string, label: string): void {
+  const source = readFileSync(path, 'utf8');
+  const touchIndex = source.indexOf('.onTouch(');
+  expect(touchIndex >= 0, `${label} 缺少 onTouch，惯性滑动无法在手指按下时停止`);
+  if (touchIndex < 0) return;
+  const body = source.slice(touchIndex, source.indexOf('.gesture(', touchIndex));
+  expect(body.includes('TouchType.Down'), `${label} onTouch 必须判断 TouchType.Down`);
+  expect(body.includes('this.stopFling();'), `${label} 手指按下（Down）必须立刻停止 Fling`);
+}
+
 checkDoubleTapThreshold(previewPath, 'DOCX/PPTX');
 checkDoubleTapThreshold(spreadsheetPath, 'XLSX');
 checkPanCancelsZoomTween(previewPath, 'PPTX');
 checkPanCancelsZoomTween(spreadsheetPath, 'XLSX');
+checkTouchDownStopsFling(previewPath, 'PPTX');
+checkTouchDownStopsFling(spreadsheetPath, 'XLSX');
 
 if (failures.length > 0) {
   throw new Error(`手势回归检查失败（${failures.length}/${checks}）：\n- ${failures.join('\n- ')}`);

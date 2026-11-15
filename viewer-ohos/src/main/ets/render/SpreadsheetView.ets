@@ -1240,6 +1240,13 @@ export struct SpreadsheetView {
             this.redraw();
           }
         })
+        // 手指按下即终止惯性：PanGesture 需要移动达到识别距离才会回调 onActionStart，
+        // 若只在 Pan 开始处停 Fling，惯性运行中按住不动时表格仍会继续滑动（安卓 onDown 已 forceFinished）
+        .onTouch((event: TouchEvent) => {
+          if (event.type === TouchType.Down) {
+            this.stopFling();
+          }
+        })
         .gesture(
           GestureGroup(
             GestureMode.Parallel,
