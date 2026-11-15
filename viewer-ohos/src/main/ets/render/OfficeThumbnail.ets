@@ -1,7 +1,7 @@
 import { image } from '@kit.ImageKit';
 import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
-import { CanvasElementDrawer } from './CanvasElementDrawer';
+import { CanvasElementDrawer, WrapObstacle } from './CanvasElementDrawer';
 import { ImageStore } from './ImageStore';
 import { RenderUtils } from './RenderUtils';
 
@@ -134,51 +134,190 @@ async function renderDocxThumbnail(
     ctx.scale(scale, scale);
     const marginX = 24;
     const availW = Math.max(100, docW - marginX * 2);
+    const coreMarginL = doc.marginLeft && doc.marginLeft > 0 ? doc.marginLeft : 72;
+    const coreMarginR = doc.marginRight && doc.marginRight > 0 ? doc.marginRight : 72;
+    const coreContentW = Math.max(1, docW - coreMarginL - coreMarginR);
+    const behindItems: ThumbnailDrawItem[] = [];
+    const flowItems: ThumbnailDrawItem[] = [];
+    const frontItems: ThumbnailDrawItem[] = [];
+    const activeObstacles: WrapObstacle[] = [];
     let curY = 24;
 
-    for (const block of allBlocks) {
-      if (curY >= docH - 16) break;
-      const elW = block.width && block.width > 0 ? Math.min(availW, block.width) : availW;
-      let elH = block.height && block.height > 0 ? block.height : 0;
-      if (elH <= 0 && block.type === 'TABLE' && block.rows && block.rows.length > 0) {
-        elH = CanvasElementDrawer.measureTableHeight(block, elW, ctx);
-      } else if (elH <= 0 && block.paragraphs && block.paragraphs.length > 0) {
-        elH = CanvasElementDrawer.measureParagraphsHeight(ctx, block.paragraphs, elW, true) + 8;
-      } else if (elH <= 0) {
-        elH = 80;
-      }
+    const sections: model.Element[][] = [
+      doc.headerBlocks ?? [],
+      doc.blocks ?? [],
+      doc.footerBlocks ?? []
+    ];
+    for (const sec of sections) {
+      for (const block of sec) {
+        if (curY >= docH - 16) break;
+        const floating = block.wrapMode !== undefined && block.wrapMode !== 'INLINE';
+        if (!floating) {
+          pruneThumbObstacles(activeObstacles, curY);
+          if (block.type === 'TABLE' && activeObstacles.length > 0) {
+            curY = Math.max(curY, maxThumbObstacleBottom(activeObstacles) + 6);
+            activeObstacles.length = 0;
+          }
+        }
+        const isFixedShape = block.type !== 'TEXT' && block.type !== 'IMAGE' && block.type !== 'TABLE';
+        const elW = block.width && block.width > 0
+          ? (floating && block.type === 'IMAGE' ? block.width : Math.min(availW, block.width))
+          : availW;
+        let elH = block.height && block.height > 0 ? block.height : 0;
 
-      const positioned: model.Element = {
-        type: block.type,
-        x: marginX,
-        y: curY,
-        width: elW,
-        height: elH,
-        transform: [1, 0, 0, 1, marginX, curY],
-        padding: block.padding ?? 4,
-        fill: block.fill,
-        stroke: block.stroke,
-        strokeWidth: block.strokeWidth,
-        image: block.image,
-        imageBounds: block.imageBounds,
-        verticalAlignment: block.verticalAlignment,
-        textWrap: true,
-        paragraphs: block.paragraphs,
-        rows: block.rows,
-        columnWidths: block.columnWidths,
-        cellFills: block.cellFills,
-        paths: block.paths,
-        fillGradient: block.fillGradient,
-        merges: block.merges
-      };
-      CanvasElementDrawer.drawElement(ctx, positioned, imageStore.cache);
-      curY += elH + 8;
+        if (floating) {
+          if (elH <= 0) {
+            elH = block.type === 'IMAGE' ? 100 : 80;
+          }
+          const align = block.horizontalAlign ?? 0;
+          let fx = marginX;
+          if (align === 1) {
+            fx = marginX;
+          } else if (align === 2) {
+            fx = Math.max(0, marginX + (availW - elW) / 2);
+          } else if (align === 3) {
+            fx = Math.max(0, marginX + availW - elW);
+          } else {
+            const scaled = marginX + (block.x - coreMarginL) * (availW / coreContentW);
+            fx = Math.max(0, Math.min(Math.max(0, docW - elW), scaled));
+          }
+          let fy = Math.max(24, curY + (block.y || 0));
+          if (block.wrapMode === 'TOP_AND_BOTTOM') {
+            const clearBot = maxThumbObstacleBottom(activeObstacles);
+            fy = Math.max(fy, Math.max(curY, clearBot) + Math.max(0, block.distTop || 0));
+            curY = Math.max(curY, fy + elH + Math.max(0, block.distBottom || 0) + 8);
+            pruneThumbObstacles(activeObstacles, curY);
+          } else if (block.wrapMode !== 'NONE') {
+            const obsLeft = fx - Math.max(0, block.distLeft || 0);
+            const obsRight = fx + elW + Math.max(0, block.distRight || 0);
+            const obsTop = fy - Math.max(0, block.distTop || 0);
+            const obsBot = fy + elH + Math.max(0, block.distBottom || 0);
+            const side: 'left' | 'right' = align === 1
+              ? 'left'
+              : (align === 3 ? 'right' : (fx + elW * 0.5 <= marginX + availW * 0.5 ? 'left' : 'right'));
+            if (obsLeft <= marginX + 36 && obsRight >= marginX + availW - 36) {
+              curY = Math.max(curY, obsBot + 6);
+              pruneThumbObstacles(activeObstacles, curY);
+            } else {
+              activeObstacles.push({ top: obsTop, bottom: obsBot, left: obsLeft, right: obsRight, side });
+            }
+          }
+          const positioned = buildThumbnailElement(block, elW, elH);
+          const item: ThumbnailDrawItem = { element: positioned, x: fx, y: fy, isParagraphFlow: false };
+          if (block.behindDoc) {
+            behindItems.push(item);
+          } else {
+            frontItems.push(item);
+          }
+          continue;
+        }
+
+        const drawX = marginX;
+        if (!isFixedShape && block.type !== 'TEXT' && activeObstacles.length > 0) {
+          let clearY = curY;
+          for (const obs of activeObstacles) {
+            if (drawX < obs.right && drawX + elW > obs.left) {
+              clearY = Math.max(clearY, obs.bottom + 6);
+            }
+          }
+          if (clearY > curY) {
+            curY = clearY;
+            pruneThumbObstacles(activeObstacles, curY);
+          }
+        }
+        const obsSnapshot = block.type === 'TEXT' && activeObstacles.length > 0
+          ? activeObstacles.slice()
+          : undefined;
+        if (elH <= 0 && block.type === 'TABLE' && block.rows && block.rows.length > 0) {
+          elH = CanvasElementDrawer.measureTableHeight(block, elW, ctx);
+        } else if (elH <= 0 && block.paragraphs && block.paragraphs.length > 0) {
+          elH = CanvasElementDrawer.measureParagraphsHeight(ctx, block.paragraphs, elW, true, obsSnapshot, curY, drawX) + 8;
+        } else if (elH <= 0) {
+          elH = 80;
+        }
+
+        const positioned = buildThumbnailElement(block, elW, elH);
+        const isParaFlow = block.type === 'TEXT' && !!(block.paragraphs && block.paragraphs.length > 0);
+        if (isParaFlow) {
+          positioned.padding = 0;
+        }
+        flowItems.push({ element: positioned, x: drawX, y: curY, obstacles: obsSnapshot, isParagraphFlow: isParaFlow });
+        curY += elH + 8;
+      }
+      if (activeObstacles.length > 0) {
+        curY = Math.max(curY, maxThumbObstacleBottom(activeObstacles) + 6);
+        activeObstacles.length = 0;
+      }
     }
+
+    const drawItem = (item: ThumbnailDrawItem): void => {
+      ctx.save();
+      ctx.translate(item.x, item.y);
+      if (item.isParagraphFlow) {
+        CanvasElementDrawer.drawParagraphs(ctx, item.element, item.obstacles, item.y, item.x);
+      } else {
+        CanvasElementDrawer.drawElement(ctx, item.element, imageStore.cache);
+      }
+      ctx.restore();
+    };
+    for (const item of behindItems) drawItem(item);
+    for (const item of flowItems) drawItem(item);
+    for (const item of frontItems) drawItem(item);
     ctx.restore();
     return ctx.getPixelMap(0, 0, outW, outH);
   } finally {
     imageStore.release();
   }
+}
+
+interface ThumbnailDrawItem {
+  element: model.Element;
+  x: number;
+  y: number;
+  obstacles?: WrapObstacle[];
+  isParagraphFlow: boolean;
+}
+
+function buildThumbnailElement(block: model.Element, width: number, height: number): model.Element {
+  return {
+    type: block.type,
+    x: 0,
+    y: 0,
+    width,
+    height,
+    transform: block.transform,
+    padding: block.padding ?? 4,
+    fill: block.fill,
+    stroke: block.stroke,
+    strokeWidth: block.strokeWidth,
+    image: block.image,
+    imageBounds: block.imageBounds,
+    verticalAlignment: block.verticalAlignment,
+    textWrap: block.textWrap !== false,
+    paragraphs: block.paragraphs,
+    rows: block.rows,
+    columnWidths: block.columnWidths,
+    cellFills: block.cellFills,
+    paths: block.paths,
+    fillGradient: block.fillGradient,
+    merges: block.merges
+  };
+}
+
+function pruneThumbObstacles(obstacles: WrapObstacle[], y: number): void {
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    if (obstacles[i].bottom <= y) {
+      obstacles.splice(i, 1);
+    }
+  }
+}
+
+function maxThumbObstacleBottom(obstacles: WrapObstacle[]): number {
+  let max = 0;
+  for (const obs of obstacles) {
+    if (obs.bottom > max) max = obs.bottom;
+  }
+  return max;
 }
 
 function renderXlsxThumbnail(

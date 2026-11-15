@@ -11,6 +11,8 @@ export type VerticalAlignment = 'TOP' | 'CENTER' | 'BOTTOM';
 
 export type LineSpacingRule = 'AUTO' | 'EXACT' | 'AT_LEAST';
 
+export type WrapMode = 'INLINE' | 'SQUARE' | 'TIGHT' | 'THROUGH' | 'TOP_AND_BOTTOM' | 'NONE';
+
 export type PathCommandOp = 'MOVE' | 'LINE' | 'QUAD' | 'CUBIC' | 'CLOSE';
 
 export interface PathCommand {
@@ -83,6 +85,13 @@ export interface Element {
   imageBounds?: [number, number, number, number];
   verticalAlignment: VerticalAlignment;
   textWrap: boolean;
+  wrapMode?: WrapMode;
+  horizontalAlign?: number;
+  behindDoc?: boolean;
+  distTop?: number;
+  distBottom?: number;
+  distLeft?: number;
+  distRight?: number;
   paragraphs?: Paragraph[];
   rows?: Paragraph[][][];
   columnWidths?: number[];

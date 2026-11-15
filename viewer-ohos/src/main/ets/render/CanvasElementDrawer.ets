@@ -20,6 +20,16 @@ interface WrappedLine {
   width: number;
   height: number;
   maxFontSize: number;
+  leftIndent: number;
+  rightIndent: number;
+}
+
+export interface WrapObstacle {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+  side: 'left' | 'right';
 }
 
 interface CachedParagraphEntry {
@@ -452,7 +462,13 @@ export class CanvasElementDrawer {
     }
   }
 
-  private static drawParagraphs(ctx: OfficeCanvasContext, element: model.Element): void {
+  public static drawParagraphs(
+    ctx: OfficeCanvasContext,
+    element: model.Element,
+    obstacles?: WrapObstacle[],
+    baseY: number = 0,
+    originX: number = 0
+  ): void {
     const paragraphs = element.paragraphs ?? [];
     if (paragraphs.length === 0) return;
     const padding = Math.max(0, element.padding ?? 4);
@@ -464,7 +480,15 @@ export class CanvasElementDrawer {
     let totalTextHeight = 0;
     for (const para of paragraphs) {
       totalTextHeight += Math.max(0, para.before || 0);
-      const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
+      const lines = CanvasElementDrawer.layoutParagraph(
+        ctx,
+        para,
+        availableWidth,
+        wrap,
+        obstacles,
+        baseY + padding + totalTextHeight,
+        originX + padding
+      );
       laidOutParagraphs.push(lines);
       for (const line of lines) {
         totalTextHeight += line.height;
@@ -501,12 +525,23 @@ export class CanvasElementDrawer {
     ctx: OfficeCanvasContext,
     paragraphs: model.Paragraph[],
     availableWidth: number,
-    wrap: boolean
+    wrap: boolean,
+    obstacles?: WrapObstacle[],
+    baseY: number = 0,
+    originX: number = 0
   ): number {
     let total = 0;
     for (const para of paragraphs) {
       total += Math.max(0, para.before || 0);
-      const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
+      const lines = CanvasElementDrawer.layoutParagraph(
+        ctx,
+        para,
+        availableWidth,
+        wrap,
+        obstacles,
+        baseY + total,
+        originX
+      );
       for (const line of lines) {
         total += line.height;
       }
@@ -729,7 +764,7 @@ export class CanvasElementDrawer {
     }
   }
 
-  private static drawParagraphLines(
+  public static drawParagraphLines(
     ctx: OfficeCanvasContext,
     para: model.Paragraph,
     lines: WrappedLine[],
@@ -783,18 +818,15 @@ export class CanvasElementDrawer {
       }
     }
 
-    const rightIndent = Math.max(0, para.rightIndent || 0);
-    const baseIndent = Math.max(0, para.indent || 0);
-    const firstIndent = Math.max(0, baseIndent + (para.firstLineIndent || 0));
-
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
 
     let curY = startY;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const leftIndent = i === 0 ? firstIndent : baseIndent;
-      const lineAvailWidth = Math.max(1, availableWidth - leftIndent - rightIndent);
+      const leftIndent = line.leftIndent;
+      const lineRightIndent = line.rightIndent;
+      const lineAvailWidth = Math.max(1, availableWidth - leftIndent - lineRightIndent);
 
       let lineX = startX + leftIndent;
       if (para.alignment === 1) {
@@ -856,32 +888,40 @@ export class CanvasElementDrawer {
   }
 
   /**
-   * 高性能段落折行：带 WeakMap 缓存，避免重复渲染或图片异步加载重绘时反复进行 measureText 排版
+   * 高性能段落折行：无绕排障碍时带 WeakMap 缓存；存在浮动障碍物时按每行 Y 区间动态计算左/右缩进
    */
-  private static layoutParagraph(
+  public static layoutParagraph(
     ctx: OfficeCanvasContext,
     para: model.Paragraph,
     maxWidth: number,
-    wrap: boolean
+    wrap: boolean,
+    obstacles?: WrapObstacle[],
+    paraY: number = 0,
+    originX: number = 0
   ): WrappedLine[] {
-    const widthKey = Math.round(maxWidth * 10);
-    const cachedEntries = CanvasElementDrawer.paragraphCache.get(para);
-    if (cachedEntries) {
-      for (const entry of cachedEntries) {
-        if (entry.widthKey === widthKey && entry.wrap === wrap) {
-          return entry.lines;
+    const hasObstacles = wrap && obstacles !== undefined && obstacles.length > 0;
+    if (!hasObstacles) {
+      const widthKey = Math.round(maxWidth * 10);
+      const cachedEntries = CanvasElementDrawer.paragraphCache.get(para);
+      if (cachedEntries) {
+        for (const entry of cachedEntries) {
+          if (entry.widthKey === widthKey && entry.wrap === wrap) {
+            return entry.lines;
+          }
         }
       }
+
+      const lines = CanvasElementDrawer.layoutParagraphInternal(ctx, para, maxWidth, wrap);
+
+      // 每个段落最多保留最近 2 组排版结果（适应常规与旋转/缩放视图）
+      const entries: CachedParagraphEntry[] = cachedEntries ? cachedEntries.slice(-1) : [];
+      entries.push({ widthKey, wrap, lines });
+      CanvasElementDrawer.paragraphCache.set(para, entries);
+
+      return lines;
     }
 
-    const lines = CanvasElementDrawer.layoutParagraphInternal(ctx, para, maxWidth, wrap);
-
-    // 每个段落最多保留最近 2 组排版结果（适应常规与旋转/缩放视图）
-    const entries: CachedParagraphEntry[] = cachedEntries ? cachedEntries.slice(-1) : [];
-    entries.push({ widthKey, wrap, lines });
-    CanvasElementDrawer.paragraphCache.set(para, entries);
-
-    return lines;
+    return CanvasElementDrawer.layoutParagraphInternal(ctx, para, maxWidth, wrap, obstacles, paraY, originX);
   }
 
   /**
@@ -891,7 +931,10 @@ export class CanvasElementDrawer {
     ctx: OfficeCanvasContext,
     para: model.Paragraph,
     availableWidth: number,
-    wrap: boolean
+    wrap: boolean,
+    obstacles?: WrapObstacle[],
+    paraY: number = 0,
+    originX: number = 0
   ): WrappedLine[] {
     const rightIndent = Math.max(0, para.rightIndent || 0);
     const baseIndent = Math.max(0, para.indent || 0);
@@ -917,22 +960,66 @@ export class CanvasElementDrawer {
         }
       }
     }
+    const defaultSize = para.runs && para.runs.length > 0 ? Math.max(1, para.runs[0].size) : 12;
+    const defaultLineH = CanvasElementDrawer.computeLineHeight(para, defaultSize);
+    const activeObs: WrapObstacle[] = wrap && obstacles && obstacles.length > 0
+      ? obstacles.filter((o: WrapObstacle): boolean => o.bottom > paraY)
+      : [];
+    const resolveLineIndents = (lineIdx: number, lineTop: number, estLineH: number): [number, number] => {
+      let l = lineIdx === 0 ? firstIndent : baseIndent;
+      let r = rightIndent;
+      if (activeObs.length > 0) {
+        const lineBottom = lineTop + estLineH;
+        for (const obs of activeObs) {
+          if (obs.bottom > lineTop && obs.top < lineBottom) {
+            if (obs.side === 'left') {
+              l = Math.max(l, Math.max(0, obs.right - originX));
+            } else {
+              r = Math.max(r, Math.max(0, (originX + availableWidth) - obs.left));
+            }
+          }
+        }
+        const minLineW = Math.max(1, Math.min(availableWidth, 24));
+        const maxSum = Math.max(0, availableWidth - minLineW);
+        if (l + r > maxSum) {
+          l = Math.min(l, maxSum);
+          r = Math.min(r, Math.max(0, maxSum - l));
+        }
+      }
+      return [l, r];
+    };
+
     if (runs.length === 0) {
-      const defaultSize = para.runs && para.runs.length > 0 ? Math.max(1, para.runs[0].size) : 12;
+      const indents = resolveLineIndents(0, paraY, defaultLineH);
       return [{
         segments: [],
         width: 0,
-        height: CanvasElementDrawer.computeLineHeight(para, defaultSize),
+        height: defaultLineH,
         maxFontSize: defaultSize,
+        leftIndent: indents[0],
+        rightIndent: indents[1],
       }];
     }
 
     const rawLines: TextSegment[][] = [[]];
+    const lineIndents: [number, number][] = [resolveLineIndents(0, paraY, defaultLineH)];
+    let curY = paraY;
     let currentLineWidth = 0;
+    const pushNewLine = (): void => {
+      const prev = rawLines[rawLines.length - 1];
+      let maxFs = defaultSize;
+      for (const s of prev) {
+        if (s.fontSize > maxFs) maxFs = s.fontSize;
+      }
+      curY += CanvasElementDrawer.computeLineHeight(para, maxFs);
+      rawLines.push([]);
+      lineIndents.push(resolveLineIndents(rawLines.length - 1, curY, defaultLineH));
+      currentLineWidth = 0;
+    };
     const maxLineW = (lineIdx: number): number => {
       if (!wrap) return 1000000;
-      const indent = lineIdx === 0 ? firstIndent : baseIndent;
-      return Math.max(1, availableWidth - indent - rightIndent);
+      const pair = lineIndents[lineIdx];
+      return Math.max(1, availableWidth - pair[0] - pair[1]);
     };
 
     for (const run of runs) {
@@ -951,8 +1038,7 @@ export class CanvasElementDrawer {
       const subParts = run.text.split('\n');
       for (let p = 0; p < subParts.length; p++) {
         if (p > 0) {
-          rawLines.push([]);
-          currentLineWidth = 0;
+          pushNewLine();
         }
         let remainingText = subParts[p];
         if (remainingText.length === 0) continue;
@@ -982,8 +1068,7 @@ export class CanvasElementDrawer {
           // 若当前行已有内容且放不下，先换新行再试
           const availInLine = limit - currentLineWidth;
           if (availInLine <= fontSize * 0.5 && currentLineWidth > 0) {
-            rawLines.push([]);
-            currentLineWidth = 0;
+            pushNewLine();
             continue;
           }
 
@@ -1023,8 +1108,7 @@ export class CanvasElementDrawer {
           }
 
           if (bestCount === 1 && currentLineWidth > 0 && bestWidth > availInLine) {
-            rawLines.push([]);
-            currentLineWidth = 0;
+            pushNewLine();
             continue;
           }
 
@@ -1043,8 +1127,7 @@ export class CanvasElementDrawer {
           });
           remainingText = remainingText.substring(bestCount);
           if (remainingText.length > 0) {
-            rawLines.push([]);
-            currentLineWidth = 0;
+            pushNewLine();
           } else {
             currentLineWidth += bestWidth;
           }
@@ -1052,18 +1135,21 @@ export class CanvasElementDrawer {
       }
     }
 
-    return rawLines.map((segs): WrappedLine => {
+    return rawLines.map((segs, idx): WrappedLine => {
       let w = 0;
       let maxFs = runs[0].size || 12;
       for (const s of segs) {
         w += s.width;
         if (s.fontSize > maxFs) maxFs = s.fontSize;
       }
+      const pair = lineIndents[idx] ?? [firstIndent, rightIndent];
       return {
         segments: segs,
         width: w,
         height: CanvasElementDrawer.computeLineHeight(para, maxFs),
         maxFontSize: maxFs,
+        leftIndent: pair[0],
+        rightIndent: pair[1],
       };
     });
   }
@@ -1090,12 +1176,17 @@ export class CanvasElementDrawer {
     startX: number,
     startY: number,
     availableWidth: number,
-    wrap: boolean = true
+    wrap: boolean = true,
+    obstacles?: WrapObstacle[],
+    paraY?: number,
+    originX?: number
   ): OfficeRect[] {
     if (startChar >= endChar) return [];
     let lines: WrappedLine[];
     if (ctx) {
-      lines = CanvasElementDrawer.layoutParagraph(ctx, para, availableWidth, wrap);
+      lines = CanvasElementDrawer.layoutParagraph(
+        ctx, para, availableWidth, wrap, obstacles, paraY ?? startY, originX ?? startX
+      );
     } else {
       const cached = CanvasElementDrawer.paragraphCache.get(para);
       if (cached && cached.length > 0) {
@@ -1110,18 +1201,15 @@ export class CanvasElementDrawer {
       }
     }
 
-    const rightIndent = Math.max(0, para.rightIndent || 0);
-    const baseIndent = Math.max(0, para.indent || 0);
-    const firstIndent = Math.max(0, baseIndent + (para.firstLineIndent || 0));
-
     const rects: OfficeRect[] = [];
     let curY = startY;
     let globalCharOffset = 0;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const leftIndent = i === 0 ? firstIndent : baseIndent;
-      const lineAvailWidth = Math.max(1, availableWidth - leftIndent - rightIndent);
+      const leftIndent = line.leftIndent;
+      const lineRightIndent = line.rightIndent;
+      const lineAvailWidth = Math.max(1, availableWidth - leftIndent - lineRightIndent);
 
       let lineX = startX + leftIndent;
       if (para.alignment === 1) {

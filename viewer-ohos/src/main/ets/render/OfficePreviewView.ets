@@ -4,7 +4,7 @@ import { LengthMetrics, LengthUnit } from '@kit.ArkUI';
 import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
 import { RenderUtils } from './RenderUtils';
-import { CanvasElementDrawer, OfficeRect } from './CanvasElementDrawer';
+import { CanvasElementDrawer, OfficeRect, WrapObstacle } from './CanvasElementDrawer';
 import { ImageStore } from './ImageStore';
 import { SpreadsheetView } from './SpreadsheetView';
 import { OfficeSearchBar } from './OfficeSearchBar';
@@ -656,6 +656,7 @@ struct DocxFlowView {
     this.headerCount = headerBlocks.length;
     this.bodyCount = bodyBlocks.length;
     this.blockSource = new ArrayDataSource([...headerBlocks, ...bodyBlocks, ...footerBlocks]);
+    this.rebuildWrapPlan(this.getContentWidth());
     if (this.registerControls) {
       this.registerControls(
         (_pageNumber: number): void => {
@@ -669,7 +670,9 @@ struct DocxFlowView {
         (match: model.SearchMatch): void => {
           this.reuseVersion++;
           if (match.elementIndex >= 0 && match.elementIndex < this.blockSource.totalCount()) {
-            this.scroller.scrollToIndex(match.elementIndex, true, ScrollAlign.CENTER);
+            const hostIndex = this.consumedToGroup.get(match.elementIndex);
+            const targetIndex = hostIndex !== undefined ? hostIndex : match.elementIndex;
+            this.scroller.scrollToIndex(targetIndex, true, ScrollAlign.CENTER);
           }
         }
       );
@@ -686,6 +689,149 @@ struct DocxFlowView {
   private panStartX: number = 0;
   private viewportWidth: number = 0;
   private viewportHeight: number = 0;
+  @State private layoutRevision: number = 0;
+  private plannedWidth: number = 0;
+  private measureCtx: OffscreenCanvasRenderingContext2D | null = null;
+  private wrapGroups: Map<number, DocxWrapGroup> = new Map();
+  private consumedToGroup: Map<number, number> = new Map();
+
+  private ensureMeasureCtx(): OffscreenCanvasRenderingContext2D {
+    if (!this.measureCtx) {
+      this.measureCtx = new OffscreenCanvas(1, 1).getContext('2d', new RenderingContextSettings(true));
+    }
+    return this.measureCtx;
+  }
+
+  private getContentWidth(): number {
+    const base = this.viewportWidth > 0 ? this.viewportWidth : (this.document?.width && this.document.width > 0 ? this.document.width : 360);
+    return Math.max(100, base - 32);
+  }
+
+  private rebuildWrapPlan(contentWidth: number): void {
+    const groups: Map<number, DocxWrapGroup> = new Map();
+    const consumed: Map<number, number> = new Map();
+    const doc = this.document;
+    if (!doc) {
+      this.wrapGroups = groups;
+      this.consumedToGroup = consumed;
+      this.plannedWidth = contentWidth;
+      return;
+    }
+    const allBlocks: model.Element[] = [
+      ...(doc.headerBlocks ?? []),
+      ...(doc.blocks ?? []),
+      ...(doc.footerBlocks ?? [])
+    ];
+    const secRanges: [number, number][] = [
+      [0, this.headerCount],
+      [this.headerCount, this.headerCount + this.bodyCount],
+      [this.headerCount + this.bodyCount, allBlocks.length]
+    ];
+    const ctx = this.ensureMeasureCtx();
+    for (const range of secRanges) {
+      const secStart = range[0];
+      const secEnd = range[1];
+      let i = secStart;
+      while (i < secEnd) {
+        const firstEl = allBlocks[i];
+        if (!isDocxFloating(firstEl) || firstEl.wrapMode === 'TOP_AND_BOTTOM') {
+          i++;
+          continue;
+        }
+        const floatIndices: number[] = [];
+        let j = i;
+        while (j < secEnd && isDocxFloating(allBlocks[j]) && allBlocks[j].wrapMode !== 'TOP_AND_BOTTOM') {
+          floatIndices.push(j);
+          j++;
+        }
+        const floats: DocxPlacedFloat[] = [];
+        const obstacles: WrapObstacle[] = [];
+        let maxObsBottom = 0;
+        let maxFloatBottom = 0;
+        let clearBelowY = 0;
+        for (const fIdx of floatIndices) {
+          const fEl = allBlocks[fIdx];
+          const box = resolveDocxFloatBox(doc, fEl, contentWidth);
+          const fy = Math.max(0, fEl.y || 0);
+          floats.push({
+            element: fEl,
+            x: box.x,
+            y: fy,
+            width: box.width,
+            height: box.height,
+            behind: fEl.behindDoc === true
+          });
+          maxFloatBottom = Math.max(maxFloatBottom, fy + box.height);
+          if (fEl.wrapMode !== 'NONE') {
+            const obsLeft = box.x - Math.max(0, fEl.distLeft || 0);
+            const obsRight = box.x + box.width + Math.max(0, fEl.distRight || 0);
+            const obsTop = fy - Math.max(0, fEl.distTop || 0);
+            const obsBot = fy + box.height + Math.max(0, fEl.distBottom || 0);
+            const align = fEl.horizontalAlign ?? 0;
+            const side: 'left' | 'right' = align === 1
+              ? 'left'
+              : (align === 3 ? 'right' : (box.x + box.width * 0.5 <= contentWidth * 0.5 ? 'left' : 'right'));
+            if (obsLeft <= 36 && obsRight >= contentWidth - 36) {
+              clearBelowY = Math.max(clearBelowY, obsBot + 6);
+            } else {
+              obstacles.push({ top: obsTop, bottom: obsBot, left: obsLeft, right: obsRight, side });
+              maxObsBottom = Math.max(maxObsBottom, obsBot);
+            }
+          }
+        }
+        const flows: DocxFlowTextItem[] = [];
+        let curY = clearBelowY;
+        while (j < secEnd && !isDocxFloating(allBlocks[j]) && isDocxTextBlock(allBlocks[j])) {
+          const tEl = allBlocks[j];
+          const textH = CanvasElementDrawer.measureParagraphsHeight(
+            ctx, tEl.paragraphs ?? [], contentWidth, true, obstacles, curY, 0
+          );
+          flows.push({ blockIndex: j, element: tEl });
+          curY += textH + 8;
+          j++;
+          if (obstacles.length === 0 || curY >= maxObsBottom) {
+            break;
+          }
+        }
+        const contentBottom = flows.length > 0 ? Math.max(0, curY - 8) : 0;
+        const totalHeight = Math.max(1, maxFloatBottom, contentBottom);
+        const endIndex = j - 1;
+        groups.set(i, {
+          renderIndex: i,
+          endIndex,
+          width: contentWidth,
+          height: totalHeight,
+          clearBelowY,
+          floats,
+          flows,
+          obstacles
+        });
+        for (let k = i + 1; k <= endIndex; k++) {
+          consumed.set(k, i);
+        }
+        i = j;
+      }
+    }
+    this.wrapGroups = groups;
+    this.consumedToGroup = consumed;
+    this.plannedWidth = contentWidth;
+  }
+
+  private matchesOfGroup(group: DocxWrapGroup | null): model.SearchMatch[] {
+    if (!group) return [];
+    const result: model.SearchMatch[] = [];
+    for (const m of this.searchMatches) {
+      if (m.elementIndex >= group.renderIndex && m.elementIndex <= group.endIndex) {
+        result.push(m);
+      }
+    }
+    return result;
+  }
+
+  private getStandaloneOffsetX(element: model.Element): number {
+    if (!this.document || !isDocxFloating(element)) return 0;
+    return resolveDocxFloatBox(this.document, element, this.getContentWidth()).x;
+  }
 
   private verticalZoomPad(): number {
     if (this.zoom <= 1.0 || this.viewportHeight <= 0) return 0;
@@ -755,27 +901,46 @@ struct DocxFlowView {
     return result;
   }
 
-  /** 计算块在 LazyForEach 中的缓存键，保证当前命中切换时受影响的块能够触发 ArkUI 刷新 */
+  /** 计算块在 LazyForEach 中的缓存键，保证当前命中切换与环绕布局刷新 */
   private getBlockKey(index: number): string {
-    const hasMatches = this.searchMatches && this.searchMatches.some((m: model.SearchMatch): boolean => m.elementIndex === index);
-    if (!hasMatches) {
-      return `block-${index}`;
+    if (this.consumedToGroup.has(index)) {
+      return `consumed-${index}-r${this.layoutRevision}`;
     }
-    const isCurrent = (this.currentMatchIndex >= 0 && this.currentMatchIndex < this.searchMatches.length)
-      && this.searchMatches[this.currentMatchIndex].elementIndex === index;
-    return `block-${index}-${this.reuseVersion}-${isCurrent ? this.currentMatchIndex : 'idle'}`;
+    const group = this.wrapGroups.get(index);
+    const startIdx = group ? group.renderIndex : index;
+    const endIdx = group ? group.endIndex : index;
+    const hasMatches = this.searchMatches && this.searchMatches.some(
+      (m: model.SearchMatch): boolean => m.elementIndex >= startIdx && m.elementIndex <= endIdx
+    );
+    if (!hasMatches) {
+      return `block-${index}-r${this.layoutRevision}`;
+    }
+    const curMatch = (this.currentMatchIndex >= 0 && this.currentMatchIndex < this.searchMatches.length)
+      ? this.searchMatches[this.currentMatchIndex]
+      : null;
+    const isCurrent = curMatch !== null && curMatch.elementIndex >= startIdx && curMatch.elementIndex <= endIdx;
+    return `block-${index}-r${this.layoutRevision}-${this.reuseVersion}-${isCurrent ? this.currentMatchIndex : 'idle'}`;
   }
 
   build() {
     if (this.document) {
       Stack() {
         Stack() {
-          List({ space: 8, scroller: this.scroller }) {
+          List({ space: 0, scroller: this.scroller }) {
             LazyForEach(
               this.blockSource,
               (element: model.Element, index: number) => {
                 ListItem() {
-                  if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
+                  if (this.consumedToGroup.has(index)) {
+                    Row().width(0).height(0)
+                  } else if (this.wrapGroups.has(index)) {
+                    DocxWrappedBlockView({
+                      group: this.wrapGroups.get(index) ?? null,
+                      imageStore: this.imageStore,
+                      groupMatches: this.matchesOfGroup(this.wrapGroups.get(index) ?? null),
+                      currentMatchKey: this.currentMatchKey()
+                    })
+                  } else if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
                     DocxTableView({
                       element: element,
                       imageStore: this.imageStore,
@@ -783,9 +948,17 @@ struct DocxFlowView {
                       currentMatchKey: this.currentMatchKey()
                     })
                   } else if (element.type === 'IMAGE') {
-                    DocxImageView({ element: element, imageStore: this.imageStore })
+                    DocxImageView({
+                      element: element,
+                      imageStore: this.imageStore,
+                      floatingOffsetX: isDocxFloating(element) ? this.getStandaloneOffsetX(element) : -1
+                    })
                   } else if (element.type === 'RECT' || element.type === 'ELLIPSE' || element.type === 'LINE' || element.type === 'PATH') {
-                    DocxShapeView({ element: element, imageStore: this.imageStore })
+                    DocxShapeView({
+                      element: element,
+                      imageStore: this.imageStore,
+                      floatingOffsetX: isDocxFloating(element) ? this.getStandaloneOffsetX(element) : -1
+                    })
                   } else if (element.paragraphs && element.paragraphs.length > 0) {
                     DocxTextBlockView({
                       element: element,
@@ -794,11 +967,17 @@ struct DocxFlowView {
                     })
                   }
                 }
-                .reuseId(element.type)
+                .reuseId(this.consumedToGroup.has(index) ? 'CONSUMED' : (this.wrapGroups.has(index) ? 'WRAP_GROUP' : element.type))
                 // 页眉最后一块之后、页脚第一块之前额外留白，让页眉页脚与正文视觉分开
                 .margin({
-                  top: this.headerCount + this.bodyCount === index ? this.sectionGap : 0,
-                  bottom: this.headerCount > 0 && this.headerCount - 1 === index ? this.sectionGap : 0
+                  top: this.consumedToGroup.has(index)
+                    ? 0
+                    : (this.headerCount + this.bodyCount === index ? this.sectionGap : (isDocxFloating(element) ? Math.max(0, element.distTop || 0) : 0)),
+                  bottom: this.consumedToGroup.has(index)
+                    ? 0
+                    : (8
+                        + ((this.wrapGroups.get(index)?.endIndex ?? index) === this.headerCount - 1 && this.headerCount > 0 ? this.sectionGap : 0)
+                        + (isDocxFloating(element) && element.wrapMode === 'TOP_AND_BOTTOM' ? Math.max(0, element.distBottom || 0) : 0))
                 })
               },
               (_element: model.Element, index: number): string => this.getBlockKey(index)
@@ -829,6 +1008,11 @@ struct DocxFlowView {
         const h = Number(newArea.height);
         if (w > 0) this.viewportWidth = w;
         if (h > 0) this.viewportHeight = h;
+        const nextContentW = this.getContentWidth();
+        if (Math.abs(nextContentW - this.plannedWidth) > 1) {
+          this.rebuildWrapPlan(nextContentW);
+          this.layoutRevision++;
+        }
         this.clampOffsets();
         this.syncSettledZoomPad();
       })
@@ -935,6 +1119,7 @@ struct DocxFlowView {
 struct DocxImageView {
   element: model.Element | null = null;
   imageStore: ImageStore = new ImageStore('');
+  floatingOffsetX: number = -1;
 
   @State pixelMap: image.PixelMap | null = null;
   @State isLoading: boolean = true;
@@ -978,6 +1163,7 @@ struct DocxImageView {
     if (params['imageStore']) {
       this.imageStore = params['imageStore'] as ImageStore;
     }
+    this.floatingOffsetX = params['floatingOffsetX'] !== undefined ? (params['floatingOffsetX'] as number) : -1;
     this.loadImage();
   }
 
@@ -1116,8 +1302,9 @@ struct DocxImageView {
       }
     }
     .width('100%')
-    .justifyContent(FlexAlign.Center)
-    .margin({ top: 4, bottom: 6 })
+    .justifyContent(this.floatingOffsetX >= 0 ? FlexAlign.Start : FlexAlign.Center)
+    .padding(this.floatingOffsetX > 0 ? { left: this.floatingOffsetX } : undefined)
+    .margin(this.floatingOffsetX >= 0 ? { top: 0, bottom: 0 } : { top: 4, bottom: 6 })
   }
 }
 
@@ -1129,6 +1316,7 @@ struct DocxImageView {
 struct DocxShapeView {
   element: model.Element | null = null;
   imageStore: ImageStore = new ImageStore('');
+  floatingOffsetX: number = -1;
   @State private reuseVersion: number = 0;
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -1142,6 +1330,7 @@ struct DocxShapeView {
     if (params['imageStore']) {
       this.imageStore = params['imageStore'] as ImageStore;
     }
+    this.floatingOffsetX = params['floatingOffsetX'] !== undefined ? (params['floatingOffsetX'] as number) : -1;
     this.reuseVersion++;
     if (this.isReady) {
       this.drawShape();
@@ -1181,8 +1370,275 @@ struct DocxShapeView {
       }
       .id(`shape-${this.reuseVersion}`)
       .width('100%')
-      .justifyContent(FlexAlign.Center)
-      .margin({ top: 4, bottom: 6 })
+      .justifyContent(this.floatingOffsetX >= 0 ? FlexAlign.Start : FlexAlign.Center)
+      .padding(this.floatingOffsetX > 0 ? { left: this.floatingOffsetX } : undefined)
+      .margin(this.floatingOffsetX >= 0 ? { top: 0, bottom: 0 } : { top: 4, bottom: 6 })
+    }
+  }
+}
+
+interface DocxFloatBox {
+  x: number;
+  width: number;
+  height: number;
+}
+
+interface DocxPlacedFloat {
+  element: model.Element;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  behind: boolean;
+}
+
+interface DocxFlowTextItem {
+  blockIndex: number;
+  element: model.Element;
+}
+
+interface DocxWrapGroup {
+  renderIndex: number;
+  endIndex: number;
+  width: number;
+  height: number;
+  clearBelowY: number;
+  floats: DocxPlacedFloat[];
+  flows: DocxFlowTextItem[];
+  obstacles: WrapObstacle[];
+}
+
+function isDocxFloating(el: model.Element): boolean {
+  return el.wrapMode !== undefined && el.wrapMode !== 'INLINE';
+}
+
+function isDocxTextBlock(el: model.Element): boolean {
+  return el.type === 'TEXT' && el.paragraphs !== undefined && el.paragraphs.length > 0;
+}
+
+function resolveDocxFloatBox(doc: model.OfficeDocument, el: model.Element, contentW: number): DocxFloatBox {
+  const docW = doc.width > 0 ? doc.width : 595;
+  const coreMarginL = doc.marginLeft && doc.marginLeft > 0 ? doc.marginLeft : 72;
+  const coreMarginR = doc.marginRight && doc.marginRight > 0 ? doc.marginRight : 72;
+  const coreContentW = Math.max(1, docW - coreMarginL - coreMarginR);
+  let w = el.width > 0 ? el.width : contentW;
+  let h = el.height > 0 ? el.height : (el.type === 'IMAGE' ? 100 : 60);
+  if (w > contentW && el.width > 0 && el.type === 'IMAGE') {
+    h = h * (contentW / w);
+    w = contentW;
+  }
+  const align = el.horizontalAlign ?? 0;
+  let x = 0;
+  if (align === 1) {
+    x = 0;
+  } else if (align === 2) {
+    x = Math.max(0, (contentW - w) / 2);
+  } else if (align === 3) {
+    x = Math.max(0, contentW - w);
+  } else {
+    const scaled = (el.x - coreMarginL) * (contentW / coreContentW);
+    x = Math.max(0, Math.min(Math.max(0, contentW - w), scaled));
+  }
+  return { x, width: w, height: h };
+}
+
+function cloneElementForCanvas(src: model.Element, width: number, height: number): model.Element {
+  return {
+    type: src.type,
+    x: 0,
+    y: 0,
+    width,
+    height,
+    transform: src.transform,
+    padding: src.padding,
+    fill: src.fill,
+    stroke: src.stroke,
+    strokeWidth: src.strokeWidth,
+    image: src.image,
+    imageBounds: src.imageBounds,
+    verticalAlignment: src.verticalAlignment,
+    textWrap: src.textWrap,
+    paragraphs: src.paragraphs,
+    rows: src.rows,
+    columnWidths: src.columnWidths,
+    cellFills: src.cellFills,
+    paths: src.paths,
+    fillGradient: src.fillGradient,
+    merges: src.merges
+  };
+}
+
+/**
+ * DOCX 浮动图文与环绕文本复合 Canvas 视图：按 behind -> wrapped flow -> front 顺序绘制
+ */
+@Reusable
+@Component
+struct DocxWrappedBlockView {
+  group: DocxWrapGroup | null = null;
+  imageStore: ImageStore = new ImageStore('');
+  @Prop @Watch('onHighlightsChanged') groupMatches: model.SearchMatch[] = [];
+  @Prop @Watch('onHighlightsChanged') currentMatchKey: string = '';
+
+  private settings: RenderingContextSettings = new RenderingContextSettings(true);
+  private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private isReady: boolean = false;
+  private isDisappeared: boolean = false;
+  private acquiredParts: string[] = [];
+  private loadGeneration: number = 0;
+
+  onHighlightsChanged(): void {
+    this.drawComposite();
+  }
+
+  aboutToAppear(): void {
+    this.isDisappeared = false;
+    this.loadImages();
+  }
+
+  aboutToDisappear(): void {
+    this.isDisappeared = true;
+    this.loadGeneration++;
+    this.releaseAcquired();
+  }
+
+  aboutToRecycle(): void {
+    this.loadGeneration++;
+    this.releaseAcquired();
+  }
+
+  aboutToReuse(params: Record<string, Object>): void {
+    this.isDisappeared = false;
+    if (params['group']) {
+      this.group = params['group'] as DocxWrapGroup;
+    }
+    if (params['imageStore']) {
+      this.imageStore = params['imageStore'] as ImageStore;
+    }
+    if (params['groupMatches']) {
+      this.groupMatches = params['groupMatches'] as model.SearchMatch[];
+    }
+    if (params['currentMatchKey'] !== undefined) {
+      this.currentMatchKey = params['currentMatchKey'] as string;
+    }
+    this.releaseAcquired();
+    this.loadImages();
+    this.drawComposite();
+  }
+
+  private releaseAcquired(): void {
+    for (const part of this.acquiredParts) {
+      this.imageStore.releasePart(part);
+    }
+    this.acquiredParts = [];
+  }
+
+  private async loadImages(): Promise<void> {
+    if (!this.group) return;
+    const gen = ++this.loadGeneration;
+    const parts: string[] = [];
+    for (const f of this.group.floats) {
+      const part = f.element.image;
+      if (part && parts.indexOf(part) < 0) {
+        parts.push(part);
+        this.imageStore.acquire(part);
+        this.acquiredParts.push(part);
+      }
+    }
+    if (parts.length === 0) return;
+    const budget = Math.max(120_000, Math.min(2_000_000, Math.round(this.group.width * this.group.height * 4)));
+    for (const part of parts) {
+      if (!this.imageStore.cache.has(part)) {
+        try {
+          await this.imageStore.load(part, budget);
+        } catch (_e) {
+          // 忽略单张浮动图片解码失败，保留其余内容与占位
+        }
+      }
+    }
+    if (!this.isDisappeared && this.loadGeneration === gen && this.isReady) {
+      this.drawComposite();
+    }
+  }
+
+  private drawFloat(f: DocxPlacedFloat): void {
+    const src = f.element;
+    const rawW = src.width > 0 ? src.width : f.width;
+    const rawH = src.height > 0 ? src.height : f.height;
+    const canvasEl = cloneElementForCanvas(src, rawW, rawH);
+    this.ctx.save();
+    this.ctx.translate(f.x, f.y);
+    if (rawW > 0 && rawH > 0 && (Math.abs(f.width - rawW) > 0.5 || Math.abs(f.height - rawH) > 0.5)) {
+      this.ctx.scale(f.width / rawW, f.height / rawH);
+    }
+    CanvasElementDrawer.drawElement(this.ctx, canvasEl, this.imageStore.cache);
+    this.ctx.restore();
+  }
+
+  private drawComposite(): void {
+    if (!this.isReady || !this.group) return;
+    const w = this.ctx.width;
+    const h = this.ctx.height;
+    if (w <= 0 || h <= 0) return;
+    this.ctx.clearRect(0, 0, w, h);
+
+    for (const f of this.group.floats) {
+      if (f.behind) {
+        this.drawFloat(f);
+      }
+    }
+
+    let curY = this.group.clearBelowY;
+    for (const flow of this.group.flows) {
+      const paras = flow.element.paragraphs ?? [];
+      for (let pIdx = 0; pIdx < paras.length; pIdx++) {
+        const para = paras[pIdx];
+        curY += Math.max(0, para.before || 0);
+        for (const m of this.groupMatches) {
+          if (m.elementIndex === flow.blockIndex && m.paragraphIndex === pIdx) {
+            const rects = CanvasElementDrawer.computeParagraphHighlightRects(
+              this.ctx, para, m.startChar, m.endChar, 0, curY, this.group.width, true,
+              this.group.obstacles, curY, 0
+            );
+            const isCur = this.currentMatchKey.length > 0 && searchMatchKey(m) === this.currentMatchKey;
+            this.ctx.fillStyle = isCur ? '#FFA726' : '#FFF59D';
+            for (const r of rects) {
+              this.ctx.fillRect(r.x, r.y, r.width, r.height);
+            }
+          }
+        }
+        const lines = CanvasElementDrawer.layoutParagraph(
+          this.ctx, para, this.group.width, true, this.group.obstacles, curY, 0
+        );
+        const drawnH = CanvasElementDrawer.drawParagraphLines(
+          this.ctx, para, lines, 0, curY, this.group.width
+        );
+        curY += drawnH + Math.max(0, para.after || 0);
+      }
+      curY += 8;
+    }
+
+    for (const f of this.group.floats) {
+      if (!f.behind) {
+        this.drawFloat(f);
+      }
+    }
+  }
+
+  build() {
+    if (this.group) {
+      Row() {
+        Canvas(this.ctx)
+          .width('100%')
+          .height(this.group.height)
+          .onReady(() => {
+            this.isReady = true;
+            this.drawComposite();
+          })
+          .onAreaChange(() => {
+            this.drawComposite();
+          })
+      }
+      .width('100%')
     }
   }
 }
