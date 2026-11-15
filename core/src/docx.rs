@@ -56,10 +56,13 @@ pub(crate) fn parse(
         .ok_or(Error::Invalid("Missing DOCX body"))?;
     let mut document = Document::new(Kind::DOCX);
     let sections = section::properties(body);
+    let mut page_height = 792.0_f32;
     if let Some(&sect) = sections.last() {
         if let Some(size) = sections.iter().rev().find_map(|s| s.child("pgSz")) {
             document.width =
                 (xml::number(size.attr("w"), 11900.0) / 20.0).clamp(300.0, MAX_COORDINATE);
+            page_height =
+                (xml::number(size.attr("h"), 15840.0) / 20.0).clamp(300.0, MAX_COORDINATE);
         }
         let margins_sect = sections
             .iter()
@@ -103,6 +106,7 @@ pub(crate) fn parse(
         block_limit: FLOW_LIMIT,
         last_style_id: None,
         last_contextual: false,
+        page_height,
         budget: scope.block_budget(),
     };
     parser.body(body)?;
@@ -125,6 +129,7 @@ struct Parser<'a> {
     block_limit: BlockLimit,
     pub(super) last_style_id: Option<String>,
     pub(super) last_contextual: bool,
+    pub(super) page_height: f32,
     /// 剩余可解析的正文块预算；首屏缩略图只排版少量块即可返回
     pub(super) budget: Option<usize>,
 }
@@ -186,19 +191,20 @@ impl Parser<'_> {
             .is_some_and(|budget| self.document.blocks.len() >= budget)
     }
 
+    pub(super) fn effective_margin(&self, value: f32) -> f32 {
+        if value > 0.0 {
+            value
+        } else {
+            DEFAULT_MARGIN
+        }
+    }
+
     /// 流式正文的可用宽度：扣除左右页边距。未从 sectPr 读到边距时按 Word 默认 72pt 回退，
     /// 与 Android OfficeRenderer 计算 contentWidth 的方式保持一致。
     fn flow_width(&self) -> f32 {
-        let margin = |value: f32| {
-            if value > 0.0 {
-                value
-            } else {
-                DEFAULT_MARGIN
-            }
-        };
         (self.document.width
-            - margin(self.document.margin_left)
-            - margin(self.document.margin_right))
+            - self.effective_margin(self.document.margin_left)
+            - self.effective_margin(self.document.margin_right))
         .max(1.0)
     }
 
@@ -292,7 +298,6 @@ fn inspect(node: &Node, document: &mut Document) {
         "headerReference" | "footerReference" => None, // 已支持页眉页脚
         "footnoteReference" | "endnoteReference" => Some("Footnotes and endnotes are omitted."),
         "oMath" | "oMathPara" => Some("Mathematical equations are omitted."),
-        "anchor" => Some("Floating drawings use document flow; anchors and wrapping are ignored."),
         "pict" | "object" | "txbxContent" => Some(
             "Text box content is preserved in document flow; legacy drawings and box layout are omitted.",
         ),

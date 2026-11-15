@@ -1,5 +1,5 @@
 use super::{alternate, format, skipped, Parser, MAX_TEXT};
-use crate::model::{Element, Paragraph, Run};
+use crate::model::{Element, Paragraph, Run, WrapMode};
 use crate::xml::Node;
 use crate::{Error, Result};
 
@@ -29,6 +29,7 @@ impl Parser<'_> {
             current: paragraph.clone(),
             template: paragraph,
             elements: Vec::new(),
+            floating: Vec::new(),
             width: self.flow_width(),
             in_cell,
             limit: if in_cell {
@@ -42,7 +43,7 @@ impl Parser<'_> {
             text_bytes: self.text_bytes,
         };
         self.inline(node, &font, &mut flow)?;
-        if flow.elements.is_empty() && flow.current.runs.is_empty() {
+        if flow.elements.is_empty() && flow.floating.is_empty() && flow.current.runs.is_empty() {
             let mut mark = font;
             format::font(
                 &mut mark,
@@ -55,6 +56,8 @@ impl Parser<'_> {
         }
         if !flow.current.runs.is_empty() {
             flow.flush()?;
+        } else {
+            flow.flush_floating()?;
         }
         self.text_bytes = flow.text_bytes;
         Ok(flow.elements)
@@ -120,6 +123,8 @@ impl Parser<'_> {
                         if !flow.current.runs.is_empty() {
                             flow.current.after = 0.0;
                             flow.flush()?;
+                        } else {
+                            flow.flush_floating()?;
                         }
                         for paragraph in content.children.iter().filter(|n| n.name == "p") {
                             for block in self.paragraph(paragraph, flow.in_cell)? {
@@ -140,6 +145,7 @@ struct Flow {
     template: Paragraph,
     current: Paragraph,
     elements: Vec<Element>,
+    floating: Vec<Element>,
     width: f32,
     in_cell: bool,
     limit: usize,
@@ -158,9 +164,18 @@ impl Flow {
     }
 
     fn image(&mut self, image: Element) -> Result<()> {
+        if image.wrap_mode != WrapMode::Inline {
+            if self.elements.len() + self.floating.len() >= self.limit {
+                return Err(Error::Limit(self.limit_message));
+            }
+            self.floating.push(image);
+            return Ok(());
+        }
         if !self.current.runs.is_empty() || !self.current.bullet.is_empty() {
             self.current.after = 0.0;
             self.flush()?;
+        } else {
+            self.flush_floating()?;
         }
         self.push(image)?;
         self.current = self.template.clone();
@@ -190,7 +205,19 @@ impl Flow {
         Ok(())
     }
 
+    fn flush_floating(&mut self) -> Result<()> {
+        if self.floating.is_empty() {
+            return Ok(());
+        }
+        let floating = std::mem::take(&mut self.floating);
+        for element in floating {
+            self.push(element)?;
+        }
+        Ok(())
+    }
+
     fn flush(&mut self) -> Result<()> {
+        self.flush_floating()?;
         let paragraph = std::mem::replace(&mut self.current, self.template.clone());
         self.push(Element {
             width: self.width,
@@ -219,6 +246,7 @@ mod tests {
             template: Paragraph::default(),
             current: Paragraph::default(),
             elements: Vec::new(),
+            floating: Vec::new(),
             width: 500.0,
             in_cell: false,
             limit: 5000,
