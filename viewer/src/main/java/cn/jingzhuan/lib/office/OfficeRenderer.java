@@ -38,6 +38,7 @@ final class OfficeRenderer {
         int background;
         boolean ready;
         final List<Element> elements = new ArrayList<>();
+        final List<Element> zElements = new ArrayList<>();
     }
 
     final List<Page> pages = new ArrayList<>();
@@ -82,35 +83,26 @@ final class OfficeRenderer {
             float contentX = marginLeft;
             float contentWidth = Math.max(1, width - marginLeft - marginRight);
             Page page = new Page(); page.width = width; page.background = 0xffffffff;
-            float y = 32;
+            List<Element> behindElements = new ArrayList<>();
+            List<Element> flowElements = new ArrayList<>();
+            List<Element> frontElements = new ArrayList<>();
+            float[] maxBottom = {32f};
+            float y = 32f;
             // 页眉作为文档流开头（随内容滚动）
-            for (OfficeDocument.Element source : document.headerBlocks) {
-                Element drawn = element(source, contentWidth, true, document);
-                drawn.x = contentX; drawn.y = y;
-                if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (contentWidth - drawn.width) / 2;
-                position(drawn, true);
-                page.elements.add(drawn); y += drawn.height + 6;
-            }
-            if (!document.headerBlocks.isEmpty()) y += 10; // 页眉与正文间距
+            y = placeDocxBlocks(document.headerBlocks, y, 32f, width, contentX, contentWidth,
+                false, 0f, document, page, behindElements, flowElements, frontElements, maxBottom);
+            if (!document.headerBlocks.isEmpty()) y += 10f; // 页眉与正文间距
             // 正文
-            for (OfficeDocument.Element source : document.blocks) {
-                if (limitViewport && y > viewportHeight) break;
-                Element drawn = element(source, contentWidth, true, document);
-                drawn.x = contentX; drawn.y = y;
-                if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (contentWidth - drawn.width) / 2;
-                position(drawn, true);
-                page.elements.add(drawn); y += drawn.height + 6;
-            }
+            y = placeDocxBlocks(document.blocks, y, y, width, contentX, contentWidth,
+                limitViewport, viewportHeight, document, page, behindElements, flowElements, frontElements, maxBottom);
             // 页脚作为文档流末尾（随内容滚动）
-            if (!document.footerBlocks.isEmpty()) y += 10; // 正文与页脚间距
-            for (OfficeDocument.Element source : document.footerBlocks) {
-                Element drawn = element(source, contentWidth, true, document);
-                drawn.x = contentX; drawn.y = y;
-                if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (contentWidth - drawn.width) / 2;
-                position(drawn, true);
-                page.elements.add(drawn); y += drawn.height + 6;
-            }
-            page.height = Math.max(300, y + 32); page.ready = true; pages.add(page);
+            if (!document.footerBlocks.isEmpty()) y += 10f; // 正文与页脚间距
+            y = placeDocxBlocks(document.footerBlocks, y, y, width, contentX, contentWidth,
+                false, 0f, document, page, behindElements, flowElements, frontElements, maxBottom);
+            page.zElements.addAll(behindElements);
+            page.zElements.addAll(flowElements);
+            page.zElements.addAll(frontElements);
+            page.height = Math.max(300, Math.max(y, maxBottom[0]) + 32); page.ready = true; pages.add(page);
             // 首屏排版只保证视口内的高度，超出部分本就不参与封面绘制
             height = limitViewport ? Math.min(page.height, viewportHeight) : page.height;
         } else {
@@ -160,8 +152,22 @@ final class OfficeRenderer {
     }
 
     private Element element(OfficeDocument.Element source, float available, boolean flow, OfficeDocument document) {
+        return element(source, available, flow, document, 0f, 0f, null);
+    }
+
+    private Element element(OfficeDocument.Element source, float available, boolean flow, OfficeDocument document,
+                            float flowX, float flowY, List<OfficeTextLayout.WrapObstacle> obstacles) {
         Element d = new Element(); d.source = source; d.x = source.x; d.y = source.y;
-        d.width = flow ? Math.max(1, source.type == OfficeDocument.Type.TABLE && source.width > 0 ? Math.min(source.width, available) : available) : source.width;
+        boolean floating = flow && !"INLINE".equals(source.wrapMode);
+        boolean fixedShape = flow && source.type != OfficeDocument.Type.TEXT
+            && source.type != OfficeDocument.Type.IMAGE && source.type != OfficeDocument.Type.TABLE;
+        d.width = flow
+            ? Math.max(1, fixedShape && source.width > 0
+                ? (floating ? source.width : Math.min(available, source.width))
+                : source.type == OfficeDocument.Type.TABLE && source.width > 0
+                    ? Math.min(source.width, available)
+                    : (floating && source.width > 0 ? source.width : available))
+            : source.width;
         d.height = flow ? Math.max(1, source.height) : source.height;
         for (OfficeDocument.Path sourcePath : source.paths) {
             Path path = new Path();
@@ -181,7 +187,12 @@ final class OfficeRenderer {
         if (source.type == OfficeDocument.Type.IMAGE && flow) {
             float w = source.width > 0 ? source.width : available;
             float h = source.height > 0 ? source.height : 100;
-            d.width = Math.min(available, w); d.height = h * d.width / Math.max(1, w);
+            if (floating) {
+                d.width = Math.max(1, w);
+                d.height = Math.max(1, h);
+            } else {
+                d.width = Math.min(available, w); d.height = h * d.width / Math.max(1, w);
+            }
         } else if (source.type == OfficeDocument.Type.TABLE) {
             int cols = 0;
             for (List<List<OfficeDocument.Paragraph>> row : source.rows) cols = Math.max(cols, row.size());
@@ -299,12 +310,16 @@ final class OfficeRenderer {
             if (flow) d.height = Math.max(1, y);
             else if (y > d.height) document.warn("Table content exceeds its slide bounds and is clipped");
         } else if (!source.paragraphs.isEmpty()) {
-            float padding = flow ? 0 : Math.max(0, source.padding);
+            boolean fixedBox = !flow || fixedShape || (floating && source.width > 0 && source.height > 0);
+            float padding = fixedBox ? Math.max(0, source.padding) : 0;
+            List<OfficeTextLayout.WrapObstacle> localObstacles = (!fixedBox && obstacles != null && !obstacles.isEmpty())
+                ? localizeObstacles(obstacles, flowX, flowY) : null;
             float textHeight = OfficeTextLayout.append(source.paragraphs, padding, padding,
-                Math.max(1, d.width - 2 * padding), d.texts, !flow, flow || source.textWrap) + padding;
-            if (flow) d.height = Math.max(1, textHeight);
+                Math.max(1, d.width - 2 * padding), d.texts, !flow, !fixedBox || source.textWrap, localObstacles) + padding;
+            if (!fixedBox) d.height = Math.max(1, textHeight);
             else {
-                if (textHeight > d.height + 1) document.warn("Text exceeds its slide box and is clipped");
+                if (!flow && textHeight > d.height + 1) document.warn("Text exceeds its slide box and is clipped");
+                if (flow && source.height <= 0) d.height = Math.max(1, textHeight);
                 float remaining = Math.max(0, d.height - textHeight);
                 float offset = source.verticalAlignment == OfficeDocument.VerticalAlignment.CENTER ? remaining / 2
                     : source.verticalAlignment == OfficeDocument.VerticalAlignment.BOTTOM ? remaining : 0;
@@ -313,6 +328,119 @@ final class OfficeRenderer {
         }
         position(d, flow);
         return d;
+    }
+
+    private float placeDocxBlocks(List<OfficeDocument.Element> blocks, float y, float sectionMinY, float pageWidth,
+                                float contentX, float contentWidth, boolean limitViewport, float viewportHeight,
+                                OfficeDocument document, Page page,
+                                List<Element> behindElements, List<Element> flowElements, List<Element> frontElements,
+                                float[] maxBottom) {
+        List<OfficeTextLayout.WrapObstacle> activeObstacles = new ArrayList<>();
+        for (OfficeDocument.Element source : blocks) {
+            if (limitViewport && y > viewportHeight) break;
+            boolean floating = !"INLINE".equals(source.wrapMode);
+            if (!floating) {
+                pruneObstacles(activeObstacles, y);
+                if (source.type == OfficeDocument.Type.TABLE && !activeObstacles.isEmpty()) {
+                    y = Math.max(y, maxObstacleBottom(activeObstacles) + 6f);
+                    activeObstacles.clear();
+                }
+            }
+            Element drawn = element(source, contentWidth, true, document, contentX, y, activeObstacles);
+            if (floating) {
+                float floatX;
+                if (source.horizontalAlign == 1) floatX = contentX;
+                else if (source.horizontalAlign == 2) floatX = Math.max(0f, contentX + (contentWidth - drawn.width) / 2f);
+                else if (source.horizontalAlign == 3) floatX = Math.max(0f, contentX + contentWidth - drawn.width);
+                else floatX = Math.max(0f, Math.min(Math.max(0f, pageWidth - drawn.width), source.x));
+                float floatY = Math.max(sectionMinY, y + source.y);
+                drawn.x = floatX;
+                if ("TOP_AND_BOTTOM".equals(source.wrapMode)) {
+                    float clearY = Math.max(y, maxObstacleBottom(activeObstacles));
+                    drawn.y = Math.max(floatY, clearY + Math.max(0f, source.distTop));
+                    y = Math.max(y, drawn.y + drawn.height + Math.max(0f, source.distBottom) + 6f);
+                    pruneObstacles(activeObstacles, y);
+                } else {
+                    drawn.y = floatY;
+                    if (!"NONE".equals(source.wrapMode)) {
+                        OfficeTextLayout.WrapObstacle obs = new OfficeTextLayout.WrapObstacle();
+                        obs.top = drawn.y - Math.max(0f, source.distTop);
+                        obs.bottom = drawn.y + drawn.height + Math.max(0f, source.distBottom);
+                        obs.left = drawn.x - Math.max(0f, source.distLeft);
+                        obs.right = drawn.x + drawn.width + Math.max(0f, source.distRight);
+                        obs.side = source.horizontalAlign == 1 ? -1
+                            : source.horizontalAlign == 3 ? 1
+                            : (drawn.x + drawn.width * 0.5f <= contentX + contentWidth * 0.5f ? -1 : 1);
+                        if (obs.left <= contentX + 40f && obs.right >= contentX + contentWidth - 40f) {
+                            y = Math.max(y, obs.bottom + 6f);
+                            pruneObstacles(activeObstacles, y);
+                        } else {
+                            activeObstacles.add(obs);
+                        }
+                    }
+                }
+                position(drawn, true);
+                page.elements.add(drawn);
+                (source.behindDoc ? behindElements : frontElements).add(drawn);
+                maxBottom[0] = Math.max(maxBottom[0], drawn.y + drawn.height);
+            } else {
+                drawn.x = contentX;
+                if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (contentWidth - drawn.width) / 2f;
+                if (!activeObstacles.isEmpty() && source.type != OfficeDocument.Type.TEXT) {
+                    float clearBottom = y;
+                    for (OfficeTextLayout.WrapObstacle obs : activeObstacles) {
+                        if (drawn.x < obs.right && drawn.x + drawn.width > obs.left) {
+                            clearBottom = Math.max(clearBottom, obs.bottom + 6f);
+                        }
+                    }
+                    if (clearBottom > y) {
+                        y = clearBottom;
+                        pruneObstacles(activeObstacles, y);
+                    }
+                }
+                drawn.y = y;
+                position(drawn, true);
+                page.elements.add(drawn);
+                flowElements.add(drawn);
+                y += drawn.height + 6f;
+                maxBottom[0] = Math.max(maxBottom[0], y);
+            }
+        }
+        if (!activeObstacles.isEmpty()) {
+            y = Math.max(y, maxObstacleBottom(activeObstacles) + 6f);
+            activeObstacles.clear();
+        }
+        return y;
+    }
+
+    private static List<OfficeTextLayout.WrapObstacle> localizeObstacles(
+            List<OfficeTextLayout.WrapObstacle> obstacles, float originX, float originY) {
+        List<OfficeTextLayout.WrapObstacle> local = new ArrayList<>();
+        for (OfficeTextLayout.WrapObstacle obs : obstacles) {
+            if (obs.bottom <= originY) continue;
+            OfficeTextLayout.WrapObstacle shifted = new OfficeTextLayout.WrapObstacle();
+            shifted.top = obs.top - originY;
+            shifted.bottom = obs.bottom - originY;
+            shifted.left = obs.left - originX;
+            shifted.right = obs.right - originX;
+            shifted.side = obs.side;
+            local.add(shifted);
+        }
+        return local;
+    }
+
+    private static void pruneObstacles(List<OfficeTextLayout.WrapObstacle> obstacles, float y) {
+        for (int i = obstacles.size() - 1; i >= 0; i--) {
+            if (obstacles.get(i).bottom <= y) obstacles.remove(i);
+        }
+    }
+
+    private static float maxObstacleBottom(List<OfficeTextLayout.WrapObstacle> obstacles) {
+        float max = 0f;
+        for (OfficeTextLayout.WrapObstacle obs : obstacles) {
+            if (obs.bottom > max) max = obs.bottom;
+        }
+        return max;
     }
 
     private Shader gradient(OfficeDocument.GradientFill source) {
@@ -351,8 +479,9 @@ final class OfficeRenderer {
             float clippedTop = Math.max(page.y, top), clippedBottom = Math.min(page.y + page.height, bottom);
             if (clippedLeft >= clippedRight || clippedTop >= clippedBottom) continue;
             // Frontmost images on the current slide get spare decode budget before backgrounds.
-            for (int element = page.elements.size() - 1; element >= 0; element--) {
-                Element e = page.elements.get(element);
+            List<Element> paintOrder = page.zElements.isEmpty() ? page.elements : page.zElements;
+            for (int element = paintOrder.size() - 1; element >= 0; element--) {
+                Element e = paintOrder.get(element);
                 if (e.source.image != null) {
                     RectF bounds = e.bounds;
                     if (bounds.right > clippedLeft && bounds.left < clippedRight
@@ -373,7 +502,8 @@ final class OfficeRenderer {
             canvas.save(); canvas.translate(0, page.y); canvas.clipRect(0, 0, page.width, page.height);
             paint.setStyle(Paint.Style.FILL); paint.setColor(page.background);
             canvas.drawRect(0, 0, page.width, page.height, paint);
-            for (Element e : page.elements) {
+            List<Element> paintOrder = page.zElements.isEmpty() ? page.elements : page.zElements;
+            for (Element e : paintOrder) {
                 if (e.bounds.bottom >= visibleTop - page.y && e.bounds.top <= visibleBottom - page.y) drawElement(canvas, e, images);
             }
             canvas.restore();

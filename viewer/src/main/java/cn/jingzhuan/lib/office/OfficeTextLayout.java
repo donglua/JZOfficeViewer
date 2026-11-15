@@ -15,6 +15,8 @@ import android.text.style.MetricAffectingSpan;
 import android.text.style.StrikethroughSpan;
 import android.text.style.StyleSpan;
 import android.text.style.UnderlineSpan;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,11 +30,24 @@ final class OfficeTextLayout {
         float borderWidth;
     }
 
+    static final class WrapObstacle {
+        float top;
+        float bottom;
+        float left;
+        float right;
+        int side; // -1 = left obstacle, 1 = right obstacle
+    }
+
     static float append(List<OfficeDocument.Paragraph> paragraphs, float x, float y, float width, List<Block> out, boolean pptx) {
-        return append(paragraphs, x, y, width, out, pptx, true);
+        return append(paragraphs, x, y, width, out, pptx, true, null);
     }
 
     static float append(List<OfficeDocument.Paragraph> paragraphs, float x, float y, float width, List<Block> out, boolean pptx, boolean wrap) {
+        return append(paragraphs, x, y, width, out, pptx, wrap, null);
+    }
+
+    static float append(List<OfficeDocument.Paragraph> paragraphs, float x, float y, float width, List<Block> out,
+                        boolean pptx, boolean wrap, List<WrapObstacle> obstacles) {
         for (OfficeDocument.Paragraph paragraph : paragraphs) {
             y += Math.max(0, paragraph.before);
             Block block = new Block();
@@ -43,7 +58,7 @@ final class OfficeTextLayout {
             block.borderLeft = paragraph.borderLeft;
             block.borderRight = paragraph.borderRight;
             block.borderWidth = paragraph.borderWidth;
-            block.layout = paragraph(paragraph, width, pptx, wrap);
+            block.layout = paragraph(paragraph, x, y, width, pptx, wrap, obstacles);
             if (!wrap) {
                 float extra = Math.max(1, (int) width) - block.layout.getWidth();
                 block.x += paragraph.alignment == 1 ? extra / 2 : paragraph.alignment == 2 ? extra : 0;
@@ -59,10 +74,11 @@ final class OfficeTextLayout {
     }
 
     static StaticLayout paragraph(OfficeDocument.Paragraph paragraph, float width) {
-        return paragraph(paragraph, width, false, true);
+        return paragraph(paragraph, 0, 0, width, false, true, null);
     }
 
-    private static StaticLayout paragraph(OfficeDocument.Paragraph paragraph, float width, boolean pptx, boolean wrap) {
+    private static StaticLayout paragraph(OfficeDocument.Paragraph paragraph, float x, float y, float width,
+                                          boolean pptx, boolean wrap, List<WrapObstacle> obstacles) {
         SpannableStringBuilder text = new SpannableStringBuilder(paragraph.bullet);
         for (OfficeDocument.Run run : paragraph.runs) {
             int start = text.length(); text.append(run.text);
@@ -103,21 +119,93 @@ final class OfficeTextLayout {
             layoutWidth = Math.max(layoutWidth,
                 (int) Math.ceil(Layout.getDesiredWidth(text, font) + Math.max(first, rest) + right));
         }
-        StaticLayout.Builder builder = StaticLayout.Builder.obtain(text, 0, text.length(), font, layoutWidth)
-            .setAlignment(align).setIncludePad(false)
-            .setIndents(new int[] {first, rest}, new int[] {right});
-        if (paragraph.alignment == 3 && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            builder.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD);
-        }
         if (paragraph.lineSpacingRule == OfficeDocument.LineSpacingRule.AUTO) {
             if (pptx && paragraph.lineSpacing != 1) {
                 text.setSpan(new PptxLineHeight(font, paragraph.lineSpacing),
                     0, text.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            } else builder.setLineSpacing(0, paragraph.lineSpacing);
+            }
         } else {
             text.setSpan(new FixedLineHeight(paragraph.lineSpacing,
                 paragraph.lineSpacingRule == OfficeDocument.LineSpacingRule.EXACT),
                 0, text.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        List<WrapObstacle> active = null;
+        float maxObstacleBottom = y;
+        if (wrap && obstacles != null && !obstacles.isEmpty()) {
+            for (WrapObstacle obs : obstacles) {
+                if (obs.bottom > y) {
+                    if (active == null) active = new ArrayList<>();
+                    active.add(obs);
+                    if (obs.bottom > maxObstacleBottom) maxObstacleBottom = obs.bottom;
+                }
+            }
+        }
+        StaticLayout layout = buildParagraphLayout(text, font, align, layoutWidth, paragraph, pptx,
+            new int[] {first, rest}, new int[] {right});
+        if (active == null) return layout;
+
+        int[] prevLeft = null;
+        int[] prevRight = null;
+        int minTextWidth = Math.max(1, Math.min(layoutWidth, 24));
+        int maxIndentSum = Math.max(0, layoutWidth - minTextWidth);
+        for (int pass = 0; pass < 3; pass++) {
+            int lineCount = layout.getLineCount();
+            float estLineHeight = lineCount > 0
+                ? Math.max(1f, (float) layout.getHeight() / lineCount)
+                : Math.max(12f, font.getTextSize() * 1.2f);
+            int spanLines = Math.max(lineCount,
+                (int) Math.ceil(Math.max(0f, maxObstacleBottom - y) / estLineHeight) + 2);
+            int capLines = Math.min(256, Math.max(1, spanLines));
+            int[] leftIndents = new int[capLines + 1];
+            int[] rightIndents = new int[capLines + 1];
+            for (int i = 0; i < capLines; i++) {
+                float lineTop = y + (i < lineCount ? layout.getLineTop(i) : i * estLineHeight);
+                float lineBottom = y + (i < lineCount ? layout.getLineBottom(i) : (i + 1) * estLineHeight);
+                int baseLeft = i == 0 ? first : rest;
+                int baseRight = right;
+                int obsLeft = 0;
+                int obsRight = 0;
+                for (WrapObstacle obs : active) {
+                    if (obs.bottom > lineTop && obs.top < lineBottom) {
+                        if (obs.side < 0) {
+                            obsLeft = Math.max(obsLeft, Math.round(Math.max(0f, obs.right - x)));
+                        } else {
+                            obsRight = Math.max(obsRight, Math.round(Math.max(0f, (x + layoutWidth) - obs.left)));
+                        }
+                    }
+                }
+                int l = Math.max(baseLeft, obsLeft);
+                int r = Math.max(baseRight, obsRight);
+                if (l + r > maxIndentSum) {
+                    l = Math.min(l, maxIndentSum);
+                    r = Math.min(r, Math.max(0, maxIndentSum - l));
+                }
+                leftIndents[i] = l;
+                rightIndents[i] = r;
+            }
+            leftIndents[capLines] = rest;
+            rightIndents[capLines] = right;
+            if (prevLeft != null && Arrays.equals(prevLeft, leftIndents) && Arrays.equals(prevRight, rightIndents)) {
+                break;
+            }
+            prevLeft = leftIndents;
+            prevRight = rightIndents;
+            layout = buildParagraphLayout(text, font, align, layoutWidth, paragraph, pptx, leftIndents, rightIndents);
+        }
+        return layout;
+    }
+
+    private static StaticLayout buildParagraphLayout(SpannableStringBuilder text, TextPaint font, Layout.Alignment align,
+                                                     int layoutWidth, OfficeDocument.Paragraph paragraph, boolean pptx,
+                                                     int[] leftIndents, int[] rightIndents) {
+        StaticLayout.Builder builder = StaticLayout.Builder.obtain(text, 0, text.length(), font, layoutWidth)
+            .setAlignment(align).setIncludePad(false)
+            .setIndents(leftIndents, rightIndents);
+        if (paragraph.alignment == 3 && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            builder.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD);
+        }
+        if (paragraph.lineSpacingRule == OfficeDocument.LineSpacingRule.AUTO && !(pptx && paragraph.lineSpacing != 1)) {
+            builder.setLineSpacing(0, paragraph.lineSpacing);
         }
         return builder.build();
     }

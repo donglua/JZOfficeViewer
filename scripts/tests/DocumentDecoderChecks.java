@@ -10,6 +10,7 @@ public final class DocumentDecoderChecks {
         checkSpreadsheetDecodeAndValidation();
         checkPptxAndDocxWithOmittedFields();
         checkTypographyAndStyleFields();
+        checkFloatingWrapFields();
         checkParagraphShadingAndBorders();
         checkGeometryAndPathValidation();
         checkEscapesAndOutOfOrderKeys();
@@ -331,6 +332,50 @@ public final class DocumentDecoderChecks {
             + "\"pages\":[],\"blocks\":[],\"warnings\":[],\"width\":595,\"kind\":\"XLSX\",\"schemaVersion\":9}";
         OfficeDocument doc = DocumentDecoder.decode(reordered);
         check("Line 1\n\"Quoted\" 中文".equals(doc.sheets.get(0).cells.get(0).text), "escaped string & reordered keys");
+    }
+
+    private static void checkFloatingWrapFields() throws Exception {
+        String omitted = "{\"schemaVersion\":9,\"kind\":\"DOCX\",\"width\":595,\"warnings\":[],\"pages\":[],\"cellStyles\":[],\"sheets\":[],"
+            + "\"blocks\":[{\"type\":\"IMAGE\",\"x\":0,\"y\":0,\"width\":120,\"height\":80,\"padding\":0,"
+            + "\"transform\":[1,0,0,1,0,0],\"fill\":0,\"stroke\":0,\"strokeWidth\":0,"
+            + "\"verticalAlignment\":\"TOP\",\"textWrap\":true,\"paragraphs\":[],\"image\":\"word/media/a.png\"}]}";
+        OfficeDocument omittedDoc = DocumentDecoder.decode(omitted);
+        OfficeDocument.Element inline = omittedDoc.blocks.get(0);
+        check("INLINE".equals(inline.wrapMode), "default wrapMode is INLINE");
+        check(inline.horizontalAlign == 0, "default horizontalAlign is 0");
+        check(!inline.behindDoc, "default behindDoc is false");
+        check(inline.distTop == 0 && inline.distBottom == 0 && inline.distLeft == 0 && inline.distRight == 0,
+            "default wrap distances are zero");
+
+        String floatingJson = "{\"schemaVersion\":9,\"kind\":\"DOCX\",\"width\":595,\"warnings\":[],\"pages\":[],\"cellStyles\":[],\"sheets\":[],"
+            + "\"blocks\":[{\"type\":\"RECT\",\"x\":72,\"y\":12.5,\"width\":180,\"height\":90,\"padding\":4,"
+            + "\"transform\":[1,0,0,1,0,0],\"fill\":4294901760,\"stroke\":4278190080,\"strokeWidth\":1,"
+            + "\"verticalAlignment\":\"CENTER\",\"textWrap\":true,"
+            + "\"wrapMode\":\"SQUARE\",\"horizontalAlign\":3,\"behindDoc\":true,"
+            + "\"distTop\":4.5,\"distBottom\":6,\"distLeft\":9,\"distRight\":12.5,\"paragraphs\":[]}]}";
+        OfficeDocument floatingDoc = DocumentDecoder.decode(floatingJson);
+        OfficeDocument.Element el = floatingDoc.blocks.get(0);
+        check("SQUARE".equals(el.wrapMode), "decoded wrapMode SQUARE");
+        check(el.horizontalAlign == 3, "decoded horizontalAlign 3");
+        check(el.behindDoc, "decoded behindDoc true");
+        check(el.distTop == 4.5f && el.distBottom == 6f && el.distLeft == 9f && el.distRight == 12.5f,
+            "decoded wrap distances");
+
+        String[] modes = {"INLINE", "SQUARE", "TIGHT", "THROUGH", "TOP_AND_BOTTOM", "NONE"};
+        for (String mode : modes) {
+            String json = floatingJson.replace("\"SQUARE\"", "\"" + mode + "\"");
+            check(mode.equals(DocumentDecoder.decode(json).blocks.get(0).wrapMode), "accepts wrapMode " + mode);
+        }
+
+        reject(floatingJson.replace("\"SQUARE\"", "\"WRAP_BAD\""), "Invalid core display model", "invalid wrapMode");
+        reject(floatingJson.replace("\"horizontalAlign\":3", "\"horizontalAlign\":4"),
+            "Invalid core display model", "horizontalAlign > 3");
+        reject(floatingJson.replace("\"horizontalAlign\":3", "\"horizontalAlign\":-1"),
+            "Invalid core display model", "horizontalAlign < 0");
+        reject(floatingJson.replace("\"distTop\":4.5", "\"distTop\":-0.5"),
+            "Invalid core display model", "negative distTop");
+        reject(floatingJson.replace("\"distRight\":12.5", "\"distRight\":1200.5"),
+            "Invalid core display model", "excessive distRight");
     }
 
     private static void reject(String json, String expectedMessage, String label) {

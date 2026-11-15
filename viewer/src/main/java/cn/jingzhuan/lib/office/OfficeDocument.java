@@ -43,6 +43,10 @@ final class OfficeDocument {
         float[] imageBounds;
         VerticalAlignment verticalAlignment = VerticalAlignment.TOP;
         boolean textWrap = true;
+        String wrapMode = "INLINE";
+        int horizontalAlign = 0;
+        boolean behindDoc = false;
+        float distTop, distBottom, distLeft, distRight;
         final List<Paragraph> paragraphs = new ArrayList<>();
         final List<List<List<Paragraph>>> rows = new ArrayList<>();
         final List<Float> columnWidths = new ArrayList<>();

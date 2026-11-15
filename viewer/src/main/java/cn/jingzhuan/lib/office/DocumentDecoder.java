@@ -623,6 +623,13 @@ final class DocumentDecoder {
                     hasValign = true;
                     break;
                 case "textWrap": e.textWrap = c.nextBoolean(); hasWrap = true; break;
+                case "wrapMode": e.wrapMode = wrapMode(c.nextString()); break;
+                case "horizontalAlign": e.horizontalAlign = horizontalAlign(c.nextInt()); break;
+                case "behindDoc": e.behindDoc = c.nextBoolean(); break;
+                case "distTop": e.distTop = wrapDistance(c); break;
+                case "distBottom": e.distBottom = wrapDistance(c); break;
+                case "distLeft": e.distLeft = wrapDistance(c); break;
+                case "distRight": e.distRight = wrapDistance(c); break;
                 case "imageBounds":
                     if (c.peekNull()) {
                         c.nextNull();
@@ -860,6 +867,35 @@ final class DocumentDecoder {
         c.endArray();
         if (index != count) throw new IllegalArgumentException("Invalid geometry coordinate count");
         return result;
+    }
+
+    private static String wrapMode(String value) {
+        switch (value) {
+            case "INLINE":
+            case "SQUARE":
+            case "TIGHT":
+            case "THROUGH":
+            case "TOP_AND_BOTTOM":
+            case "NONE":
+                return value;
+            default:
+                throw new IllegalArgumentException("Invalid wrapMode");
+        }
+    }
+
+    private static int horizontalAlign(int value) {
+        if (value < 0 || value > 3) {
+            throw new IllegalArgumentException("Invalid horizontalAlign");
+        }
+        return value;
+    }
+
+    private static float wrapDistance(Cursor c) {
+        double value = c.nextDouble();
+        if (Double.isNaN(value) || Double.isInfinite(value) || value < 0 || value > 1200) {
+            throw new IllegalArgumentException("Invalid wrap distance");
+        }
+        return (float) value;
     }
 
     private static List<OfficeDocument.Paragraph> paragraphs(Cursor c) {
