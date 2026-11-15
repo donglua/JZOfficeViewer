@@ -4,6 +4,9 @@
 
 ### 细节修复与交互优化
 
+- **鸿蒙端 XLSX 双层工作表标签栏（`viewer-ohos`）**：
+  - `SpreadsheetView` 此前自绘一条工作表面板，接入标准组件 `OfficeSheetTabs` 后会额外再出现一条，形成上下两层重复的切表入口。现移除预览视图内嵌的标签条，切表 UI 统一由 `OfficeSheetTabs` 承担，与 Android、macOS 的组件分工一致；未接入该组件的宿主仍可通过 `controller.selectSheet(n)` 切表。
+  - `OhosGestureChecks` 新增回归断言，禁止预览视图再次内嵌横向工作表标签栏。
 - **鸿蒙端惯性滑动按下即停（`viewer-ohos`）**：
   - PPTX 与 XLSX 自绘视图原先只在 `PanGesture.onActionStart` 中终止惯性，而该回调需手指移动超过识别距离才触发，导致滑动惯性尚未衰减完时按住屏幕，内容仍继续滑走。改为在 `onTouch` 的 `TouchType.Down` 立即停止惯性，与 Android `GestureDetector.onDown` 的 `scroller.forceFinished(true)` 行为对齐。
 

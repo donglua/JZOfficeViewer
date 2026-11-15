@@ -1324,32 +1324,6 @@ export struct SpreadsheetView {
         )
         .accessibilityGroup(true)
         .accessibilityText(this.sheetAccessibilityLabel())
-
-        if (this.document.sheets && this.document.sheets.length > 1) {
-          Scroll() {
-            Row({ space: 8 }) {
-              ForEach(this.document.sheets, (sheet: model.Sheet, idx: number) => {
-                Text(sheet.name || `Sheet ${idx + 1}`)
-                  .fontSize(13)
-                  .fontColor(this.currentSheetIndex === idx ? '#0a59f7' : '#5f6368')
-                  .fontWeight(this.currentSheetIndex === idx ? FontWeight.Medium : FontWeight.Normal)
-                  .backgroundColor(this.currentSheetIndex === idx ? '#e8f0fe' : '#f1f3f4')
-                  .borderRadius(4)
-                  .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-                  .onClick(() => {
-                    this.switchSheet(idx);
-                  })
-              }, (_sheet: model.Sheet, idx: number) => `sheet-${idx}-${this.currentSheetIndex === idx}`)
-            }
-            .padding({ left: 12, right: 12 })
-            .alignItems(VerticalAlign.Center)
-          }
-          .scrollable(ScrollDirection.Horizontal)
-          .width('100%')
-          .height(44)
-          .backgroundColor('#ffffff')
-          .border({ width: { top: 0.5 }, color: '#e0e0e0' })
-        }
       }
       .width('100%')
       .height('100%')

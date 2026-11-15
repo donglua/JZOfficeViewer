@@ -23,7 +23,6 @@ struct Index {
   @State statusText: string = 'DOCX / PPTX / XLSX';
   @State currentPage: number = 0;
   @State pageCount: number = 0;
-  @State sheetNames: string[] = [];
   private currentFormat: string = 'DOCX';
   private noticeCount: number = 0;
 
@@ -42,7 +41,6 @@ struct Index {
   private async selectSample(index: number): Promise<void> {
     this.selectedIndex = index;
     this.prepareError = '';
-    this.sheetNames = [];
     const sample = this.samples[index];
     try {
       const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
@@ -176,7 +174,6 @@ struct Index {
               this.noticeCount = info.warnings.length;
               this.pageCount = info.pageCount;
               this.currentPage = info.pageCount > 0 ? 1 : 0;
-              this.sheetNames = info.sheetNames || [];
               this.updateStatusText();
             },
             onPageChange: (pageNumber: number, pageCount: number) => {

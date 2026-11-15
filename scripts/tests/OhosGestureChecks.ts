@@ -55,12 +55,20 @@ function checkTouchDownStopsFling(path: string, label: string): void {
   expect(body.includes('this.stopFling();'), `${label} 手指按下（Down）必须立刻停止 Fling`);
 }
 
+/** 切表入口只能有一处：预览视图内嵌工作表条与 OfficeSheetTabs 并存会出现两层标签栏 */
+function checkNoEmbeddedSheetTabs(path: string, label: string): void {
+  const source = readFileSync(path, 'utf8');
+  expect(!/ScrollDirection\.Horizontal|listDirection\(\s*Axis\.Horizontal\s*\)/.test(source),
+    `${label} 预览视图不得内嵌工作表标签栏，切表统一交给 OfficeSheetTabs`);
+}
+
 checkDoubleTapThreshold(previewPath, 'DOCX/PPTX');
 checkDoubleTapThreshold(spreadsheetPath, 'XLSX');
 checkPanCancelsZoomTween(previewPath, 'PPTX');
 checkPanCancelsZoomTween(spreadsheetPath, 'XLSX');
 checkTouchDownStopsFling(previewPath, 'PPTX');
 checkTouchDownStopsFling(spreadsheetPath, 'XLSX');
+checkNoEmbeddedSheetTabs(spreadsheetPath, 'XLSX');
 
 if (failures.length > 0) {
   throw new Error(`手势回归检查失败（${failures.length}/${checks}）：\n- ${failures.join('\n- ')}`);
