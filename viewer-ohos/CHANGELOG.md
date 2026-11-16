@@ -1,5 +1,37 @@
 # 更新日志
 
+## 0.14.0
+
+发布页面：[v0.14.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.14.0)。
+
+本版本主要新增 DOCX 浮动图形、DrawingML 形状/文本框与文字环绕全端支持，引入元数据与首屏缩略图轻量路径、解析结果缓存及延迟构建搜索索引优化，并修复多项鸿蒙 NEXT 端渲染、交互与内存问题。
+
+### 排版与特性
+
+- **DOCX 浮动图形、DrawingML 形状与文字环绕（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - **核心模型与解析（`core`）**：支持 `<wp:anchor>` 浮动定位、环绕模式（`SQUARE` / `TOP_AND_BOTTOM` / `TIGHT` / `THROUGH` / 衬于文字下方 / 浮于文字上方）、水平对齐、层级关系（`behindDoc`）与四向环绕边距（`distTop` / `distBottom` / `distLeft` / `distRight`），保持无环绕段落流的连续性（仅在行内图片切分段落流时提示告警）；支持解析 DrawingML 形状与组合图形（`<wps:wsp>` / `<wpg:wgp>`）及形状内部文本框（`<wps:txbx>`）。
+  - **全端渲染与排布**：Android（`viewer`）、HarmonyOS NEXT（`viewer-ohos`）与 macOS（`viewer-macos`）三端实现浮动元素 Z-order 分层绘制、文字避让环绕排布及检索高亮/选区坐标对齐，并补充各端解码与环绕排版回归测试。
+
+### 性能
+
+- **元数据与缩略图的轻量路径（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - 新增 native 轻量元数据接口（`metadata_path_to_json` / `NativeCore.metadata` / `readMetadataAsync` / `jz_office_metadata_path`），元数据速读只读取判定格式与页数所需的少量 ZIP 部件，不再触发整篇文档的样式、几何与文本解析，输出独立的紧凑协议。
+  - 缩略图改走首屏范围解析：PPTX 只渲染首张幻灯片，XLSX 只解析首个工作表，DOCX 只解析首屏正文块并在排版越过首页视口底部后停止。封面像素与完整解析一致，但不再承担整篇文档的解析与排版成本。
+  - 新增按 文件路径 + 大小 + 修改时间 + 解析范围 命中的解析结果缓存。同一文件连续执行「元数据 → 缩略图 → 打开预览」不再重复解析；更完整的解析结果可直接服务封面请求，文件内容变化后自动失效。`clear_package_cache` / `evict_package_cache` 一并清理该缓存，避免检索索引与解析结果错配。
+- **延后构建全文检索索引（`core`）**：
+  - 文档打开与解析时不再同步构建全文检索索引，改为首次检索时按需建立轻量索引，并按保留文本字节上限管理缓存淘汰；另提供 `prewarm_search_index` 接口供按需显式预热。
+- **鸿蒙端 PPTX 视口二分定位与离屏图片释放（`viewer-ohos`）**：
+  - 新增 `resolvePptxVisibleRange` 按页面纵坐标二分定位当前视口可见幻灯片区间，`drawPptx` 仅遍历可见区间，消除长演示文稿每帧线性扫描的开销；修正 `ImageStore` 低清图命中后高清升级与并发解码所有权竞态，并在滑动离屏后主动释放非可见 PPTX 页面图片资源。
+
+### 细节修复与交互优化
+
+- **鸿蒙端 XLSX 双层工作表标签栏（`viewer-ohos`）**：
+  - `SpreadsheetView` 此前自绘一条工作表面板，接入标准组件 `OfficeSheetTabs` 后会额外再出现一条，形成上下两层重复的切表入口。现移除预览视图内嵌的标签条，切表 UI 统一由 `OfficeSheetTabs` 承担，与 Android、macOS 的组件分工一致；未接入该组件的宿主仍可通过 `controller.selectSheet(n)` 切表。
+  - `OhosGestureChecks` 新增回归断言，禁止预览视图再次内嵌横向工作表标签栏。
+- **鸿蒙端惯性滑动按下即停与防误触双击缩放（`viewer-ohos`）**：
+  - PPTX 与 XLSX 自绘视图原先只在 `PanGesture.onActionStart` 中终止惯性，而该回调需手指移动超过识别距离才触发，导致滑动惯性尚未衰减完时按住屏幕，内容仍继续滑走。改为在 `onTouch` 的 `TouchType.Down` 立即停止惯性，与 Android `GestureDetector.onDown` 的 `scroller.forceFinished(true)` 行为对齐。
+  - 为 DOCX / PPTX / XLSX 视图的 `TapGesture({ count: 2 })` 配置 `distanceThreshold: 3`，避免单指滑动被累计误触发双击缩放，并在单指 `PanGesture` 开始时取消旧缩放补间动画；`OhosGestureChecks` 已补充对应回归校验。
+
 ## 0.13.1
 
 发布页面：[v0.13.1 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.13.1)。

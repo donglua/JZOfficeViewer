@@ -6,22 +6,22 @@ A lightweight offline Office document preview library for **Android**, **Harmony
 
 Both platforms share the Rust parsing core `jz-office-core`; the platform layers use native components and Canvas for layout and drawing. There is no server-side conversion, no WebView, no external Office app and no bundled fonts. Android also offers an optional `viewer-online` module for online document download and cache management.
 
-The latest version is **0.13.1**. See the [CHANGELOG](CHANGELOG.md) (Chinese) for release notes and [AGENT.md](AGENT.md) (Chinese) for development, testing and release guidelines.
+The latest version is **0.14.0**. See the [CHANGELOG](CHANGELOG.md) (Chinese) for release notes and [AGENT.md](AGENT.md) (Chinese) for development, testing and release guidelines.
 
-- **GitHub Release**: [v0.13.1 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.13.1)
-- **Maven Central (Android)**: [io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.13.1) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.13.1)
-- **OHPM (HarmonyOS NEXT)**: `@jzdy/office` (`0.13.1`)
+- **GitHub Release**: [v0.14.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.14.0)
+- **Maven Central (Android)**: [io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.14.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.14.0)
+- **OHPM (HarmonyOS NEXT)**: `@jzdy/office` (`0.14.0`)
 
 ## Artifact Size
 
-Actual sizes of the `0.13.1` release artifacts (1 KiB = 1024 bytes):
+Actual sizes of the `0.14.0` release artifacts (1 KiB = 1024 bytes):
 
 | Platform | Artifact | Size | Description |
 | --- | --- | --- | --- |
-| Android | `viewer-0.13.1.aar` | **~922 KiB** | Core DOCX / PPTX / XLSX preview, includes `arm64-v8a` and `armeabi-v7a` |
-| Android | `viewer-online-0.13.1.aar` | **~21.1 KiB** | Optional online download and cache module used with `viewer`, no extra networking dependency |
-| HarmonyOS | `jzdy-office-0.13.1.har` | **~1057 KiB** | Core preview HAR for HarmonyOS NEXT (`@jzdy/office`), includes `arm64-v8a` and `x86_64` |
-| macOS | `CJZOffice-0.13.1.xcframework.zip` | **~1.7 MiB** | macOS native core XCFramework, includes universal `arm64` (Apple Silicon) and `x86_64` (Intel) static library |
+| Android | `viewer-0.14.0.aar` | **~961 KiB** | Core DOCX / PPTX / XLSX preview, includes `arm64-v8a` and `armeabi-v7a` |
+| Android | `viewer-online-0.14.0.aar` | **~21.1 KiB** | Optional online download and cache module used with `viewer`, no extra networking dependency |
+| HarmonyOS | `jzdy-office-0.14.0.har` | **~1201 KiB** | Core preview HAR for HarmonyOS NEXT (`@jzdy/office`), includes `arm64-v8a` and `x86_64` |
+| macOS | `CJZOffice-0.14.0.xcframework.zip` | **~1.7 MiB** | macOS native core XCFramework, includes universal `arm64` (Apple Silicon) and `x86_64` (Intel) static library |
 
 No artifact bundles fonts or demo samples. The actual size increase in your app depends on ABI filters, R8/obfuscation and packaging settings.
 
@@ -76,14 +76,14 @@ Use `viewer` if you only need to preview local `Uri`s. Use `viewer-online` to al
 ```kotlin
 dependencies {
     // Option 1: local document preview only
-    implementation("io.github.donglua.office:viewer:0.13.1")
+    implementation("io.github.donglua.office:viewer:0.14.0")
 
     // Option 2: online download and cache + local preview
-    implementation("io.github.donglua.office:viewer-online:0.13.1")
+    implementation("io.github.donglua.office:viewer-online:0.14.0")
 }
 ```
 
-> If you copy the AARs from the release assets into a local `libs/` directory, online preview requires both `viewer-0.13.1.aar` and `viewer-online-0.13.1.aar`.
+> If you copy the AARs from the release assets into a local `libs/` directory, online preview requires both `viewer-0.14.0.aar` and `viewer-online-0.14.0.aar`.
 
 ### 2. Local Document Preview
 
@@ -124,7 +124,8 @@ preview.open(uri, object : OfficePreviewView.Listener {
   container.addView(sheetTabs)
   ```
 - **Headless metadata reading (`OfficeMetadata`)**:
-  Read the document format, page count, size (in points) and sheet names offline in the background, without creating a View:
+  Read the document format, page count, size (in points) and sheet names offline in the background, without creating a View.
+  This API reads only the minimal ZIP parts needed to determine the format and page count without building body, style or geometry models, making it suitable for document lists and batch inspection:
   ```kotlin
   import cn.jingzhuan.lib.office.OfficeMetadata
 
@@ -136,7 +137,8 @@ preview.open(uri, object : OfficePreviewView.Listener {
   })
   ```
 - **Offscreen cover / thumbnail generation (`OfficeThumbnail`)**:
-  Render the first page of a document (DOCX / PPTX / XLSX) into a Bitmap within the given maximum bounds (scaled proportionally) on a background worker thread, without any UI view:
+  Render the first page of a document (DOCX / PPTX / XLSX) into a Bitmap within the given maximum bounds (scaled proportionally) on a background worker thread, without any UI view.
+  Rendering uses first-screen scope parsing: PPTX renders only the first slide, XLSX parses only the first sheet, and DOCX lays out only down to the bottom of the first-page viewport:
   ```kotlin
   import cn.jingzhuan.lib.office.OfficeThumbnail
 
@@ -148,6 +150,7 @@ preview.open(uri, object : OfficePreviewView.Listener {
   })
   ```
 - **Lifecycle cleanup**: call `preview.clear()` in `Activity.onDestroy()` or `Fragment.onDestroyView()` to release the image cache and remove private staging files promptly.
+- **Parse result reuse**: metadata reading, thumbnails and full preview share a parse cache keyed by file path, size and modification time. Running "metadata → cover → open preview" sequentially on the same file avoids redundant parsing, and a fuller cached parse result can serve cover requests directly. Entries are automatically invalidated when the file size or modification time changes.
 
 ### 3. Online Link Preview and Cache Management
 
@@ -208,7 +211,7 @@ Or add it to the module's `oh-package.json5`:
 ```json5
 {
   "dependencies": {
-    "@jzdy/office": "^0.13.1"
+    "@jzdy/office": "^0.14.0"
   }
 }
 ```

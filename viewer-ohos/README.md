@@ -6,22 +6,22 @@
 
 底层共用 Rust 解析核心 `jz-office-core`，平台层使用原生组件与 Canvas 排版绘制，不依赖服务端转换、WebView、外部 Office 应用或内置字体。Android 端另提供可选的 `viewer-online` 模块，支持在线文档下载与缓存管理。
 
-当前最新版本为 **0.13.1**，详细变更记录见 [CHANGELOG](CHANGELOG.md)，开发、测试与发布规范见 [AGENT.md](AGENT.md)。
+当前最新版本为 **0.14.0**，详细变更记录见 [CHANGELOG](CHANGELOG.md)，开发、测试与发布规范见 [AGENT.md](AGENT.md)。
 
-- **GitHub Release**：[v0.13.1 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.13.1)
-- **Maven Central (Android)**：[io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.13.1) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.13.1)
-- **OHPM (HarmonyOS NEXT)**：`@jzdy/office`（`0.13.1`）
+- **GitHub Release**：[v0.14.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.14.0)
+- **Maven Central (Android)**：[io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.14.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.14.0)
+- **OHPM (HarmonyOS NEXT)**：`@jzdy/office`（`0.14.0`）
 
 ## 产物体积
 
-以下为 `0.13.1` Release 构建产物的实际大小（1 KiB = 1024 字节）：
+以下为 `0.14.0` Release 构建产物的实际大小（1 KiB = 1024 字节）：
 
 | 平台 | 产物 | 文件大小 | 说明 |
 | --- | --- | --- | --- |
-| Android | `viewer-0.13.1.aar` | **约 922 KiB** | DOCX / PPTX / XLSX 核心预览，含 `arm64-v8a` 与 `armeabi-v7a` |
-| Android | `viewer-online-0.13.1.aar` | **约 21.1 KiB** | 可选的在线下载与缓存模块，配合 `viewer` 使用，零额外网络库依赖 |
-| HarmonyOS | `jzdy-office-0.13.1.har` | **约 1057 KiB** | 鸿蒙 NEXT 核心预览 HAR（`@jzdy/office`），含 `arm64-v8a` 与 `x86_64` |
-| macOS | `CJZOffice-0.13.1.xcframework.zip` | **约 1.7 MiB** | macOS 原生核心 XCFramework，含 `arm64`（Apple Silicon）与 `x86_64`（Intel）双架构静态库 |
+| Android | `viewer-0.14.0.aar` | **约 961 KiB** | DOCX / PPTX / XLSX 核心预览，含 `arm64-v8a` 与 `armeabi-v7a` |
+| Android | `viewer-online-0.14.0.aar` | **约 21.1 KiB** | 可选的在线下载与缓存模块，配合 `viewer` 使用，零额外网络库依赖 |
+| HarmonyOS | `jzdy-office-0.14.0.har` | **约 1201 KiB** | 鸿蒙 NEXT 核心预览 HAR（`@jzdy/office`），含 `arm64-v8a` 与 `x86_64` |
+| macOS | `CJZOffice-0.14.0.xcframework.zip` | **约 1.7 MiB** | macOS 原生核心 XCFramework，含 `arm64`（Apple Silicon）与 `x86_64`（Intel）双架构静态库 |
 
 产物均不打包字体或演示样例。实际接入后的应用体积增量受 ABI 过滤、R8/混淆及打包配置影响。
 
@@ -48,7 +48,7 @@ Demo 内置综合样例的真机预览效果（点击可查看大图）：
 
 | 格式 | 已支持能力 | 简化或忽略项 |
 | --- | --- | --- |
-| **DOCX** | 段落与样式继承、显式字体名传递、字号/颜色/粗斜体/下划线、倍数/固定/最小行距、首行/悬挂/左右缩进、16 种常见自动编号、内嵌图片、矩形表格、页眉页脚（随内容滚动）、隐藏文本（`vanish`/`webHidden`）与注音过滤 | 连续滚动流式布局（`pageCount` 固定为 1）；忽略精确分页、浮动环绕和公式 |
+| **DOCX** | 段落与样式继承、显式字体名传递、字号/颜色/粗斜体/下划线、倍数/固定/最小行距、首行/悬挂/左右缩进、16 种常见自动编号、内嵌图片、浮动图片与 DrawingML 图形/文本框（`<wp:anchor>`、`<wps:wsp>`/`<wpg:wgp>`、`<wps:txbx>`）、文字环绕（四周/上下/衬于文字下方/浮于文字上方）、矩形表格、页眉页脚（随内容滚动）、隐藏文本（`vanish`/`webHidden`）与注音过滤 | 连续滚动流式布局（`pageCount` 固定为 1）；忽略精确分页、`tight`/`through` 紧密轮廓裁剪（按外接矩形近似）和公式 |
 | **PPTX** | 按演示顺序渲染幻灯片、文本框对齐与自动换行控制、行距与缩进、已保存的自动缩字（`normAutofit`）、内嵌图片与 `blipFill` 背景图、矩形/椭圆/圆角矩形/三角形/菱形及自定义数值路径、线性渐变填充与背景、嵌套组合变换（平移/缩放/旋转）、表格与单元格填充、带缓存数据的基础折线图与垂直柱状图、主题色与明暗度（`lumMod`/`lumOff`） | 忽略动画、非折线/柱状图（如饼图、面积图）、SmartArt、复杂预设几何与引导公式、WordArt；渐变文字以代表色近似；不重新求解字体自适应 |
 | **XLSX** | 多工作表切换、行列标题、双向平滑滚动与缩放、合并单元格、行高列宽、字体/填充/边框/对齐/自动换行、自定义索引调色板与 `tint` 明暗色、多段数字格式（正/负/零/文本、百分比、日期、区域标签剥离）、公式缓存值显示 | 不执行公式计算或宏；忽略工作表浮动图片、图表、条件格式、数据透视表和冻结窗格；富文本合并为单元格普通文字 |
 
@@ -76,14 +76,14 @@ dependencyResolutionManagement {
 ```kotlin
 dependencies {
     // 方式一：仅本地文档预览
-    implementation("io.github.donglua.office:viewer:0.13.1")
+    implementation("io.github.donglua.office:viewer:0.14.0")
 
     // 方式二：包含在线下载与缓存 + 本地预览
-    implementation("io.github.donglua.office:viewer-online:0.13.1")
+    implementation("io.github.donglua.office:viewer-online:0.14.0")
 }
 ```
 
-> 若直接拷贝 Release 附件中的 AAR 到本地 `libs/`，在线预览需同时引入 `viewer-0.13.1.aar` 和 `viewer-online-0.13.1.aar`。
+> 若直接拷贝 Release 附件中的 AAR 到本地 `libs/`，在线预览需同时引入 `viewer-0.14.0.aar` 和 `viewer-online-0.14.0.aar`。
 
 ### 2. 本地文档预览
 
@@ -124,7 +124,8 @@ preview.open(uri, object : OfficePreviewView.Listener {
   container.addView(sheetTabs)
   ```
 - **无头元数据读取（`OfficeMetadata`）**：
-  无需初始化 View 即可在后台离线读取文档格式、页数、尺寸（点单位）及工作表名称列表：
+  无需初始化 View 即可在后台离线读取文档格式、页数、尺寸（点单位）及工作表名称列表。
+  该接口只读取判定格式与页数所需的少量 ZIP 部件，不构建正文、样式与几何模型，适用于文档列表与批量信息采集：
   ```kotlin
   import cn.jingzhuan.lib.office.OfficeMetadata
 
@@ -136,7 +137,8 @@ preview.open(uri, object : OfficePreviewView.Listener {
   })
   ```
 - **离屏封面/缩略图生成（`OfficeThumbnail`）**：
-  脱离 UI 视图直接在后台工作线程渲染文档首页（DOCX / PPTX / XLSX）为指定最大边界的 Bitmap（自动按原比例缩放）：
+  脱离 UI 视图直接在后台工作线程渲染文档首页（DOCX / PPTX / XLSX）为指定最大边界的 Bitmap（自动按原比例缩放）。
+  渲染走首屏范围解析：PPTX 只渲染首张幻灯片，XLSX 只解析首个工作表，DOCX 只排版到首页视口底部：
   ```kotlin
   import cn.jingzhuan.lib.office.OfficeThumbnail
 
@@ -148,6 +150,7 @@ preview.open(uri, object : OfficePreviewView.Listener {
   })
   ```
 - **生命周期清理**：在 `Activity.onDestroy()` 或 `Fragment.onDestroyView()` 中调用 `preview.clear()`，及时释放图片缓存并清理私有暂存文件。
+- **解析结果复用**：元数据读取、缩略图与预览打开共享同一份按 文件路径 + 大小 + 修改时间 命中的解析缓存。同一文件先后执行「元数据 → 封面 → 打开预览」时不会重复解析；更完整的解析结果可直接服务封面请求。文件被替换后按大小与修改时间自动失效。
 
 ### 3. 在线链接预览与缓存管理
 
@@ -208,7 +211,7 @@ ohpm install @jzdy/office
 ```json5
 {
   "dependencies": {
-    "@jzdy/office": "^0.13.1"
+    "@jzdy/office": "^0.14.0"
   }
 }
 ```
