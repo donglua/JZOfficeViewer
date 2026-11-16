@@ -1,5 +1,5 @@
 use super::{alternate, format, skipped, Parser, MAX_TEXT};
-use crate::model::{Element, Paragraph, Run, WrapMode};
+use crate::model::{Element, ElementType, Paragraph, Run, WrapMode};
 use crate::xml::Node;
 use crate::{Error, Result};
 
@@ -194,7 +194,26 @@ impl Flow {
         Ok(())
     }
 
-    fn image(&mut self, image: Element) -> Result<()> {
+    fn image(&mut self, mut image: Element) -> Result<()> {
+        if image.wrap_mode == WrapMode::Inline && image.horizontal_align == 0 {
+            image.horizontal_align = match self.template.alignment {
+                1 => 2,
+                2 => 3,
+                _ => 1,
+            };
+        }
+        if matches!(image.kind, ElementType::TEXT)
+            && !image.text_wrap
+            && image.width == 0.0
+            && image.paragraphs.len() == 1
+            && image.paragraphs[0].alignment == 0
+        {
+            if image.horizontal_align == 2 {
+                image.paragraphs[0].alignment = 1;
+            } else if image.horizontal_align == 3 {
+                image.paragraphs[0].alignment = 2;
+            }
+        }
         if image.wrap_mode != WrapMode::Inline {
             if self.elements.len() + self.floating.len() >= self.limit {
                 return Err(Error::Limit(self.limit_message));

@@ -343,6 +343,24 @@ impl Parser<'_> {
             element.stroke = 0;
             element.paths.clear();
         }
+
+        let has_sp_autofit = wsp
+            .child("bodyPr")
+            .is_some_and(|bp| bp.child("spAutoFit").is_some());
+        if has_sp_autofit
+            && !has_image_fill
+            && !element.paragraphs.is_empty()
+            && element.fill == 0
+            && element.stroke == 0
+            && element.fill_gradient.is_none()
+        {
+            element.kind = ElementType::TEXT;
+            element.paths.clear();
+            element.height = 0.0;
+            if !element.text_wrap {
+                element.width = 0.0;
+            }
+        }
         Ok(Some(element))
     }
 

@@ -345,3 +345,68 @@ fn parses_wps_shape_with_theme_gradient_and_group_coordinates() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn inline_drawings_inherit_paragraph_jc_alignment() -> TestResult {
+    let inline_img = r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">
+  <wp:extent cx="914400" cy="457200"/>
+  <wp:docPr id="1" name="Inline PNG"/>
+  <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+    <pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="pixel.png"/><pic:cNvPicPr/></pic:nvPicPr>
+      <pic:blipFill><a:blip r:embed="rImage"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+    </pic:pic>
+  </a:graphicData></a:graphic>
+</wp:inline></w:drawing></w:r>"#;
+
+    let body = format!(
+        r#"<w:p>{inline_img}</w:p>
+<w:p><w:pPr><w:jc w:val="center"/></w:pPr>{inline_img}</w:p>
+<w:p><w:pPr><w:jc w:val="right"/></w:pPr>{inline_img}</w:p>
+<w:p><w:pPr><w:jc w:val="both"/></w:pPr>{inline_img}</w:p>"#
+    );
+    let doc = parse_docx(&body)?;
+    assert_eq!(doc.blocks.len(), 4);
+    for (idx, expected) in [(0, 1u8), (1, 2u8), (2, 3u8), (3, 1u8)] {
+        assert_eq!(doc.blocks[idx].wrap_mode, WrapMode::Inline);
+        assert_eq!(doc.blocks[idx].horizontal_align, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn transparent_autofit_nowrap_wsp_textbox_autofits_and_centers_paragraph() -> TestResult {
+    let body = r#"<w:p><w:r><w:drawing><wp:anchor behindDoc="0">
+  <wp:positionH relativeFrom="margin"><wp:align>center</wp:align></wp:positionH>
+  <wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>
+  <wp:extent cx="1828800" cy="1828800"/>
+  <wp:wrapNone/>
+  <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+    <wps:wsp>
+      <wps:cNvSpPr txBox="1"/>
+      <wps:spPr>
+        <a:xfrm><a:off x="0" y="0"/><a:ext cx="1828800" cy="1828800"/></a:xfrm>
+        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+        <a:noFill/>
+        <a:ln w="6350"><a:noFill/></a:ln>
+      </wps:spPr>
+      <wps:txbx><w:txbxContent>
+        <w:p><w:r><w:t>1</w:t></w:r></w:p>
+      </w:txbxContent></wps:txbx>
+      <wps:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:spAutoFit/></wps:bodyPr>
+    </wps:wsp>
+  </a:graphicData></a:graphic>
+</wp:anchor></w:drawing></w:r></w:p>"#;
+    let doc = parse_docx(body)?;
+    assert_eq!(doc.blocks.len(), 1);
+    let box_el = &doc.blocks[0];
+    assert!(matches!(box_el.kind, ElementType::TEXT));
+    assert_eq!(box_el.wrap_mode, WrapMode::None);
+    assert_eq!(box_el.horizontal_align, 2);
+    assert!(!box_el.text_wrap);
+    checks::near(box_el.width, 0.0);
+    checks::near(box_el.height, 0.0);
+    assert_eq!(box_el.paragraphs.len(), 1);
+    assert_eq!(box_el.paragraphs[0].alignment, 1);
+    assert_eq!(checks::text(&box_el.paragraphs), "1");
+    Ok(())
+}
