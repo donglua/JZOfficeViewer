@@ -385,7 +385,13 @@ final class OfficeRenderer {
                 maxBottom[0] = Math.max(maxBottom[0], drawn.y + drawn.height);
             } else {
                 drawn.x = contentX;
-                if (source.type == OfficeDocument.Type.IMAGE) drawn.x += (contentWidth - drawn.width) / 2f;
+                if (source.horizontalAlign == 2) {
+                    drawn.x += Math.max(0f, (contentWidth - drawn.width) / 2f);
+                } else if (source.horizontalAlign == 3) {
+                    drawn.x += Math.max(0f, contentWidth - drawn.width);
+                } else if (source.horizontalAlign == 0 && source.type == OfficeDocument.Type.IMAGE) {
+                    drawn.x += Math.max(0f, (contentWidth - drawn.width) / 2f);
+                }
                 if (!activeObstacles.isEmpty() && source.type != OfficeDocument.Type.TEXT) {
                     float clearBottom = y;
                     for (OfficeTextLayout.WrapObstacle obs : activeObstacles) {
