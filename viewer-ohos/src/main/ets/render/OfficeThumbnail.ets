@@ -212,7 +212,13 @@ async function renderDocxThumbnail(
           continue;
         }
 
-        const drawX = marginX;
+        const inlineAlign = block.horizontalAlign ?? 0;
+        let drawX = marginX;
+        if (inlineAlign === 2) {
+          drawX = marginX + Math.max(0, (availW - elW) / 2);
+        } else if (inlineAlign === 3) {
+          drawX = marginX + Math.max(0, availW - elW);
+        }
         if (!isFixedShape && block.type !== 'TEXT' && activeObstacles.length > 0) {
           let clearY = curY;
           for (const obs of activeObstacles) {

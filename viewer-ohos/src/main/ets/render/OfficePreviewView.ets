@@ -1292,7 +1292,7 @@ struct DocxImageView {
       }
     }
     .width('100%')
-    .justifyContent(this.floatingOffsetX >= 0 ? FlexAlign.Start : FlexAlign.Center)
+    .justifyContent(this.floatingOffsetX >= 0 ? FlexAlign.Start : resolveInlineFlexAlign(this.element))
     .padding(this.floatingOffsetX > 0 ? { left: this.floatingOffsetX } : undefined)
     .margin(this.floatingOffsetX >= 0 ? { top: 0, bottom: 0 } : { top: 4, bottom: 6 })
   }
@@ -1360,11 +1360,25 @@ struct DocxShapeView {
       }
       .id(`shape-${this.reuseVersion}`)
       .width('100%')
-      .justifyContent(this.floatingOffsetX >= 0 ? FlexAlign.Start : FlexAlign.Center)
+      .justifyContent(this.floatingOffsetX >= 0 ? FlexAlign.Start : resolveInlineFlexAlign(this.element))
       .padding(this.floatingOffsetX > 0 ? { left: this.floatingOffsetX } : undefined)
       .margin(this.floatingOffsetX >= 0 ? { top: 0, bottom: 0 } : { top: 4, bottom: 6 })
     }
   }
+}
+
+function resolveInlineFlexAlign(element: model.Element | null): FlexAlign {
+  const align = element?.horizontalAlign ?? 0;
+  if (align === 1) {
+    return FlexAlign.Start;
+  }
+  if (align === 2) {
+    return FlexAlign.Center;
+  }
+  if (align === 3) {
+    return FlexAlign.End;
+  }
+  return FlexAlign.Center;
 }
 
 interface DocxPlacedFloat {
