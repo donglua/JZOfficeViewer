@@ -1,5 +1,6 @@
 import { image } from '@kit.ImageKit';
 import * as model from '../core/OfficeModel';
+import { DocxWrapObstacle } from './DocxWrapLayout';
 import { RenderUtils } from './RenderUtils';
 
 interface TextSegment {
@@ -24,13 +25,7 @@ interface WrappedLine {
   rightIndent: number;
 }
 
-export interface WrapObstacle {
-  top: number;
-  bottom: number;
-  left: number;
-  right: number;
-  side: 'left' | 'right';
-}
+export type WrapObstacle = DocxWrapObstacle;
 
 interface CachedParagraphEntry {
   readonly widthKey: number;

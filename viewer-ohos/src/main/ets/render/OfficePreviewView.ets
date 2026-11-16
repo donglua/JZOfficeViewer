@@ -5,6 +5,14 @@ import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
 import { RenderUtils } from './RenderUtils';
 import { CanvasElementDrawer, OfficeRect, WrapObstacle } from './CanvasElementDrawer';
+import {
+  DocxWrapBlockInput,
+  DocxWrapGroupPlan,
+  isDocxFloatingWrap,
+  planDocxWrapGroups,
+  resolveDocxFloatBox,
+  resolveDocxItemTopMargin
+} from './DocxWrapLayout';
 import { ImageStore } from './ImageStore';
 import { SpreadsheetView } from './SpreadsheetView';
 import { OfficeSearchBar } from './OfficeSearchBar';
@@ -709,11 +717,10 @@ struct DocxFlowView {
 
   private rebuildWrapPlan(contentWidth: number): void {
     const groups: Map<number, DocxWrapGroup> = new Map();
-    const consumed: Map<number, number> = new Map();
     const doc = this.document;
     if (!doc) {
       this.wrapGroups = groups;
-      this.consumedToGroup = consumed;
+      this.consumedToGroup = new Map();
       this.plannedWidth = contentWidth;
       return;
     }
@@ -722,98 +729,53 @@ struct DocxFlowView {
       ...(doc.blocks ?? []),
       ...(doc.footerBlocks ?? [])
     ];
+    const blockInputs: DocxWrapBlockInput[] = allBlocks.map((el: model.Element): DocxWrapBlockInput => toWrapBlockInput(el));
     const secRanges: [number, number][] = [
       [0, this.headerCount],
       [this.headerCount, this.headerCount + this.bodyCount],
       [this.headerCount + this.bodyCount, allBlocks.length]
     ];
     const ctx = this.ensureMeasureCtx();
-    for (const range of secRanges) {
-      const secStart = range[0];
-      const secEnd = range[1];
-      let i = secStart;
-      while (i < secEnd) {
-        const firstEl = allBlocks[i];
-        if (!isDocxFloating(firstEl) || firstEl.wrapMode === 'TOP_AND_BOTTOM') {
-          i++;
-          continue;
-        }
-        const floatIndices: number[] = [];
-        let j = i;
-        while (j < secEnd && isDocxFloating(allBlocks[j]) && allBlocks[j].wrapMode !== 'TOP_AND_BOTTOM') {
-          floatIndices.push(j);
-          j++;
-        }
-        const floats: DocxPlacedFloat[] = [];
-        const obstacles: WrapObstacle[] = [];
-        let maxObsBottom = 0;
-        let maxFloatBottom = 0;
-        let clearBelowY = 0;
-        for (const fIdx of floatIndices) {
-          const fEl = allBlocks[fIdx];
-          const box = resolveDocxFloatBox(doc, fEl, contentWidth);
-          const fy = Math.max(0, fEl.y || 0);
-          floats.push({
-            element: fEl,
-            x: box.x,
-            y: fy,
-            width: box.width,
-            height: box.height,
-            behind: fEl.behindDoc === true
-          });
-          maxFloatBottom = Math.max(maxFloatBottom, fy + box.height);
-          if (fEl.wrapMode !== 'NONE') {
-            const obsLeft = box.x - Math.max(0, fEl.distLeft || 0);
-            const obsRight = box.x + box.width + Math.max(0, fEl.distRight || 0);
-            const obsTop = fy - Math.max(0, fEl.distTop || 0);
-            const obsBot = fy + box.height + Math.max(0, fEl.distBottom || 0);
-            const align = fEl.horizontalAlign ?? 0;
-            const side: 'left' | 'right' = align === 1
-              ? 'left'
-              : (align === 3 ? 'right' : (box.x + box.width * 0.5 <= contentWidth * 0.5 ? 'left' : 'right'));
-            if (obsLeft <= 36 && obsRight >= contentWidth - 36) {
-              clearBelowY = Math.max(clearBelowY, obsBot + 6);
-            } else {
-              obstacles.push({ top: obsTop, bottom: obsBot, left: obsLeft, right: obsRight, side });
-              maxObsBottom = Math.max(maxObsBottom, obsBot);
-            }
-          }
-        }
-        const flows: DocxFlowTextItem[] = [];
-        let curY = clearBelowY;
-        while (j < secEnd && !isDocxFloating(allBlocks[j]) && isDocxTextBlock(allBlocks[j])) {
-          const tEl = allBlocks[j];
-          const textH = CanvasElementDrawer.measureParagraphsHeight(
-            ctx, tEl.paragraphs ?? [], contentWidth, true, obstacles, curY, 0
-          );
-          flows.push({ blockIndex: j, element: tEl });
-          curY += textH + 8;
-          j++;
-          if (obstacles.length === 0 || curY >= maxObsBottom) {
-            break;
-          }
-        }
-        const contentBottom = flows.length > 0 ? Math.max(0, curY - 8) : 0;
-        const totalHeight = Math.max(1, maxFloatBottom, contentBottom);
-        const endIndex = j - 1;
-        groups.set(i, {
-          renderIndex: i,
-          endIndex,
-          width: contentWidth,
-          height: totalHeight,
-          clearBelowY,
-          floats,
-          flows,
-          obstacles
-        });
-        for (let k = i + 1; k <= endIndex; k++) {
-          consumed.set(k, i);
-        }
-        i = j;
+    const plan = planDocxWrapGroups(
+      blockInputs,
+      secRanges,
+      doc.width,
+      doc.marginLeft ?? 0,
+      doc.marginRight ?? 0,
+      contentWidth,
+      (blockIndex: number, startY: number, obstacles: WrapObstacle[]): number => {
+        const tEl = allBlocks[blockIndex];
+        return CanvasElementDrawer.measureParagraphsHeight(
+          ctx, tEl.paragraphs ?? [], contentWidth, true, obstacles, startY, 0
+        );
       }
-    }
+    );
+    plan.groups.forEach((groupPlan: DocxWrapGroupPlan, key: number) => {
+      const floats: DocxPlacedFloat[] = groupPlan.floats.map((f): DocxPlacedFloat => ({
+        element: allBlocks[f.blockIndex],
+        x: f.x,
+        y: f.y,
+        width: f.width,
+        height: f.height,
+        behind: f.behind
+      }));
+      const flows: DocxFlowTextItem[] = groupPlan.flowBlockIndices.map((idx: number): DocxFlowTextItem => ({
+        blockIndex: idx,
+        element: allBlocks[idx]
+      }));
+      groups.set(key, {
+        renderIndex: groupPlan.renderIndex,
+        endIndex: groupPlan.endIndex,
+        width: groupPlan.width,
+        height: groupPlan.height,
+        flowStartY: groupPlan.flowStartY,
+        floats,
+        flows,
+        obstacles: groupPlan.obstacles
+      });
+    });
     this.wrapGroups = groups;
-    this.consumedToGroup = consumed;
+    this.consumedToGroup = plan.consumedToGroup;
     this.plannedWidth = contentWidth;
   }
 
@@ -830,7 +792,41 @@ struct DocxFlowView {
 
   private getStandaloneOffsetX(element: model.Element): number {
     if (!this.document || !isDocxFloating(element)) return 0;
-    return resolveDocxFloatBox(this.document, element, this.getContentWidth()).x;
+    return resolveDocxFloatBox(
+      this.document.width,
+      this.document.marginLeft ?? 0,
+      this.document.marginRight ?? 0,
+      toWrapBlockInput(element),
+      this.getContentWidth()
+    ).x;
+  }
+
+  private computeItemTopMargin(index: number, element: model.Element): number {
+    if (this.consumedToGroup.has(index)) {
+      return 0;
+    }
+    return resolveDocxItemTopMargin(
+      index,
+      this.headerCount,
+      this.bodyCount,
+      this.sectionGap,
+      this.wrapGroups.has(index),
+      element.wrapMode,
+      element.y,
+      element.distTop ?? 0
+    );
+  }
+
+  private computeItemBottomMargin(index: number, element: model.Element): number {
+    if (this.consumedToGroup.has(index)) {
+      return 0;
+    }
+    const endIdx = this.wrapGroups.get(index)?.endIndex ?? index;
+    const secBottom = (this.headerCount > 0 && endIdx === this.headerCount - 1) ? this.sectionGap : 0;
+    const floatBottom = (!this.wrapGroups.has(index) && element.wrapMode === 'TOP_AND_BOTTOM')
+      ? Math.max(0, element.distBottom || 0)
+      : 0;
+    return 8 + secBottom + floatBottom;
   }
 
   private verticalZoomPad(): number {
@@ -970,14 +966,8 @@ struct DocxFlowView {
                 .reuseId(this.consumedToGroup.has(index) ? 'CONSUMED' : (this.wrapGroups.has(index) ? 'WRAP_GROUP' : element.type))
                 // 页眉最后一块之后、页脚第一块之前额外留白，让页眉页脚与正文视觉分开
                 .margin({
-                  top: this.consumedToGroup.has(index)
-                    ? 0
-                    : (this.headerCount + this.bodyCount === index ? this.sectionGap : (isDocxFloating(element) ? Math.max(0, element.distTop || 0) : 0)),
-                  bottom: this.consumedToGroup.has(index)
-                    ? 0
-                    : (8
-                        + ((this.wrapGroups.get(index)?.endIndex ?? index) === this.headerCount - 1 && this.headerCount > 0 ? this.sectionGap : 0)
-                        + (isDocxFloating(element) && element.wrapMode === 'TOP_AND_BOTTOM' ? Math.max(0, element.distBottom || 0) : 0))
+                  top: this.computeItemTopMargin(index, element),
+                  bottom: this.computeItemBottomMargin(index, element)
                 })
               },
               (_element: model.Element, index: number): string => this.getBlockKey(index)
@@ -1377,12 +1367,6 @@ struct DocxShapeView {
   }
 }
 
-interface DocxFloatBox {
-  x: number;
-  width: number;
-  height: number;
-}
-
 interface DocxPlacedFloat {
   element: model.Element;
   x: number;
@@ -1402,44 +1386,32 @@ interface DocxWrapGroup {
   endIndex: number;
   width: number;
   height: number;
-  clearBelowY: number;
+  flowStartY: number;
   floats: DocxPlacedFloat[];
   flows: DocxFlowTextItem[];
   obstacles: WrapObstacle[];
 }
 
 function isDocxFloating(el: model.Element): boolean {
-  return el.wrapMode !== undefined && el.wrapMode !== 'INLINE';
+  return isDocxFloatingWrap(el.wrapMode);
 }
 
-function isDocxTextBlock(el: model.Element): boolean {
-  return el.type === 'TEXT' && el.paragraphs !== undefined && el.paragraphs.length > 0;
-}
-
-function resolveDocxFloatBox(doc: model.OfficeDocument, el: model.Element, contentW: number): DocxFloatBox {
-  const docW = doc.width > 0 ? doc.width : 595;
-  const coreMarginL = doc.marginLeft && doc.marginLeft > 0 ? doc.marginLeft : 72;
-  const coreMarginR = doc.marginRight && doc.marginRight > 0 ? doc.marginRight : 72;
-  const coreContentW = Math.max(1, docW - coreMarginL - coreMarginR);
-  let w = el.width > 0 ? el.width : contentW;
-  let h = el.height > 0 ? el.height : (el.type === 'IMAGE' ? 100 : 60);
-  if (w > contentW && el.width > 0 && el.type === 'IMAGE') {
-    h = h * (contentW / w);
-    w = contentW;
-  }
-  const align = el.horizontalAlign ?? 0;
-  let x = 0;
-  if (align === 1) {
-    x = 0;
-  } else if (align === 2) {
-    x = Math.max(0, (contentW - w) / 2);
-  } else if (align === 3) {
-    x = Math.max(0, contentW - w);
-  } else {
-    const scaled = (el.x - coreMarginL) * (contentW / coreContentW);
-    x = Math.max(0, Math.min(Math.max(0, contentW - w), scaled));
-  }
-  return { x, width: w, height: h };
+function toWrapBlockInput(el: model.Element): DocxWrapBlockInput {
+  return {
+    type: el.type,
+    x: el.x,
+    y: el.y,
+    width: el.width,
+    height: el.height,
+    wrapMode: el.wrapMode ?? 'INLINE',
+    horizontalAlign: el.horizontalAlign ?? 0,
+    behindDoc: el.behindDoc === true,
+    distTop: el.distTop ?? 0,
+    distBottom: el.distBottom ?? 0,
+    distLeft: el.distLeft ?? 0,
+    distRight: el.distRight ?? 0,
+    hasParagraphs: el.paragraphs !== undefined && el.paragraphs.length > 0
+  };
 }
 
 function cloneElementForCanvas(src: model.Element, width: number, height: number): model.Element {
@@ -1587,7 +1559,7 @@ struct DocxWrappedBlockView {
       }
     }
 
-    let curY = this.group.clearBelowY;
+    let curY = this.group.flowStartY;
     for (const flow of this.group.flows) {
       const paras = flow.element.paragraphs ?? [];
       for (let pIdx = 0; pIdx < paras.length; pIdx++) {
