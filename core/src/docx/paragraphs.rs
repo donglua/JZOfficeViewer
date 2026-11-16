@@ -30,6 +30,8 @@ impl Parser<'_> {
             template: paragraph,
             elements: Vec::new(),
             floating: Vec::new(),
+            saw_inline_drawing: false,
+            split_inline_drawing: false,
             width: self.flow_width(),
             in_cell,
             limit: if in_cell {
@@ -58,6 +60,11 @@ impl Parser<'_> {
             flow.flush()?;
         } else {
             flow.flush_floating()?;
+        }
+        if flow.split_inline_drawing {
+            self.document.warn(
+                "Inline images use separate flow blocks; surrounding layout and spacing are approximate.",
+            );
         }
         self.text_bytes = flow.text_bytes;
         Ok(flow.elements)
@@ -146,6 +153,8 @@ struct Flow {
     current: Paragraph,
     elements: Vec<Element>,
     floating: Vec<Element>,
+    saw_inline_drawing: bool,
+    split_inline_drawing: bool,
     width: f32,
     in_cell: bool,
     limit: usize,
@@ -154,10 +163,32 @@ struct Flow {
 }
 
 impl Flow {
+    fn has_visible_content(&self) -> bool {
+        !self.current.bullet.is_empty()
+            || self
+                .current
+                .runs
+                .iter()
+                .any(|run| !run.text.trim().is_empty())
+    }
+
+    fn record_inline_drawing(&mut self, wrap_mode: WrapMode) {
+        if wrap_mode != WrapMode::Inline {
+            return;
+        }
+        if self.saw_inline_drawing || self.has_visible_content() {
+            self.split_inline_drawing = true;
+        }
+        self.saw_inline_drawing = true;
+    }
+
     fn text(&mut self, run: Run) -> Result<()> {
         self.text_bytes += run.text.len();
         if self.text_bytes > MAX_TEXT {
             return Err(Error::Limit("DOCX text exceeds 8 MiB"));
+        }
+        if self.saw_inline_drawing && !run.text.trim().is_empty() {
+            self.split_inline_drawing = true;
         }
         self.current.runs.push(run);
         Ok(())
@@ -171,6 +202,7 @@ impl Flow {
             self.floating.push(image);
             return Ok(());
         }
+        self.record_inline_drawing(image.wrap_mode);
         if !self.current.runs.is_empty() || !self.current.bullet.is_empty() {
             self.current.after = 0.0;
             self.flush()?;
@@ -185,6 +217,7 @@ impl Flow {
     }
 
     fn cell_image(&mut self, image: Element) -> Result<()> {
+        self.record_inline_drawing(image.wrap_mode);
         if !self.current.runs.is_empty() || !self.current.bullet.is_empty() {
             self.current.after = 0.0;
             self.flush()?;
@@ -256,6 +289,8 @@ mod tests {
             current: Paragraph::default(),
             elements: Vec::new(),
             floating: Vec::new(),
+            saw_inline_drawing: false,
+            split_inline_drawing: false,
             width: 500.0,
             in_cell: false,
             limit: 5000,

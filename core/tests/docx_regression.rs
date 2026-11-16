@@ -133,6 +133,52 @@ fn docx_image_uses_normalized_relative_package_path() -> TestResult {
     checks::near(image.height, 36.0);
     let mut package = Package::new(Cursor::new(bytes))?;
     assert_eq!(package.read("word/media/pixel.png", 1024)?, PNG);
+    assert!(
+        !document
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Inline images")),
+        "Standalone inline image should not trigger approximate-layout warning: {:?}",
+        document.warnings
+    );
+    Ok(())
+}
+
+#[test]
+fn inline_image_mixed_with_text_emits_approximate_layout_warning() -> TestResult {
+    let inline_drawing = r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">
+      <wp:extent cx="914400" cy="457200"/>
+      <wp:docPr id="1" name="Inline PNG"/>
+      <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+        <pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="pixel.png"/><pic:cNvPicPr/></pic:nvPicPr>
+          <pic:blipFill><a:blip r:embed="rImage"/></pic:blipFill>
+        </pic:pic>
+      </a:graphicData></a:graphic>
+    </wp:inline></w:drawing></w:r>"#;
+
+    for mixed in [
+        format!(r#"<w:p><w:r><w:t>Before </w:t></w:r>{inline_drawing}</w:p>"#),
+        format!(r#"<w:p>{inline_drawing}<w:r><w:t> after</w:t></w:r></w:p>"#),
+        format!(r#"<w:p>{inline_drawing}{inline_drawing}</w:p>"#),
+    ] {
+        let mut parts = docx::parts();
+        replace(
+            &mut parts,
+            "word/document.xml",
+            &docx::DOCUMENT.replace(
+                r#"<w:p><w:pPr><w:pStyle w:val="FixtureTitle"/></w:pPr>"#,
+                &format!("{mixed}<w:p><w:pPr><w:pStyle w:val=\"FixtureTitle\"/></w:pPr>"),
+            ),
+        );
+        let document = parse_reader(Cursor::new(archive(&parts)?))?;
+        assert!(
+            document
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Inline images use separate flow blocks")),
+            "Mixed/multi inline image paragraph should record warning for: {mixed}"
+        );
+    }
     Ok(())
 }
 

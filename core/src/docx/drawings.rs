@@ -118,9 +118,6 @@ impl Parser<'_> {
             if let Some(mut element) = self.resolve_image_element(blip, src_rect, width, height) {
                 layout.apply(&mut element);
                 self.push_drawing_element(element, out)?;
-                if layout.wrap_mode == WrapMode::Inline {
-                    self.document.warn("Inline images use separate flow blocks; surrounding layout and spacing are approximate.");
-                }
             }
         }
         Ok(())

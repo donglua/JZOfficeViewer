@@ -196,10 +196,9 @@ fn docx_table_cell_contains_drawing_image() -> TestResult {
     assert_eq!(para.image.as_deref(), Some("word/media/pixel.png"));
     assert_eq!(para.image_width, Some(72.0));
     assert_eq!(para.image_height, Some(36.0));
-    assert!(!doc
-        .warnings
-        .iter()
-        .any(|w| w.contains("Images inside table cells are omitted")));
+    assert!(!doc.warnings.iter().any(
+        |w| w.contains("Images inside table cells are omitted") || w.contains("Inline images")
+    ));
     Ok(())
 }
 
