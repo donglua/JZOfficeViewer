@@ -300,49 +300,54 @@ public struct OfficePreviewView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let doc = controller.document {
-                ScrollViewReader { scrollProxy in
-                    ScrollView([.horizontal, .vertical], showsIndicators: true) {
-                        ZStack(alignment: .topLeading) {
-                            OfficeCanvasRepresentable(
-                                document: doc,
-                                images: controller.imageCache,
-                                imageLoader: controller.imageLoader,
-                                currentPage: controller.currentPage,
-                                zoom: controller.zoom,
-                                searchResults: controller.searchResults,
-                                currentMatchIndex: controller.currentMatchIndex,
-                                targetHighlightRect: controller.targetHighlightRect,
-                                onPresentSearch: { controller.presentSearch() },
-                                onDismissSearch: { controller.dismissSearch() },
-                                onFindNext: { _ = controller.findNext() },
-                                onFindPrevious: { _ = controller.findPrevious() },
-                                onPageDetected: { detectedPage in
-                                    controller.onPageScrollDetected(page: detectedPage)
-                                }
-                            )
-                            .frame(
-                                width: canvasContentSize(for: doc).width * controller.zoom,
-                                height: canvasContentSize(for: doc).height * controller.zoom
-                            )
+                GeometryReader { viewportGeo in
+                    let contentSize = canvasContentSize(for: doc)
+                    let scaledW = contentSize.width * controller.zoom
+                    let scaledH = contentSize.height * controller.zoom
+                    let minContainerW = Self.minContainerWidth(for: viewportGeo.size.width, kind: doc.kind)
 
-                            if doc.kind == .pptx {
-                                VStack(spacing: 16 * controller.zoom) {
-                                    ForEach(Array(doc.pages.enumerated()), id: \.offset) { index, page in
-                                        let pH = page.height > 0 ? page.height : 405
-                                        Color.clear
-                                            .frame(width: 1, height: pH * controller.zoom)
-                                            .id("slide-\(index + 1)")
+                    ScrollViewReader { scrollProxy in
+                        ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                            ZStack(alignment: .topLeading) {
+                                OfficeCanvasRepresentable(
+                                    document: doc,
+                                    images: controller.imageCache,
+                                    imageLoader: controller.imageLoader,
+                                    currentPage: controller.currentPage,
+                                    zoom: controller.zoom,
+                                    searchResults: controller.searchResults,
+                                    currentMatchIndex: controller.currentMatchIndex,
+                                    targetHighlightRect: controller.targetHighlightRect,
+                                    onPresentSearch: { controller.presentSearch() },
+                                    onDismissSearch: { controller.dismissSearch() },
+                                    onFindNext: { _ = controller.findNext() },
+                                    onFindPrevious: { _ = controller.findPrevious() },
+                                    onPageDetected: { detectedPage in
+                                        controller.onPageScrollDetected(page: detectedPage)
                                     }
+                                )
+                                .frame(width: scaledW, height: scaledH)
+
+                                if doc.kind == .pptx {
+                                    VStack(spacing: 16 * controller.zoom) {
+                                        ForEach(Array(doc.pages.enumerated()), id: \.offset) { index, page in
+                                            let pH = page.height > 0 ? page.height : 405
+                                            Color.clear
+                                                .frame(width: 1, height: pH * controller.zoom)
+                                                .id("slide-\(index + 1)")
+                                        }
+                                    }
+                                    .allowsHitTesting(false)
                                 }
-                                .allowsHitTesting(false)
                             }
+                            .frame(minWidth: minContainerW, alignment: .top)
+                            .padding(16)
                         }
-                        .padding(16)
-                    }
-                    .onChange(of: controller.scrollRequest) { _, req in
-                        if let req = req, doc.kind == .pptx, req.page >= 1 {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                scrollProxy.scrollTo("slide-\(req.page)", anchor: .top)
+                        .onChange(of: controller.scrollRequest) { _, req in
+                            if let req = req, doc.kind == .pptx, req.page >= 1 {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    scrollProxy.scrollTo("slide-\(req.page)", anchor: .top)
+                                }
                             }
                         }
                     }
@@ -371,6 +376,12 @@ public struct OfficePreviewView: View {
             controller.imageLoader?.close()
             controller.imageLoader = nil
         }
+    }
+
+    /// 计算文档画布在滚动视口中的最小容器宽度：DOCX/PPTX 在窄于视口时水平居中，XLSX 保持左上对齐
+    internal static func minContainerWidth(for viewportWidth: CGFloat, kind: OfficeKind) -> CGFloat {
+        guard kind != .xlsx else { return 0 }
+        return floor(max(0, viewportWidth - 32))
     }
 
     private func canvasContentSize(for doc: OfficeDocument) -> CGSize {

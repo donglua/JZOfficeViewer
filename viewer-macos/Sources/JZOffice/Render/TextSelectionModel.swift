@@ -147,7 +147,7 @@ public final class DocumentTextLayout: @unchecked Sendable {
                 positioned.width = placement.frame.width
                 positioned.height = placement.frame.height
                 if !placement.isFloating && positioned.type == .text {
-                    positioned.textWrap = true
+                    positioned.textWrap = CGElementDrawer.resolveDocxTextWrap(for: placement.element, isFloating: false)
                 }
 
                 let localAffine: CGAffineTransform

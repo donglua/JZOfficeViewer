@@ -1280,6 +1280,87 @@ struct JZOfficeTests {
         #expect(hasNonWhitePixel(img))
     }
 
+    @Test("DOCX 内联图片水平对齐、spAutoFit 文本框紧缩居中与预览容器居中计算")
+    func docxInlineAlignmentAutofitAndViewportCentering() throws {
+        let json = """
+        {
+          "schemaVersion": 9,
+          "kind": "DOCX",
+          "width": 595,
+          "marginLeft": 90,
+          "marginRight": 90,
+          "marginTop": 72,
+          "marginBottom": 72,
+          "blocks": [
+            {
+              "type": "IMAGE",
+              "width": 172,
+              "height": 300,
+              "image": "word/media/left.png",
+              "wrapMode": "INLINE",
+              "horizontalAlign": 1
+            },
+            {
+              "type": "IMAGE",
+              "width": 172,
+              "height": 300,
+              "image": "word/media/center.png",
+              "wrapMode": "INLINE",
+              "horizontalAlign": 2
+            },
+            {
+              "type": "IMAGE",
+              "width": 172,
+              "height": 300,
+              "image": "word/media/right.png",
+              "wrapMode": "INLINE",
+              "horizontalAlign": 3
+            }
+          ],
+          "footerBlocks": [
+            {
+              "type": "TEXT",
+              "width": 0,
+              "height": 0,
+              "padding": 0,
+              "textWrap": false,
+              "wrapMode": "NONE",
+              "horizontalAlign": 2,
+              "paragraphs": [{
+                "alignment": 1,
+                "runs": [{ "text": "1", "size": 9 }]
+              }]
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let doc = try JSONDecoder().decode(OfficeDocument.self, from: json)
+        let plan = CGElementDrawer.layoutDocxBlocks(in: doc)
+        #expect(plan.placements.count == 4)
+
+        let availW: CGFloat = 595 - 90 - 90
+        let leftFrame = plan.placements[0].frame
+        let centerFrame = plan.placements[1].frame
+        let rightFrame = plan.placements[2].frame
+        let footerFrame = plan.placements[3].frame
+
+        #expect(abs(leftFrame.minX - 90) < 0.5)
+        #expect(abs(centerFrame.minX - (90 + (availW - 172) / 2.0)) < 0.5)
+        #expect(abs(rightFrame.minX - (90 + availW - 172)) < 0.5)
+
+        // 页脚 spAutoFit + wrap=none 文本框应紧缩至单字符宽度并水平居中于页心
+        #expect(footerFrame.width > 0 && footerFrame.width < 24)
+        #expect(footerFrame.height > 0 && footerFrame.height < 30)
+        #expect(abs(footerFrame.midX - 595.0 / 2.0) < 1.0)
+
+        // 视口居中宽度辅助：DOCX/PPTX 返回视口净宽以居中窄页，XLSX 返回 0 保持左上对齐
+        #expect(OfficePreviewView.minContainerWidth(for: 920.6, kind: .docx) == 888)
+        #expect(OfficePreviewView.minContainerWidth(for: 920.6, kind: .pptx) == 888)
+        #expect(OfficePreviewView.minContainerWidth(for: 920.6, kind: .xlsx) == 0)
+        #expect(OfficePreviewView.minContainerWidth(for: 16, kind: .docx) == 0)
+    }
+
     private func createTestCGImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         var bytes = [UInt8](repeating: 128, count: width * height * 4)

@@ -535,6 +535,23 @@ public enum CGElementDrawer {
         return lines.reduce(0) { $0 + $1.before + $1.height + $1.after }
     }
 
+    /// 计算不折行段落组所需的最大行宽（用于 `spAutoFit + wrap="none"` 文本框自适配宽度）
+    internal static func measureParagraphsMaxLineWidth(
+        _ paragraphs: [OfficeParagraph],
+        maxWidth: CGFloat
+    ) -> CGFloat {
+        let lines = layoutParagraphs(paragraphs, availableWidth: maxWidth, wrap: false)
+        var maxLineW: CGFloat = 0
+        for line in lines {
+            maxLineW = max(maxLineW, line.width + line.leftIndent + line.rightIndent)
+        }
+        return ceil(maxLineW)
+    }
+
+    internal static func resolveDocxTextWrap(for element: OfficeElement, isFloating: Bool) -> Bool {
+        (isFloating || element.width <= 0) ? element.textWrap : true
+    }
+
     private static func drawParagraphs(
         in ctx: CGContext,
         element: OfficeElement,
@@ -1070,14 +1087,22 @@ public enum CGElementDrawer {
                     let rawW: CGFloat
                     if block.width > 0 {
                         rawW = block.width
+                    } else if !block.textWrap && !block.paragraphs.isEmpty {
+                        let padding = max(0, block.padding)
+                        rawW = measureParagraphsMaxLineWidth(block.paragraphs, maxWidth: docW) + padding * 2
                     } else if block.type == .text {
                         rawW = min(availW, 240)
                     } else {
                         rawW = 80
                     }
                     elW = min(docW, max(1, rawW))
+                } else if block.width > 0 {
+                    elW = min(availW, block.width)
+                } else if !block.textWrap && !block.paragraphs.isEmpty {
+                    let padding = max(0, block.padding)
+                    elW = min(availW, max(1, measureParagraphsMaxLineWidth(block.paragraphs, maxWidth: availW) + padding * 2))
                 } else {
-                    elW = block.width > 0 ? min(availW, block.width) : availW
+                    elW = availW
                 }
 
                 let blockMaxWidth = isFloating ? docW : availW
@@ -1171,7 +1196,15 @@ public enum CGElementDrawer {
                     }
                     maxBottom = max(maxBottom, frame.maxY)
                 } else {
-                    let blockX = marginL
+                    let blockX: CGFloat
+                    switch block.horizontalAlign {
+                    case 2:
+                        blockX = marginL + max(0, (availW - elW) / 2.0)
+                    case 3:
+                        blockX = marginL + max(0, availW - elW)
+                    default:
+                        blockX = marginL
+                    }
                     if !activeObstacles.isEmpty && block.type != .text {
                         var clearBottom = curY
                         for obs in activeObstacles {
@@ -1190,6 +1223,7 @@ public enum CGElementDrawer {
                         if !block.paragraphs.isEmpty {
                             let padding = max(0, block.padding)
                             let availTextW = max(1, elW - padding * 2)
+                            let wrap = resolveDocxTextWrap(for: block, isFloating: false)
                             if block.type == .text && !activeObstacles.isEmpty {
                                 localObstacles = localizeObstacles(
                                     activeObstacles,
@@ -1200,7 +1234,7 @@ public enum CGElementDrawer {
                             elH = measureParagraphsHeight(
                                 block.paragraphs,
                                 availableWidth: availTextW,
-                                wrap: true,
+                                wrap: wrap,
                                 obstacles: localObstacles
                             ) + max(8, padding * 2)
                         } else {
@@ -1252,7 +1286,7 @@ public enum CGElementDrawer {
         el.width = placement.frame.width
         el.height = placement.frame.height
         if !placement.isFloating && el.type == .text {
-            el.textWrap = true
+            el.textWrap = resolveDocxTextWrap(for: placement.element, isFloating: false)
         }
 
         ctx.saveGState()
@@ -1343,7 +1377,7 @@ public enum CGElementDrawer {
                 guard match.paragraphIndex >= 0 && match.paragraphIndex < block.paragraphs.count else { return [] }
                 let padding = max(0, block.padding)
                 let availBlockW = max(1, elW - padding * 2)
-                let wrap = placement.isFloating ? block.textWrap : true
+                let wrap = resolveDocxTextWrap(for: block, isFloating: placement.isFloating)
                 let totalH = measureParagraphsHeight(
                     block.paragraphs,
                     availableWidth: availBlockW,
