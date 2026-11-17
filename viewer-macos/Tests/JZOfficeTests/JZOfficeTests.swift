@@ -1361,6 +1361,305 @@ struct JZOfficeTests {
         #expect(OfficePreviewView.minContainerWidth(for: 16, kind: .docx) == 0)
     }
 
+    // MARK: - XLSX 冻结窗格
+
+    /// 构造带冻结配置的测试工作表 JSON
+    private func freezeSheet(frozenRows: Int? = nil, frozenColumns: Int? = nil) throws -> OfficeSheet {
+        var fields: [String] = []
+        if let frozenRows { fields.append("\"frozenRows\": \(frozenRows)") }
+        if let frozenColumns { fields.append("\"frozenColumns\": \(frozenColumns)") }
+        let extra = fields.isEmpty ? "" : ",\n    " + fields.joined(separator: ",\n    ")
+        let json = """
+        {
+            "name": "Frozen",
+            "rowHeights": [30, 30, 30, 30, 30, 30],
+            "columnWidths": [60, 60, 60, 60, 60, 60],
+            "cells": [
+                {"row": 0, "column": 0, "text": "HEAD", "style": 0, "numeric": false},
+                {"row": 5, "column": 5, "text": "TAIL", "style": 0, "numeric": false}
+            ],
+            "merges": []\(extra)
+        }
+        """.data(using: .utf8)!
+        return try JSONDecoder().decode(OfficeSheet.self, from: json)
+    }
+
+    @Test("OfficeSheet 冻结字段解码、缺省与钳位")
+    func sheetFrozenFieldsDecoding() throws {
+        // 缺省：无冻结字段时为 0，保持与旧 core 的兼容
+        let plain = try freezeSheet()
+        #expect(plain.frozenRows == 0)
+        #expect(plain.frozenColumns == 0)
+
+        let frozen = try freezeSheet(frozenRows: 2, frozenColumns: 3)
+        #expect(frozen.frozenRows == 2)
+        #expect(frozen.frozenColumns == 3)
+
+        // 超过表维度时钳位到行列数量
+        let oversized = try freezeSheet(frozenRows: 99, frozenColumns: 99)
+        #expect(oversized.frozenRows == 6)
+        #expect(oversized.frozenColumns == 6)
+
+        // 负数钳位到 0
+        let negative = try freezeSheet(frozenRows: -2, frozenColumns: -1)
+        #expect(negative.frozenRows == 0)
+        #expect(negative.frozenColumns == 0)
+    }
+
+    @Test("冻结占比保护按轴独立降级")
+    func sheetFreezeRatioProtection() {
+        let viewport = CGRect(x: 0, y: 0, width: 400, height: 300)
+        // 可用正文区 400-42=358 宽、300-22=278 高
+        // 冻结列 300pt > 358*0.75=268.5 → 仅列降级，行仍保持冻结
+        let columnHeavy = CGElementDrawer.resolveFreezePlan(
+            frozenRows: 2,
+            frozenColumns: 2,
+            rowCount: 6,
+            columnCount: 6,
+            frozenDataWidth: 300,
+            frozenDataHeight: 60,
+            totalWidth: 400,
+            totalHeight: 300,
+            viewport: viewport
+        )
+        #expect(columnHeavy.effectiveColumns == 0)
+        #expect(columnHeavy.effectiveRows == 2)
+        #expect(columnHeavy.frozenDataWidth == 0)
+        #expect(columnHeavy.frozenDataHeight == 60)
+
+        // 冻结行 250pt > 278*0.75=208.5 → 仅行降级，列仍保持冻结
+        let rowHeavy = CGElementDrawer.resolveFreezePlan(
+            frozenRows: 2,
+            frozenColumns: 2,
+            rowCount: 6,
+            columnCount: 6,
+            frozenDataWidth: 60,
+            frozenDataHeight: 250,
+            totalWidth: 400,
+            totalHeight: 300,
+            viewport: viewport
+        )
+        #expect(rowHeavy.effectiveRows == 0)
+        #expect(rowHeavy.effectiveColumns == 2)
+
+        // 恰好等于 75% 边界时不降级
+        let boundary = CGElementDrawer.resolveFreezePlan(
+            frozenRows: 1,
+            frozenColumns: 1,
+            rowCount: 6,
+            columnCount: 6,
+            frozenDataWidth: 358 * 0.75,
+            frozenDataHeight: 278 * 0.75,
+            totalWidth: 400,
+            totalHeight: 300,
+            viewport: viewport
+        )
+        #expect(boundary.effectiveColumns == 1)
+        #expect(boundary.effectiveRows == 1)
+
+        // 可用正文区非正时全部降级
+        let tiny = CGElementDrawer.resolveFreezePlan(
+            frozenRows: 1,
+            frozenColumns: 1,
+            rowCount: 6,
+            columnCount: 6,
+            frozenDataWidth: 10,
+            frozenDataHeight: 10,
+            totalWidth: 40,
+            totalHeight: 20,
+            viewport: CGRect(x: 0, y: 0, width: 42, height: 22)
+        )
+        #expect(tiny.effectiveRows == 0)
+        #expect(tiny.effectiveColumns == 0)
+    }
+
+    @Test("冻结窗格四象限切分与离屏滚动绘制")
+    func sheetFreezeQuadrantsAndRender() throws {
+        let sheet = try freezeSheet(frozenRows: 1, frozenColumns: 1)
+        // 滚动视口：已向右下滚动 60pt，视口 200x160
+        let viewport = CGRect(x: 60, y: 30, width: 200, height: 160)
+        let plan = CGElementDrawer.sheetFreezePlan(sheet: sheet, viewport: viewport)
+        #expect(plan.effectiveRows == 1)
+        #expect(plan.effectiveColumns == 1)
+        #expect(plan.scrollX == 60)
+        #expect(plan.scrollY == 30)
+        // 冻结起点紧贴表头右侧/下侧，表头锚定在视口左上角 (scrollX, scrollY)
+        #expect(plan.headerLeft == 60)
+        #expect(plan.headerTop == 30)
+        #expect(plan.frozenOriginX == CGFloat(42 + 60))
+        #expect(plan.frozenOriginY == CGFloat(22 + 30))
+        #expect(plan.frozenDataWidth == 60)
+        #expect(plan.frozenDataHeight == 30)
+
+        let quadrants = CGElementDrawer.sheetQuadrants(plan: plan, rowCount: 6, columnCount: 6)
+        #expect(quadrants.count == 4)
+        // 象限互不重叠：滚动正文区从 (frozenRight, frozenBottom) 开始
+        let scrolling = quadrants[0]
+        #expect(scrolling.rowRange == 1..<6)
+        #expect(scrolling.columnRange == 1..<6)
+        #expect(scrolling.clip.minX == plan.frozenRight)
+        #expect(scrolling.clip.minY == plan.frozenBottom)
+        // 交叉角锁定双轴
+        let corner = quadrants[3]
+        #expect(corner.rowRange == 0..<1)
+        #expect(corner.columnRange == 0..<1)
+        #expect(corner.clip.minX == plan.frozenOriginX)
+        #expect(corner.clip.minY == plan.frozenOriginY)
+
+        // 未冻结时只有一个滚动象限，行为与改造前一致
+        let plainPlan = CGElementDrawer.sheetFreezePlan(sheet: try freezeSheet(), viewport: viewport)
+        #expect(CGElementDrawer.sheetQuadrants(plan: plainPlan, rowCount: 6, columnCount: 6).count == 1)
+        #expect(plainPlan.hasFrozen == false)
+
+        // 离屏绘制：带滚动视口也必须产出非空白像素
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let width = 300, height = 240
+        var bytes = [UInt8](repeating: 255, count: width * height * 4)
+        let ctx = CGContext(
+            data: &bytes,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        CGElementDrawer.drawSpreadsheet(in: ctx, sheet: sheet, styles: [], viewport: viewport)
+        let image = ctx.makeImage()!
+        #expect(hasNonWhitePixel(image))
+
+        // 彩色四象限离屏像素验证（翻转坐标以匹配 NSView.isFlipped），确认表头固定在视口边缘而不遮挡冻结行/列
+        let colorJson = """
+        {
+            "name": "ColoredFreeze",
+            "rowHeights": [30, 30, 30, 30, 30, 30],
+            "columnWidths": [60, 60, 60, 60, 60, 60],
+            "frozenRows": 1,
+            "frozenColumns": 1,
+            "cells": [
+                {"row": 0, "column": 0, "text": "", "style": 0, "numeric": false},
+                {"row": 0, "column": 2, "text": "", "style": 1, "numeric": false},
+                {"row": 2, "column": 0, "text": "", "style": 2, "numeric": false},
+                {"row": 2, "column": 2, "text": "", "style": 3, "numeric": false}
+            ],
+            "merges": []
+        }
+        """.data(using: .utf8)!
+        let colorSheet = try JSONDecoder().decode(OfficeSheet.self, from: colorJson)
+        let quadStyles: [OfficeCellStyle] = [0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffff00].map {
+            OfficeCellStyle(fill: $0)
+        }
+        let vpW = 200, vpH = 160
+        var vpBytes = [UInt8](repeating: 255, count: vpW * vpH * 4)
+        let vpCtx = CGContext(
+            data: &vpBytes,
+            width: vpW,
+            height: vpH,
+            bitsPerComponent: 8,
+            bytesPerRow: vpW * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        vpCtx.translateBy(x: 0, y: CGFloat(vpH))
+        vpCtx.scaleBy(x: 1, y: -1)
+        vpCtx.translateBy(x: -viewport.minX, y: -viewport.minY)
+        CGElementDrawer.drawSpreadsheet(in: vpCtx, sheet: colorSheet, styles: quadStyles, viewport: viewport)
+
+        func pixelRGBA(_ x: Int, _ y: Int) -> (UInt8, UInt8, UInt8, UInt8) {
+            let idx = (y * vpW + x) * 4
+            return (vpBytes[idx], vpBytes[idx + 1], vpBytes[idx + 2], vpBytes[idx + 3])
+        }
+        func matchesRGB(_ p: (UInt8, UInt8, UInt8, UInt8), _ r: Int, _ g: Int, _ b: Int, tol: Int = 6) -> Bool {
+            abs(Int(p.0) - r) <= tol && abs(Int(p.1) - g) <= tol && abs(Int(p.2) - b) <= tol
+        }
+
+        // 顶部列头与左侧行头背景色 #f3f5f7，紧贴视口顶部/左侧而不覆盖第 0 行/第 0 列
+        #expect(matchesRGB(pixelRGBA(150, 10), 0xf3, 0xf5, 0xf7))
+        #expect(matchesRGB(pixelRGBA(20, 100), 0xf3, 0xf5, 0xf7))
+        // 四象限正文像素：交叉角红、冻结行绿、冻结列蓝、滚动区黄
+        #expect(matchesRGB(pixelRGBA(72, 37), 255, 0, 0))
+        #expect(matchesRGB(pixelRGBA(132, 37), 0, 255, 0))
+        #expect(matchesRGB(pixelRGBA(72, 67), 0, 0, 255))
+        #expect(matchesRGB(pixelRGBA(132, 67), 255, 255, 0))
+        // 冻结交界线 (#9aa5b1，1px 抗锯齿跨像素混合后差值约 50，用 tol: 60 区分普通网格线与白底)
+        let hasVDivider = (101...103).contains { matchesRGB(pixelRGBA($0, 100), 0x9a, 0xa5, 0xb1, tol: 60) }
+        let hasHDivider = (51...53).contains { matchesRGB(pixelRGBA(132, $0), 0x9a, 0xa5, 0xb1, tol: 60) }
+        #expect(hasVDivider)
+        #expect(hasHDivider)
+    }
+
+    @Test("检索高亮按象限裁剪且跳转按轴避让")
+    func sheetHighlightClipAndScrollTarget() throws {
+        let sheet = try freezeSheet(frozenRows: 1, frozenColumns: 1)
+        let viewport = CGRect(x: 60, y: 30, width: 200, height: 160)
+        let plan = CGElementDrawer.sheetFreezePlan(sheet: sheet, viewport: viewport)
+
+        // 滚动区内的单元格：平移后只落在滚动正文象限，绝不覆盖冻结区
+        let scrollingCell = CGRect(x: 200, y: 100, width: 60, height: 30)
+        let scrollingPieces = CGElementDrawer.clipSheetHighlight(scrollingCell, plan: plan, rowCount: 6, columnCount: 6)
+        #expect(scrollingPieces.count == 1)
+        #expect(scrollingPieces[0].clip.minX == plan.frozenRight)
+        #expect(scrollingPieces[0].clip.minY == plan.frozenBottom)
+
+        // 交叉角内的单元格：锁定双轴，落在交叉角象限内
+        let cornerCell = CGRect(x: 42, y: 22, width: 60, height: 30)
+        let cornerPieces = CGElementDrawer.clipSheetHighlight(cornerCell, plan: plan, rowCount: 6, columnCount: 6)
+        #expect(cornerPieces.count == 1)
+        #expect(cornerPieces[0].clip.minX == plan.frozenOriginX)
+        #expect(cornerPieces[0].clip.minY == plan.frozenOriginY)
+
+        // 冻结列内的单元格：保持当前水平滚动偏移不变
+        let frozenColumnCell = CGRect(x: 42, y: 150, width: 60, height: 30)
+        let frozenTarget = CGElementDrawer.sheetScrollTarget(
+            docRect: frozenColumnCell,
+            plan: plan,
+            clipSize: CGSize(width: 200, height: 160),
+            contentOffset: CGPoint(x: 60, y: 30),
+            contentSize: CGSize(width: 500, height: 500),
+            zoom: 1
+        )
+        #expect(frozenTarget.x == 60)
+
+        // 可滚动列内的单元格：居中对齐到可滚动视口中心
+        let scrollTarget = CGElementDrawer.sheetScrollTarget(
+            docRect: scrollingCell,
+            plan: plan,
+            clipSize: CGSize(width: 200, height: 160),
+            contentOffset: CGPoint(x: 60, y: 30),
+            contentSize: CGSize(width: 500, height: 500),
+            zoom: 1
+        )
+        #expect(scrollTarget.x != 60)
+        #expect(scrollTarget.x >= 0)
+        #expect(scrollTarget.x <= 300)
+
+        // 缩放倍数 != 1 时按 zoom 换算像素冻结宽度，命中目标仍对齐至可滚动视口中心
+        let zoomedTarget = CGElementDrawer.sheetScrollTarget(
+            docRect: scrollingCell,
+            plan: plan,
+            clipSize: CGSize(width: 200, height: 160),
+            contentOffset: CGPoint(x: 60, y: 30),
+            contentSize: CGSize(width: 1000, height: 1000),
+            zoom: 2
+        )
+        #expect(abs(zoomedTarget.x - 258) < 0.5)
+        #expect(abs(zoomedTarget.y - 98) < 0.5)
+
+        // 滚离原点时，原始文档矩形已不与视口相交，但冻结行/列内的高亮仍经象限映射保留可见
+        let farViewport = CGRect(x: 180, y: 90, width: 200, height: 160)
+        let farPlan = CGElementDrawer.sheetFreezePlan(sheet: sheet, viewport: farViewport)
+        let frozenRowMatch = CGRect(x: 240, y: 22, width: 60, height: 30)
+        #expect(!frozenRowMatch.intersects(farViewport))
+        let frozenRowPieces = CGElementDrawer.clipSheetHighlight(frozenRowMatch, plan: farPlan, rowCount: 6, columnCount: 6)
+        #expect(frozenRowPieces.count == 1)
+        #expect(frozenRowPieces[0].clip.minY == farPlan.frozenOriginY)
+        let frozenColMatch = CGRect(x: 42, y: 150, width: 60, height: 30)
+        #expect(!frozenColMatch.intersects(farViewport))
+        let frozenColPieces = CGElementDrawer.clipSheetHighlight(frozenColMatch, plan: farPlan, rowCount: 6, columnCount: 6)
+        #expect(frozenColPieces.count == 1)
+        #expect(frozenColPieces[0].clip.minX == farPlan.frozenOriginX)
+    }
+
     private func createTestCGImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         var bytes = [UInt8](repeating: 128, count: width * height * 4)

@@ -609,6 +609,11 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     }
 
     @objc private func clipViewBoundsDidChange(_ notification: Notification) {
+        // 表格视图按真实滚动视口绘制，滚动后必须立即重绘，
+        // 否则外围行列标头与冻结窗格在滚动期间会停留在旧位置
+        if document?.kind == .xlsx {
+            needsDisplay = true
+        }
         evaluateViewport()
     }
 
@@ -800,6 +805,34 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             let clipBounds = clipView.bounds
             let maxX = max(0, self.bounds.width - clipBounds.width)
             let maxY = max(0, self.bounds.height - clipBounds.height)
+            // 表格启用冻结窗格时按轴避让：命中冻结侧保持该轴滚动，避免目标被冻结区遮挡
+            if let doc = self.document, doc.kind == .xlsx, self.zoom > 0 {
+                let index = max(0, min(doc.sheets.count - 1, self.currentPage - 1))
+                if index < doc.sheets.count {
+                    let safeZoom = max(0.1, self.zoom)
+                    let frozenViewport = CGRect(
+                        x: clipBounds.minX / safeZoom,
+                        y: clipBounds.minY / safeZoom,
+                        width: clipBounds.width / safeZoom,
+                        height: clipBounds.height / safeZoom
+                    )
+                    let plan = CGElementDrawer.sheetFreezePlan(sheet: doc.sheets[index], viewport: frozenViewport)
+                    let target = CGElementDrawer.sheetScrollTarget(
+                        docRect: docRect,
+                        plan: plan,
+                        clipSize: clipBounds.size,
+                        contentOffset: clipBounds.origin,
+                        contentSize: self.bounds.size,
+                        zoom: self.zoom
+                    )
+                    // 剩余偏移换算回文档坐标后交给滚动视图
+                    let resolvedX = min(max(0, target.x), maxX)
+                    let resolvedY = min(max(0, target.y), maxY)
+                    clipView.animator().scroll(to: NSPoint(x: resolvedX, y: resolvedY))
+                    self.enclosingScrollView?.reflectScrolledClipView(clipView)
+                    return
+                }
+            }
             let targetX = min(max(0, viewRect.midX - clipBounds.width / 2), maxX)
             let targetY = min(max(0, viewRect.midY - clipBounds.height / 2), maxY)
             clipView.animator().scroll(to: NSPoint(x: targetX, y: targetY))
@@ -860,6 +893,8 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             )
         }
         let activeImages = imageLoader?.snapshot ?? images
+        // 表格冻结几何：正文绘制时确定，检索高亮复用同一份结果保证裁剪一致
+        var xlsxFreezePlan: CGElementDrawer.SheetFreezePlan? = nil
 
         switch doc.kind {
         case .pptx:
@@ -904,18 +939,15 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         case .xlsx:
             let idx = max(0, min(doc.sheets.count - 1, currentPage - 1))
             guard idx < doc.sheets.count else { return }
-            let viewport = CGRect(
-                x: 0,
-                y: 0,
-                width: bounds.width / safeZoom,
-                height: bounds.height / safeZoom
-            )
+            // 传入真实滚动视口：外围行列标头与冻结窗格据此固定在视口边缘
+            let sheet = doc.sheets[idx]
             CGElementDrawer.drawSpreadsheet(
                 in: ctx,
-                sheet: doc.sheets[idx],
+                sheet: sheet,
                 styles: doc.cellStyles,
-                viewport: viewport
+                viewport: docVisible
             )
+            xlsxFreezePlan = CGElementDrawer.sheetFreezePlan(sheet: sheet, viewport: docVisible)
         }
 
         // 绘制全文检索高亮（在文档未缩放坐标系下，由 ctx.scaleBy 统一放大）
@@ -944,22 +976,43 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                     docxPlan: docxLayoutPlan
                 )
                 for r in rects {
-                    if !isCurrent && !r.intersects(docVisibleRect) {
+                    // 非表格文档可先按 docVisibleRect 预裁剪；表格需先经象限映射再裁剪，避免冻结区非当前命中随滚动消失
+                    if doc.kind != .xlsx && !isCurrent && !r.intersects(docVisibleRect) {
                         continue
                     }
-                    let path = CGPath(roundedRect: r, cornerWidth: 2, cornerHeight: 2, transform: nil)
-                    if isCurrent {
-                        ctx.setFillColor(CGColor(srgbRed: 1.0, green: 0.60, blue: 0.0, alpha: 0.75))
-                        ctx.addPath(path)
-                        ctx.fillPath()
-                        ctx.setStrokeColor(CGColor(srgbRed: 0.90, green: 0.40, blue: 0.0, alpha: 1.0))
-                        ctx.setLineWidth(1.5)
-                        ctx.addPath(path)
-                        ctx.strokePath()
+                    // 表格启用冻结时按象限裁剪：滚动区高亮绝不覆盖冻结区，冻结区高亮随未冻结轴滚动
+                    let pieces: [(rect: CGRect, clip: CGRect?)] = if doc.kind == .xlsx, let plan = xlsxFreezePlan {
+                        CGElementDrawer.clipSheetHighlight(
+                            r,
+                            plan: plan,
+                            rowCount: doc.sheets[max(0, min(doc.sheets.count - 1, currentPage - 1))].rowHeights.count,
+                            columnCount: doc.sheets[max(0, min(doc.sheets.count - 1, currentPage - 1))].columnWidths.count
+                        ).map { (rect: $0.rect, clip: Optional($0.clip)) }
                     } else {
-                        ctx.setFillColor(CGColor(srgbRed: 1.0, green: 0.92, blue: 0.23, alpha: 0.45))
-                        ctx.addPath(path)
-                        ctx.fillPath()
+                        [(rect: r, clip: nil)]
+                    }
+                    for piece in pieces {
+                        if let clip = piece.clip {
+                            ctx.saveGState()
+                            ctx.clip(to: clip)
+                        }
+                        let path = CGPath(roundedRect: piece.rect, cornerWidth: 2, cornerHeight: 2, transform: nil)
+                        if isCurrent {
+                            ctx.setFillColor(CGColor(srgbRed: 1.0, green: 0.60, blue: 0.0, alpha: 0.75))
+                            ctx.addPath(path)
+                            ctx.fillPath()
+                            ctx.setStrokeColor(CGColor(srgbRed: 0.90, green: 0.40, blue: 0.0, alpha: 1.0))
+                            ctx.setLineWidth(1.5)
+                            ctx.addPath(path)
+                            ctx.strokePath()
+                        } else {
+                            ctx.setFillColor(CGColor(srgbRed: 1.0, green: 0.92, blue: 0.23, alpha: 0.45))
+                            ctx.addPath(path)
+                            ctx.fillPath()
+                        }
+                        if piece.clip != nil {
+                            ctx.restoreGState()
+                        }
                     }
                 }
             }

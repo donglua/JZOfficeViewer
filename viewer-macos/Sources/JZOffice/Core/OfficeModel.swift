@@ -514,19 +514,31 @@ public struct OfficeSheet: Codable, Sendable {
     public let cells: [OfficeCell]
     public let merges: [OfficeCellRange]
     public let geometry: OfficeSheetGeometry?
+    /// 从第 0 行起冻结的行数（core schemaVersion 9 可选字段，缺省 0）
+    public let frozenRows: Int
+    /// 从第 0 列起冻结的列数（core schemaVersion 9 可选字段，缺省 0）
+    public let frozenColumns: Int
 
     enum CodingKeys: String, CodingKey {
-        case name, rowHeights, columnWidths, cells, merges, geometry
+        case name, rowHeights, columnWidths, cells, merges, geometry, frozenRows, frozenColumns
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Sheet"
-        self.rowHeights = try c.decodeIfPresent([CGFloat].self, forKey: .rowHeights) ?? []
-        self.columnWidths = try c.decodeIfPresent([CGFloat].self, forKey: .columnWidths) ?? []
+        // 冻结行/列数依赖行列维度做钳位，需先解出 rowHeights / columnWidths
+        let rows = try c.decodeIfPresent([CGFloat].self, forKey: .rowHeights) ?? []
+        let columns = try c.decodeIfPresent([CGFloat].self, forKey: .columnWidths) ?? []
+        self.rowHeights = rows
+        self.columnWidths = columns
         self.cells = try c.decodeIfPresent([OfficeCell].self, forKey: .cells) ?? []
         self.merges = try c.decodeIfPresent([OfficeCellRange].self, forKey: .merges) ?? []
         self.geometry = try c.decodeIfPresent(OfficeSheetGeometry.self, forKey: .geometry)
+        let frozenRows = try c.decodeIfPresent(Int.self, forKey: .frozenRows) ?? 0
+        let frozenColumns = try c.decodeIfPresent(Int.self, forKey: .frozenColumns) ?? 0
+        // 越界或负数一律钳位到合法维度，避免破坏性输入导致后续绘制越界
+        self.frozenRows = min(max(0, frozenRows), rows.count)
+        self.frozenColumns = min(max(0, frozenColumns), columns.count)
     }
 }
 

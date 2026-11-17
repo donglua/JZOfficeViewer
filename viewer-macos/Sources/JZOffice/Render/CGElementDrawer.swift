@@ -1612,6 +1612,236 @@ public enum CGElementDrawer {
         return (colOff, rowOff, colOff.last ?? sheetHeaderWidth, rowOff.last ?? sheetHeaderHeight)
     }
 
+    /// 冻结区占可用正文区的最大比例：超出后该轴冻结降级为不冻结，避免正文被冻结区挤没
+    public static let MAX_FROZEN_RATIO: CGFloat = 0.75
+
+    /// 一帧内的冻结几何结果（文档坐标系，与 `viewport` 同一套坐标）
+    public struct SheetFreezePlan: Sendable, Equatable {
+        /// 工作表声明的冻结行/列数（已按表维度钳位）
+        public let frozenRows: Int
+        public let frozenColumns: Int
+        /// 经视口占比保护后的有效冻结行/列数
+        public let effectiveRows: Int
+        public let effectiveColumns: Int
+        /// 文档坐标系下的滚动量（viewport 原点小于 0 时按 0 处理）
+        public let scrollX: CGFloat
+        public let scrollY: CGFloat
+        /// 冻结区左上角：等于表头右/下侧紧邻位置
+        public let frozenOriginX: CGFloat
+        public let frozenOriginY: CGFloat
+        /// 冻结区在当前坐标系下的宽/高
+        public let frozenDataWidth: CGFloat
+        public let frozenDataHeight: CGFloat
+        /// 冻结边界
+        public let frozenRight: CGFloat
+        public let frozenBottom: CGFloat
+        /// 可滚动右/下边界
+        public let bodyMaxRight: CGFloat
+        public let bodyMaxBottom: CGFloat
+        /// 表头左/上边界（文档坐标系下的固定表头起点）
+        public let headerLeft: CGFloat
+        public let headerTop: CGFloat
+
+        /// 是否启用了任一轴的冻结
+        public var hasFrozen: Bool { effectiveRows > 0 || effectiveColumns > 0 }
+    }
+
+    /// 单个绘制象限：行列范围、裁剪区域与内容平移量
+    public struct SheetQuadrant: Sendable, Equatable {
+        public let rowRange: Range<Int>
+        public let columnRange: Range<Int>
+        public let clip: CGRect
+        public let translateX: CGFloat
+        public let translateY: CGFloat
+    }
+
+    /// 计算冻结几何：按 X/Y 轴独立执行视口占比保护，两轴互不影响
+    public static func resolveFreezePlan(
+        frozenRows: Int,
+        frozenColumns: Int,
+        rowCount: Int,
+        columnCount: Int,
+        frozenDataWidth: CGFloat,
+        frozenDataHeight: CGFloat,
+        totalWidth: CGFloat,
+        totalHeight: CGFloat,
+        viewport: CGRect
+    ) -> SheetFreezePlan {
+        let scrollX = max(0, viewport.minX)
+        let scrollY = max(0, viewport.minY)
+        let frozenOriginX = sheetHeaderWidth + scrollX
+        let frozenOriginY = sheetHeaderHeight + scrollY
+        // 扣除表头后的可用正文区
+        let availBodyW = max(0, viewport.width - sheetHeaderWidth)
+        let availBodyH = max(0, viewport.height - sheetHeaderHeight)
+        let rows = min(max(0, frozenRows), max(0, rowCount))
+        let columns = min(max(0, frozenColumns), max(0, columnCount))
+        let dataW = max(0, frozenDataWidth)
+        let dataH = max(0, frozenDataHeight)
+        // 高倍缩放或小窗口下冻结区可能占满视口，此时仅取消超限的那个轴
+        let effectiveColumns = (columns == 0 || availBodyW <= 0 || dataW > availBodyW * MAX_FROZEN_RATIO) ? 0 : columns
+        let effectiveRows = (rows == 0 || availBodyH <= 0 || dataH > availBodyH * MAX_FROZEN_RATIO) ? 0 : rows
+        let effectiveWidth = effectiveColumns > 0 ? dataW : 0
+        let effectiveHeight = effectiveRows > 0 ? dataH : 0
+        return SheetFreezePlan(
+            frozenRows: rows,
+            frozenColumns: columns,
+            effectiveRows: effectiveRows,
+            effectiveColumns: effectiveColumns,
+            scrollX: scrollX,
+            scrollY: scrollY,
+            frozenOriginX: frozenOriginX,
+            frozenOriginY: frozenOriginY,
+            frozenDataWidth: effectiveWidth,
+            frozenDataHeight: effectiveHeight,
+            frozenRight: frozenOriginX + effectiveWidth,
+            frozenBottom: frozenOriginY + effectiveHeight,
+            bodyMaxRight: min(totalWidth, viewport.maxX),
+            bodyMaxBottom: min(totalHeight, viewport.maxY),
+            headerLeft: scrollX,
+            headerTop: scrollY
+        )
+    }
+
+    /// 依据工作表冻结配置与当前视口计算冻结几何；冻结区尺寸取自 core 预计算的列/行前缀和
+    public static func sheetFreezePlan(sheet: OfficeSheet, viewport: CGRect) -> SheetFreezePlan {
+        let (colOffsets, rowOffsets, totalW, totalH) = computeSheetExtents(sheet)
+        let frozenColumns = sheet.frozenColumns
+        let frozenRows = sheet.frozenRows
+        let dataW = frozenColumns > 0 && frozenColumns < colOffsets.count
+            ? max(0, colOffsets[frozenColumns] - colOffsets[0])
+            : 0
+        let dataH = frozenRows > 0 && frozenRows < rowOffsets.count
+            ? max(0, rowOffsets[frozenRows] - rowOffsets[0])
+            : 0
+        return resolveFreezePlan(
+            frozenRows: frozenRows,
+            frozenColumns: frozenColumns,
+            rowCount: sheet.rowHeights.count,
+            columnCount: sheet.columnWidths.count,
+            frozenDataWidth: dataW,
+            frozenDataHeight: dataH,
+            totalWidth: totalW,
+            totalHeight: totalH,
+            viewport: viewport
+        )
+    }
+
+    /// 切分最多 4 个互不重叠的绘制象限（从底到顶：滚动正文、冻结列、冻结行、交叉角）
+    public static func sheetQuadrants(plan: SheetFreezePlan, rowCount: Int, columnCount: Int) -> [SheetQuadrant] {
+        let rows = max(0, rowCount)
+        let columns = max(0, columnCount)
+        let frozenRows = min(plan.effectiveRows, rows)
+        let frozenColumns = min(plan.effectiveColumns, columns)
+        var quadrants: [SheetQuadrant] = []
+        if frozenColumns < columns && frozenRows < rows {
+            quadrants.append(SheetQuadrant(
+                rowRange: frozenRows..<rows,
+                columnRange: frozenColumns..<columns,
+                clip: CGRect(
+                    x: plan.frozenRight,
+                    y: plan.frozenBottom,
+                    width: max(0, plan.bodyMaxRight - plan.frozenRight),
+                    height: max(0, plan.bodyMaxBottom - plan.frozenBottom)
+                ),
+                translateX: 0,
+                translateY: 0
+            ))
+        }
+        if frozenColumns > 0 && frozenRows < rows {
+            quadrants.append(SheetQuadrant(
+                rowRange: frozenRows..<rows,
+                columnRange: 0..<frozenColumns,
+                clip: CGRect(
+                    x: plan.frozenOriginX,
+                    y: plan.frozenBottom,
+                    width: plan.frozenDataWidth,
+                    height: max(0, plan.bodyMaxBottom - plan.frozenBottom)
+                ),
+                translateX: plan.scrollX,
+                translateY: 0
+            ))
+        }
+        if frozenRows > 0 && frozenColumns < columns {
+            quadrants.append(SheetQuadrant(
+                rowRange: 0..<frozenRows,
+                columnRange: frozenColumns..<columns,
+                clip: CGRect(
+                    x: plan.frozenRight,
+                    y: plan.frozenOriginY,
+                    width: max(0, plan.bodyMaxRight - plan.frozenRight),
+                    height: plan.frozenDataHeight
+                ),
+                translateX: 0,
+                translateY: plan.scrollY
+            ))
+        }
+        if frozenColumns > 0 && frozenRows > 0 {
+            quadrants.append(SheetQuadrant(
+                rowRange: 0..<frozenRows,
+                columnRange: 0..<frozenColumns,
+                clip: CGRect(
+                    x: plan.frozenOriginX,
+                    y: plan.frozenOriginY,
+                    width: plan.frozenDataWidth,
+                    height: plan.frozenDataHeight
+                ),
+                translateX: plan.scrollX,
+                translateY: plan.scrollY
+            ))
+        }
+        return quadrants
+    }
+
+    /// 把文档坐标下的检索高亮矩形按象限切分：滚动区严格裁剪在冻结区之外，绝不覆盖冻结区
+    public static func clipSheetHighlight(
+        _ rect: CGRect,
+        plan: SheetFreezePlan,
+        rowCount: Int,
+        columnCount: Int
+    ) -> [(rect: CGRect, clip: CGRect)] {
+        guard rect.width > 0, rect.height > 0 else { return [] }
+        var pieces: [(rect: CGRect, clip: CGRect)] = []
+        for quadrant in sheetQuadrants(plan: plan, rowCount: rowCount, columnCount: columnCount) {
+            let moved = rect.offsetBy(dx: quadrant.translateX, dy: quadrant.translateY)
+            let visible = moved.intersection(quadrant.clip)
+            if visible.isNull || visible.width <= 0 || visible.height <= 0 { continue }
+            pieces.append((rect: moved, clip: quadrant.clip))
+        }
+        return pieces
+    }
+
+    /// 计算检索跳转的目标滚动偏移（视图坐标）：命中冻结侧则该轴保持当前偏移，否则居中对齐到可滚动视口中心
+    public static func sheetScrollTarget(
+        docRect: CGRect,
+        plan: SheetFreezePlan,
+        clipSize: CGSize,
+        contentOffset: CGPoint,
+        contentSize: CGSize,
+        zoom: CGFloat
+    ) -> CGPoint {
+        let maxX = max(0, contentSize.width - clipSize.width)
+        let maxY = max(0, contentSize.height - clipSize.height)
+        let centerX = docRect.midX * zoom
+        let centerY = docRect.midY * zoom
+        var targetX = contentOffset.x
+        var targetY = contentOffset.y
+        // 冻结列已在视口内固定可见，保持当前水平滚动位置不变
+        let frozenWidthPx = (sheetHeaderWidth + plan.frozenDataWidth) * zoom
+        let inFrozenColumn = plan.effectiveColumns > 0 && docRect.midX < sheetHeaderWidth + plan.frozenDataWidth
+        if !inFrozenColumn {
+            let scrollableCenterX = (frozenWidthPx + clipSize.width) / 2
+            targetX = min(max(0, centerX - scrollableCenterX), maxX)
+        }
+        let frozenHeightPx = (sheetHeaderHeight + plan.frozenDataHeight) * zoom
+        let inFrozenRow = plan.effectiveRows > 0 && docRect.midY < sheetHeaderHeight + plan.frozenDataHeight
+        if !inFrozenRow {
+            let scrollableCenterY = (frozenHeightPx + clipSize.height) / 2
+            targetY = min(max(0, centerY - scrollableCenterY), maxY)
+        }
+        return CGPoint(x: targetX, y: targetY)
+    }
+
     public static func drawSpreadsheet(
         in ctx: CGContext,
         sheet: OfficeSheet,
@@ -1619,8 +1849,9 @@ public enum CGElementDrawer {
         viewport: CGRect
     ) {
         let (colOffsets, rowOffsets, totalW, totalH) = computeSheetExtents(sheet)
-        let drawW = min(totalW, viewport.maxX)
-        let drawH = min(totalH, viewport.maxY)
+        let rowCount = sheet.rowHeights.count
+        let columnCount = sheet.columnWidths.count
+        let plan = sheetFreezePlan(sheet: sheet, viewport: viewport)
 
         ctx.saveGState()
         defer { ctx.restoreGState() }
@@ -1630,88 +1861,312 @@ public enum CGElementDrawer {
         ctx.fill(viewport)
 
         let mergedCellFlags = sheet.geometry?.mergedCells ?? []
+        // core 预计算的行起始索引：存在时按行区间二分遍历，避免每帧全表扫描
+        let rowStarts = validRowStarts(sheet: sheet, rowCount: rowCount)
 
-        // 1. 绘制普通单元格背景与文本
-        for (idx, cell) in sheet.cells.enumerated() {
-            if idx < mergedCellFlags.count && mergedCellFlags[idx] {
-                continue
+        // 1. 四象限正文绘制（从底到顶：滚动正文 → 冻结列 → 冻结行 → 交叉角）
+        // 每象限独立 save → clip → 白底 → 单元格 → 网格线 → 合并单元格 → restore
+        for quadrant in sheetQuadrants(plan: plan, rowCount: rowCount, columnCount: columnCount) {
+            withClip(ctx, quadrant.clip) {
+                ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+                ctx.fill(quadrant.clip)
+                drawSheetQuadrantContent(
+                    in: ctx,
+                    sheet: sheet,
+                    styles: styles,
+                    quadrant: quadrant,
+                    rowOffsets: rowOffsets,
+                    colOffsets: colOffsets,
+                    mergedCellFlags: mergedCellFlags,
+                    rowStarts: rowStarts
+                )
             }
-            guard cell.row >= 0, cell.row + 1 < rowOffsets.count,
-                  cell.column >= 0, cell.column + 1 < colOffsets.count else { continue }
-            let left = colOffsets[cell.column]
-            let top = rowOffsets[cell.row]
-            let right = colOffsets[cell.column + 1]
-            let bottom = rowOffsets[cell.row + 1]
-            if right < viewport.minX || left > viewport.maxX || bottom < viewport.minY || top > viewport.maxY {
-                continue
-            }
-            let rect = CGRect(x: left, y: top, width: right - left, height: bottom - top)
-            guard rect.width > 0 && rect.height > 0 else { continue }
-            drawSpreadsheetCell(in: ctx, cell: cell, rect: rect, styles: styles)
         }
 
-        // 2. 绘制网格线
-        if let gridColor = argbToCGColor(0xffdce1e5) {
+        // 2. 行列标头：可滚动区随内容滚动，冻结区锁定，左上角交汇块单独清理
+        drawSheetHeaders(
+            in: ctx,
+            sheet: sheet,
+            plan: plan,
+            colOffsets: colOffsets,
+            rowOffsets: rowOffsets,
+            drawW: min(totalW, viewport.maxX),
+            drawH: min(totalH, viewport.maxY),
+            viewport: viewport
+        )
+
+        // 3. 冻结分割线：区别于普通网格线与表头分隔线的中性蓝灰
+        if let divider = argbToCGColor(0xff9aa5b1) {
+            ctx.setStrokeColor(divider)
+            ctx.setLineWidth(1)
+            ctx.beginPath()
+            if plan.effectiveColumns > 0 {
+                ctx.move(to: CGPoint(x: plan.frozenRight, y: plan.headerTop))
+                ctx.addLine(to: CGPoint(x: plan.frozenRight, y: plan.bodyMaxBottom))
+            }
+            if plan.effectiveRows > 0 {
+                ctx.move(to: CGPoint(x: plan.headerLeft, y: plan.frozenBottom))
+                ctx.addLine(to: CGPoint(x: plan.bodyMaxRight, y: plan.frozenBottom))
+            }
+            ctx.strokePath()
+        }
+    }
+
+    /// 裁剪 core 的 rowStarts 是否可用于按行遍历，不可用时返回 nil 走全表扫描回退
+    private static func validRowStarts(sheet: OfficeSheet, rowCount: Int) -> [Int]? {
+        guard let starts = sheet.geometry?.rowStarts, starts.count == rowCount + 1 else { return nil }
+        var previous = 0
+        for start in starts {
+            if start < previous || start > sheet.cells.count { return nil }
+            previous = start
+        }
+        return starts.filter { $0 <= sheet.cells.count }.count == starts.count ? starts : nil
+    }
+
+    /// 绘制单个象限内的单元格、网格线、合并单元格
+    private static func drawSheetQuadrantContent(
+        in ctx: CGContext,
+        sheet: OfficeSheet,
+        styles: [OfficeCellStyle],
+        quadrant: SheetQuadrant,
+        rowOffsets: [CGFloat],
+        colOffsets: [CGFloat],
+        mergedCellFlags: [Bool],
+        rowStarts: [Int]?
+    ) {
+        let clip = quadrant.clip
+        let tx = quadrant.translateX
+        let ty = quadrant.translateY
+        let rowCount = sheet.rowHeights.count
+        let columnCount = sheet.columnWidths.count
+        let firstRow = min(quadrant.rowRange.lowerBound, rowCount)
+        let lastRow = min(quadrant.rowRange.upperBound, rowCount)
+        let firstColumn = min(quadrant.columnRange.lowerBound, columnCount)
+        let lastColumn = min(quadrant.columnRange.upperBound, columnCount)
+        let gridColor = argbToCGColor(0xffdce1e5)
+
+        // 1.1 普通单元格填充与文本
+        for row in firstRow..<max(firstRow, lastRow) {
+            let top = rowOffsets[row] + ty
+            let bottom = rowOffsets[row + 1] + ty
+            if bottom <= clip.minY || top >= clip.maxY { continue }
+            for idx in cellIndices(row: row, rowStarts: rowStarts, cells: sheet.cells) {
+                let cell = sheet.cells[idx]
+                if idx < mergedCellFlags.count && mergedCellFlags[idx] { continue }
+                // 无 rowStarts 回退全表遍历时仍按行号过滤，避免其它行单元格误绘到当前行
+                if cell.row != row { continue }
+                if cell.column < firstColumn || cell.column >= lastColumn { continue }
+                if cell.column + 1 >= colOffsets.count { continue }
+                let left = colOffsets[cell.column] + tx
+                let right = colOffsets[cell.column + 1] + tx
+                if right <= clip.minX || left >= clip.maxX { continue }
+                let rect = CGRect(x: left, y: top, width: right - left, height: bottom - top)
+                guard rect.width > 0 && rect.height > 0 else { continue }
+                drawSpreadsheetCell(in: ctx, cell: cell, rect: rect, styles: styles)
+            }
+        }
+
+        // 1.2 网格线（仅绘制象限内可见部分）
+        if let gridColor {
             ctx.setStrokeColor(gridColor)
             ctx.setLineWidth(0.5)
-            for x in colOffsets where x >= viewport.minX && x <= drawW {
-                ctx.move(to: CGPoint(x: x, y: max(sheetHeaderHeight, viewport.minY)))
-                ctx.addLine(to: CGPoint(x: x, y: drawH))
+            ctx.beginPath()
+            for row in firstRow..<max(firstRow, lastRow) {
+                let y = rowOffsets[row + 1] + ty
+                if y < clip.minY || y > clip.maxY { continue }
+                ctx.move(to: CGPoint(x: clip.minX, y: y))
+                ctx.addLine(to: CGPoint(x: clip.maxX, y: y))
             }
-            for y in rowOffsets where y >= viewport.minY && y <= drawH {
-                ctx.move(to: CGPoint(x: max(sheetHeaderWidth, viewport.minX), y: y))
-                ctx.addLine(to: CGPoint(x: drawW, y: y))
+            for column in firstColumn..<max(firstColumn, lastColumn) {
+                let x = colOffsets[column + 1] + tx
+                if x < clip.minX || x > clip.maxX { continue }
+                ctx.move(to: CGPoint(x: x, y: clip.minY))
+                ctx.addLine(to: CGPoint(x: x, y: clip.maxY))
             }
             ctx.strokePath()
         }
 
-        // 3. 绘制合并单元格（覆盖内部网格线）
+        // 1.3 合并单元格：利用 startRow/endRow 过滤，跨冻结边界的合并区域在各象限分别平移裁剪绘制
         if let g = sheet.geometry {
             for merge in g.mergeRects {
+                if merge.endRow < firstRow || merge.startRow >= lastRow { continue }
                 let rect = CGRect(
-                    x: merge.left + sheetHeaderWidth,
-                    y: merge.top + sheetHeaderHeight,
+                    x: merge.left + sheetHeaderWidth + tx,
+                    y: merge.top + sheetHeaderHeight + ty,
                     width: merge.right - merge.left,
                     height: merge.bottom - merge.top
                 )
-                guard rect.width > 0, rect.height > 0, rect.intersects(viewport) else { continue }
+                guard rect.width > 0, rect.height > 0, rect.intersects(clip) else { continue }
                 ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
                 ctx.fill(rect)
                 if merge.anchor >= 0 && merge.anchor < sheet.cells.count {
                     drawSpreadsheetCell(in: ctx, cell: sheet.cells[merge.anchor], rect: rect, styles: styles)
                 }
-                if let gridColor = argbToCGColor(0xffdce1e5) {
+                if let gridColor {
                     ctx.setStrokeColor(gridColor)
                     ctx.setLineWidth(0.5)
                     ctx.stroke(rect)
                 }
             }
         }
+    }
 
-        // 4. 绘制行列标头 (Row / Column Headers)
-        if let headerBg = argbToCGColor(0xfff3f5f7) {
-            ctx.setFillColor(headerBg)
-            ctx.fill(CGRect(x: viewport.minX, y: viewport.minY, width: viewport.width, height: sheetHeaderHeight))
-            ctx.fill(CGRect(x: viewport.minX, y: viewport.minY, width: sheetHeaderWidth, height: viewport.height))
-        }
+    /// 单行内要遍历的 cell 下标区间，未提供 rowStarts 时回退全表
+    private static func cellIndices(row: Int, rowStarts: [Int]?, cells: [OfficeCell]) -> Range<Int> {
+        guard let starts = rowStarts, row >= 0, row + 1 < starts.count else { return 0..<cells.count }
+        let start = min(max(0, starts[row]), cells.count)
+        let end = min(max(start, starts[row + 1]), cells.count)
+        return start..<end
+    }
+
+    /// 在给定裁剪区域内执行绘制，退出时严格恢复图形状态
+    private static func withClip(_ ctx: CGContext, _ rect: CGRect, _ body: () -> Void) {
+        guard rect.width > 0, rect.height > 0 else { return }
+        ctx.saveGState()
+        ctx.clip(to: rect)
+        body()
+        ctx.restoreGState()
+    }
+
+    /// 绘制表头：可滚动段正常滚动，冻结段锁定，左上角交汇块保持干净
+    private static func drawSheetHeaders(
+        in ctx: CGContext,
+        sheet: OfficeSheet,
+        plan: SheetFreezePlan,
+        colOffsets: [CGFloat],
+        rowOffsets: [CGFloat],
+        drawW: CGFloat,
+        drawH: CGFloat,
+        viewport: CGRect
+    ) {
+        let headerHeight = sheetHeaderHeight
+        let headerWidth = sheetHeaderWidth
+        let headerTop = plan.headerTop
+        let headerLeft = plan.headerLeft
+        let rowCount = sheet.rowHeights.count
+        let columnCount = sheet.columnWidths.count
+        let frozenColumns = min(plan.effectiveColumns, columnCount)
+        let frozenRows = min(plan.effectiveRows, rowCount)
+        let bodyRight = min(max(plan.bodyMaxRight, headerLeft), max(drawW, headerLeft))
+        let bodyBottom = min(max(plan.bodyMaxBottom, headerTop), max(drawH, headerTop))
         let headerFont = NSFont.systemFont(ofSize: 10, weight: .medium)
         let headerColor = argbToNSColor(0xff52606d)
+        let gridColor = argbToCGColor(0xffdce1e5)
+        let headerBg = argbToCGColor(0xfff3f5f7)
+
+        /// 顶部列头文本与分隔线
+        func drawColumnHeader(_ column: Int, offsetX: CGFloat, clip: CGRect) {
+            let left = colOffsets[column] + offsetX
+            let width = colOffsets[column + 1] - colOffsets[column]
+            guard width > 0 else { return }
+            let rect = CGRect(x: left, y: headerTop, width: width, height: headerHeight)
+            guard rect.intersects(clip) else { return }
+            if let gridColor {
+                ctx.setStrokeColor(gridColor)
+                ctx.setLineWidth(0.5)
+                ctx.stroke(rect)
+            }
+            drawCenteredSingleLine(in: ctx, text: columnLabel(for: column), font: headerFont, color: headerColor, rect: rect)
+        }
+
+        /// 左侧行头文本与分隔线
+        func drawRowHeader(_ row: Int, offsetY: CGFloat, clip: CGRect) {
+            let top = rowOffsets[row] + offsetY
+            let height = rowOffsets[row + 1] - rowOffsets[row]
+            guard height > 0 else { return }
+            let cellRect = CGRect(x: headerLeft, y: top, width: headerWidth, height: height)
+            guard cellRect.intersects(clip) else { return }
+            if let gridColor {
+                ctx.setStrokeColor(gridColor)
+                ctx.setLineWidth(0.5)
+                ctx.stroke(cellRect)
+            }
+            let textRect = CGRect(x: headerLeft, y: top, width: headerWidth, height: min(height, 32))
+            drawCenteredSingleLine(in: ctx, text: "\(row + 1)", font: headerFont, color: headerColor, rect: textRect)
+        }
+
+        // 顶部列头底板：可滚动段 + 冻结段
+        if let headerBg {
+            ctx.setFillColor(headerBg)
+            ctx.fill(CGRect(x: headerLeft, y: headerTop, width: max(0, bodyRight - headerLeft), height: headerHeight))
+            if frozenColumns > 0 {
+                ctx.fill(CGRect(x: plan.frozenOriginX, y: headerTop, width: plan.frozenDataWidth, height: headerHeight))
+            }
+        }
         ctx.saveGState()
         ctx.textMatrix = CGAffineTransform(scaleX: 1.0, y: -1.0)
-        for c in 0..<sheet.columnWidths.count {
-            let left = colOffsets[c]
-            let w = colOffsets[c + 1] - left
-            if w <= 0 || left > drawW { continue }
-            let label = columnLabel(for: c)
-            drawCenteredSingleLine(in: ctx, text: label, font: headerFont, color: headerColor, rect: CGRect(x: left, y: viewport.minY, width: w, height: sheetHeaderHeight))
+        // 可滚动列头：[frozenRight..bodyRight]
+        let scrollableColumnClip = CGRect(
+            x: plan.frozenRight,
+            y: headerTop,
+            width: max(0, bodyRight - plan.frozenRight),
+            height: headerHeight
+        )
+        withClip(ctx, scrollableColumnClip) {
+            for column in frozenColumns..<max(frozenColumns, columnCount) {
+                drawColumnHeader(column, offsetX: 0, clip: scrollableColumnClip)
+            }
         }
-        for r in 0..<sheet.rowHeights.count {
-            let top = rowOffsets[r]
-            let h = rowOffsets[r + 1] - top
-            if h <= 0 || top > drawH { continue }
-            drawCenteredSingleLine(in: ctx, text: "\(r + 1)", font: headerFont, color: headerColor, rect: CGRect(x: viewport.minX, y: top, width: sheetHeaderWidth, height: min(h, 32)))
+        // 冻结列头：[frozenOriginX..frozenRight]，X 轴锁定
+        if frozenColumns > 0 {
+            let frozenColumnClip = CGRect(x: plan.frozenOriginX, y: headerTop, width: plan.frozenDataWidth, height: headerHeight)
+            withClip(ctx, frozenColumnClip) {
+                for column in 0..<frozenColumns {
+                    drawColumnHeader(column, offsetX: plan.scrollX, clip: frozenColumnClip)
+                }
+            }
         }
         ctx.restoreGState()
+
+        // 左侧行头底板：可滚动段 + 冻结段
+        if let headerBg {
+            ctx.setFillColor(headerBg)
+            ctx.fill(CGRect(x: headerLeft, y: headerTop, width: headerWidth, height: max(0, bodyBottom - headerTop)))
+            if frozenRows > 0 {
+                ctx.fill(CGRect(x: headerLeft, y: plan.frozenOriginY, width: headerWidth, height: plan.frozenDataHeight))
+            }
+        }
+        ctx.saveGState()
+        ctx.textMatrix = CGAffineTransform(scaleX: 1.0, y: -1.0)
+        // 可滚动行头：[frozenBottom..bodyBottom]
+        let scrollableRowClip = CGRect(
+            x: headerLeft,
+            y: plan.frozenBottom,
+            width: headerWidth,
+            height: max(0, bodyBottom - plan.frozenBottom)
+        )
+        withClip(ctx, scrollableRowClip) {
+            for row in frozenRows..<max(frozenRows, rowCount) {
+                drawRowHeader(row, offsetY: 0, clip: scrollableRowClip)
+            }
+        }
+        // 冻结行头：[frozenOriginY..frozenBottom]，Y 轴锁定
+        if frozenRows > 0 {
+            let frozenRowClip = CGRect(x: headerLeft, y: plan.frozenOriginY, width: headerWidth, height: plan.frozenDataHeight)
+            withClip(ctx, frozenRowClip) {
+                for row in 0..<frozenRows {
+                    drawRowHeader(row, offsetY: plan.scrollY, clip: frozenRowClip)
+                }
+            }
+        }
+        ctx.restoreGState()
+
+        // 左上角交汇块：覆盖 [scrollX..frozenOriginX, scrollY..frozenOriginY]
+        if let headerBg {
+            ctx.setFillColor(headerBg)
+            ctx.fill(CGRect(x: plan.scrollX, y: plan.scrollY, width: headerWidth, height: headerHeight))
+        }
+        // 表头分隔线（固定贴在表头右/下边缘，不随内容滚动）
+        if let separator = argbToCGColor(0xffbfc7cd) {
+            ctx.setStrokeColor(separator)
+            ctx.setLineWidth(0.75)
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: headerLeft + headerWidth, y: plan.scrollY))
+            ctx.addLine(to: CGPoint(x: headerLeft + headerWidth, y: viewport.maxY))
+            ctx.move(to: CGPoint(x: plan.scrollX, y: headerTop + headerHeight))
+            ctx.addLine(to: CGPoint(x: viewport.maxX, y: headerTop + headerHeight))
+            ctx.strokePath()
+        }
     }
 
     private static func drawSpreadsheetCell(
