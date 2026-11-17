@@ -10,6 +10,10 @@ final class SpreadsheetDocument {
         String name = "";
         float[] rowHeights = {15};
         float[] columnWidths = {64};
+        /** 从首行起冻结的行数（core schemaVersion 9 可选字段，缺省 0） */
+        int frozenRows;
+        /** 从首列起冻结的列数（core schemaVersion 9 可选字段，缺省 0） */
+        int frozenColumns;
         final List<Cell> cells = new ArrayList<>();
         final List<CellRange> merges = new ArrayList<>();
         /** 预计算的几何布局（来自 core），为 null 时由平台层现场计算（兼容旧 core） */

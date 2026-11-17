@@ -33,6 +33,8 @@ final class SheetRenderingChecks {
         log.append("PASS wrap, explicit multiline, numeric alignment, font styling and text clipping\n");
         checkCache();
         log.append("PASS visible-only layout, bounded cache, sheet replacement and clear\n");
+        checkFreezePanes();
+        log.append("PASS frozen rows/columns stay locked under scroll, freeze divider, cross-boundary merges and 75% viewport degradation\n");
         log.append(SheetTextChecks.run());
         return log.append("SHEET RENDERING CHECKS PASSED\n").toString();
     }
@@ -218,6 +220,142 @@ final class SheetRenderingChecks {
         check(cache(renderer).get(large.cells.get(0)) == preview, "Long cell redraw reuses bounded layout");
         renderer.clear();
         check(renderer.width == 0 && renderer.height == 0 && cache(renderer).isEmpty(), "Clear releases dimensions and text layouts");
+    }
+
+    /**
+     * 冻结窗格：带滚动偏移的视口下冻结首行/首列仍锁定在表头右侧/下侧，
+     * 冻结交界线存在，跨冻结边界的合并单元格在四个象限各自裁剪绘制，
+     * 高倍缩放（可用正文区不足）时按轴独立降级。
+     */
+    private static void checkFreezePanes() throws Exception {
+        SpreadsheetDocument.Sheet sheet = new SpreadsheetDocument.Sheet();
+        sheet.rowHeights = new float[] {30, 30, 30, 30};
+        sheet.columnWidths = new float[] {80, 80, 80, 80};
+        sheet.frozenRows = 1;
+        sheet.frozenColumns = 1;
+        // 四个象限各放一色单元格：交叉角红、冻结行绿、冻结列蓝、滚动区黄
+        sheet.cells.add(cell(0, 0, "", 0));
+        sheet.cells.add(cell(0, 1, "", 1));
+        sheet.cells.add(cell(2, 0, "", 2));
+        sheet.cells.add(cell(2, 1, "", 3));
+        List<SpreadsheetDocument.CellStyle> styles = new ArrayList<>();
+        for (int fill : new int[] {Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW}) {
+            SpreadsheetDocument.CellStyle style = new SpreadsheetDocument.CellStyle();
+            style.fill = fill;
+            styles.add(style);
+        }
+        SheetRenderer renderer = new SheetRenderer();
+        renderer.setSheet(sheet, styles);
+
+        // 视口已向右滚动 60、向下滚动 40，视口 200x160
+        RectF viewport = new RectF(60, 40, 260, 200);
+        // 冻结几何：存在 core 前缀和可直接差值得到冻结区尺寸
+        RectF planViewport = new RectF(viewport.left, viewport.top, viewport.right, viewport.bottom);
+        SheetRenderer.FreezePlan plan = SheetRenderer.computePlan(sheet, renderer.layout.columns,
+            renderer.layout.rows, renderer.width, renderer.height, planViewport);
+        check(plan.effectiveRows == 1 && plan.effectiveColumns == 1, "Frozen row and column stay effective");
+        check(plan.frozenDataWidth == 80 && plan.frozenDataHeight == 30, "Frozen size from core prefix sums");
+        check(plan.frozenRight == 42 + 60 + 80 && plan.frozenBottom == 20 + 40 + 30, "Frozen boundary anchored to headers plus scroll");
+        check(SheetRenderer.quadrants(plan).size() == 4, "Cross freeze splits body into four quadrants");
+
+        Bitmap bitmap = render(renderer, viewport);
+        try {
+            // 交叉角：(0,0) 锁定在表头右下方，左右两侧都被裁剪
+            assertColor(bitmap, 82, 35, Color.RED, 0, "Cross freeze corner cell stays locked");
+            // 冻结行：(0,1) 只在水平方向随滚动移动，仍占据顶部条带
+            assertColor(bitmap, 130, 35, Color.GREEN, 0, "Frozen row keeps its top band while scrolled horizontally");
+            // 冻结列：(2,0) 只在垂直方向随滚动移动，仍占据左侧条带
+            assertColor(bitmap, 82, 60, Color.BLUE, 0, "Frozen column keeps its left band while scrolled vertically");
+            // 滚动区：(2,1) 双轴随滚动，且严格裁剪在冻结边界之外
+            assertColor(bitmap, 130, 60, Color.YELLOW, 0, "Scrolling region content follows both axes outside frozen area");
+            // 冻结交界线：竖线位于 x = frozenRight - viewport.left
+            // 冻结交界线：文档坐标 frozenRight -> 屏幕 x = frozenRight - viewport.left
+            int dividerX = Math.round(plan.frozenRight - viewport.left);
+            check(hasColorNear(bitmap, dividerX, 60, 0xff9aa5b1, 70),
+                "Freeze divider drawn along the frozen column boundary at screen x=" + dividerX);
+            // 横向分割线：文档坐标 frozenBottom -> 屏幕 y = frozenBottom - viewport.top
+            int dividerY = Math.round(plan.frozenBottom - viewport.top);
+            check(hasColorNear(bitmap, 150, dividerY, 0xff9aa5b1, 70),
+                "Freeze divider drawn along the frozen row boundary at screen y=" + dividerY);
+        } finally { bitmap.recycle(); }
+
+        // 未冻结时同样的滚动视口看不到第 0 行（说明上面的锁定确实来自冻结，而非视口巧合）
+        SpreadsheetDocument.Sheet plain = new SpreadsheetDocument.Sheet();
+        plain.rowHeights = new float[] {30, 30, 30, 30};
+        plain.columnWidths = new float[] {80, 80, 80, 80};
+        plain.cells.add(cell(0, 0, "", 0));
+        plain.cells.add(cell(2, 0, "", 2));
+        renderer.setSheet(plain, styles);
+        bitmap = render(renderer, viewport);
+        try {
+            check(!hasColorNear(bitmap, 82, 35, Color.RED, 40), "Unfrozen sheet scrolls the first row out of view");
+        } finally { bitmap.recycle(); }
+
+        // 跨冻结边界的合并单元格：合并 0..2 行 × 0..2 列，四象限都应绘制到锚点填充
+        SpreadsheetDocument.Sheet merged = new SpreadsheetDocument.Sheet();
+        merged.rowHeights = new float[] {30, 30, 30, 30};
+        merged.columnWidths = new float[] {80, 80, 80, 80};
+        merged.frozenRows = 1; merged.frozenColumns = 1;
+        merged.cells.add(cell(0, 0, "", 0));
+        SpreadsheetDocument.CellRange range = new SpreadsheetDocument.CellRange();
+        range.endRow = 2; range.endColumn = 2;
+        merged.merges.add(range);
+        renderer.setSheet(merged, styles);
+        bitmap = render(renderer, viewport);
+        try {
+            assertColor(bitmap, 82, 35, Color.RED, 0, "Cross-boundary merge painted in the corner quadrant");
+            assertColor(bitmap, 130, 35, Color.RED, 0, "Cross-boundary merge painted in the frozen row quadrant");
+            assertColor(bitmap, 82, 60, Color.RED, 0, "Cross-boundary merge painted in the frozen column quadrant");
+            assertColor(bitmap, 130, 60, Color.RED, 0, "Cross-boundary merge painted in the scrolling quadrant");
+        } finally { bitmap.recycle(); }
+
+        // 视口占比保护：视口高度 35 → 可用正文高 15，冻结区 30 > 15*0.75，行冻结降级而列冻结保留
+        RectF shortViewport = new RectF(60, 40, 260, 75);
+        SheetRenderer.FreezePlan degraded = SheetRenderer.computePlan(merged, renderer.layout.columns,
+            renderer.layout.rows, renderer.width, renderer.height, shortViewport);
+        check(degraded.effectiveRows == 0 && degraded.effectiveColumns == 1,
+            "Frozen rows degrade independently when they exceed 75% of the available body height");
+        check(degraded.frozenDataHeight == 0 && degraded.frozenDataWidth == 80,
+            "Degraded axis reports zero frozen size while the other axis is unchanged");
+        check(SheetRenderer.quadrants(degraded).size() == 2,
+            "Degraded plan only keeps the still-frozen axis quadrants");
+        bitmap = render(renderer, shortViewport);
+        bitmap.recycle();
+
+        // 验证 computeCurrentPlan 不受上一帧缓存 viewport 影响，且大表跨桶合并仅绘制可见桶后仍完整显示
+        SheetRenderer.FreezePlan freshPlan = renderer.computeCurrentPlan(new RectF(60, 40, 260, 200));
+        check(freshPlan.effectiveRows == 1 && freshPlan.effectiveColumns == 1,
+            "computeCurrentPlan recomputes from the given viewport instead of reusing stale cached plan");
+        SpreadsheetDocument.Sheet tallMerged = new SpreadsheetDocument.Sheet();
+        tallMerged.rowHeights = new float[80];
+        java.util.Arrays.fill(tallMerged.rowHeights, 20);
+        tallMerged.columnWidths = new float[] {80, 80};
+        tallMerged.frozenRows = 1;
+        tallMerged.cells.add(cell(60, 1, "", 0));
+        SpreadsheetDocument.CellRange spanRange = new SpreadsheetDocument.CellRange();
+        spanRange.startRow = 60; spanRange.endRow = 70;
+        spanRange.startColumn = 1; spanRange.endColumn = 1;
+        tallMerged.merges.add(spanRange);
+        renderer.setSheet(tallMerged, styles);
+        bitmap = render(renderer, new RectF(0, 1300, 200, 1460));
+        try {
+            assertColor(bitmap, 130, 80, Color.RED, 0, "Multi-bucket merge overlapping scrolled visible rows still renders");
+        } finally { bitmap.recycle(); }
+    }
+
+    /** 在给定坐标附近的小邻域内查找目标颜色（容忍抗锯齿与 1px 描边落点） */
+    private static boolean hasColorNear(Bitmap bitmap, int x, int y, int expected, int tolerance) {
+        for (int dy = -2; dy <= 2; dy++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                int px = x + dx, py = y + dy;
+                if (px < 0 || py < 0 || px >= bitmap.getWidth() || py >= bitmap.getHeight()) continue;
+                int actual = bitmap.getPixel(px, py);
+                if (Math.abs(Color.red(actual) - Color.red(expected)) <= tolerance
+                    && Math.abs(Color.green(actual) - Color.green(expected)) <= tolerance
+                    && Math.abs(Color.blue(actual) - Color.blue(expected)) <= tolerance) return true;
+            }
+        }
+        return false;
     }
 
     private static SpreadsheetDocument.Cell cell(int row, int column, String text, int style) {

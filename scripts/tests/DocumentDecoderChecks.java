@@ -167,6 +167,22 @@ public final class DocumentDecoderChecks {
         reject(json.replace("[28,0,36]", "[-1,0,36]"), "Invalid core display model", "negative dimension");
         reject(json.replace("\"endColumn\":2", "\"endColumn\":3"), "Invalid core display model", "out of range merge");
         reject(json.replace("\"sheets\":[{", "\"sheets\":[],\"extra\":[{"), "Invalid core display model", "XLSX without sheets");
+
+        // 冻结窗格字段：缺省为 0、正常解码、负数/非整数拒绝、超维度钳位
+        check(sheet.frozenRows == 0 && sheet.frozenColumns == 0, "frozen fields default to 0");
+        OfficeDocument frozenDoc = DocumentDecoder.decode(
+            json.replace("\"merges\":[", "\"frozenRows\":2,\"frozenColumns\":1,\"merges\":["));
+        SpreadsheetDocument.Sheet frozen = frozenDoc.sheets.get(0);
+        check(frozen.frozenRows == 2 && frozen.frozenColumns == 1, "frozen rows/columns decoded");
+        OfficeDocument clamped = DocumentDecoder.decode(
+            json.replace("\"merges\":[", "\"frozenRows\":9,\"frozenColumns\":9,\"merges\":["));
+        SpreadsheetDocument.Sheet clampedSheet = clamped.sheets.get(0);
+        check(clampedSheet.frozenRows == 3 && clampedSheet.frozenColumns == 3,
+            "frozen values clamp to sheet dimensions");
+        reject(json.replace("\"merges\":[", "\"frozenRows\":-1,\"merges\":["),
+            "Invalid core display model", "negative frozen rows");
+        reject(json.replace("\"merges\":[", "\"frozenColumns\":0.5,\"merges\":["),
+            "Invalid core display model", "fractional frozen columns");
     }
 
     private static void checkPptxAndDocxWithOmittedFields() throws Exception {

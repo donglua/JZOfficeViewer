@@ -297,6 +297,8 @@ final class DocumentDecoder {
                 case "name": sheet.name = c.nextString(); raw.hasName = true; break;
                 case "rowHeights": sheet.rowHeights = dimensions(c, 10000); raw.hasRows = true; break;
                 case "columnWidths": sheet.columnWidths = dimensions(c, 256); raw.hasCols = true; break;
+                case "frozenRows": sheet.frozenRows = nonNegativeInt(c.nextDouble(), "frozenRows"); break;
+                case "frozenColumns": sheet.frozenColumns = nonNegativeInt(c.nextDouble(), "frozenColumns"); break;
                 case "cells":
                     c.beginArray();
                     while (c.hasNext()) {
@@ -483,6 +485,9 @@ final class DocumentDecoder {
             }
         }
         if (sheet.geometry != null) validateGeometry(sheet);
+        // 冻结行列数按表维度钳位，越界输入退化为整表冻结而不是报错
+        sheet.frozenRows = Math.min(sheet.frozenRows, rowLimit);
+        sheet.frozenColumns = Math.min(sheet.frozenColumns, colLimit);
         return sheet;
     }
 

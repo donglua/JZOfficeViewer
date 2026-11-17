@@ -940,10 +940,29 @@ public final class OfficePreviewView extends View {
         settleZoom();
         scroller.forceFinished(true);
         float s = scale();
-        float targetX = targetRect.centerX() * s + left() - getWidth() / 2f;
-        float targetY = targetRect.centerY() * s + top() - getHeight() / 2f;
-        int clampX = Math.max(0, Math.min(maxX(), Math.round(targetX)));
-        int clampY = Math.max(0, Math.min(maxY(), Math.round(targetY)));
+        SheetRenderer.FreezePlan plan = isSpreadsheet() && sheetRenderer.layout != null
+            ? sheetRenderer.computeCurrentPlan(new RectF(offsetX / s, offsetY / s,
+                (offsetX + getWidth()) / s, (offsetY + getHeight()) / s))
+            : null;
+        int clampX, clampY;
+        if (plan != null && plan.hasFrozen()) {
+            // 命中冻结侧时该轴保持当前滚动位置；否则把目标居中对齐到扣除冻结区后的可滚动视口
+            boolean inFrozenColumn = plan.effectiveColumns > 0
+                && targetRect.centerX() < SheetRenderer.HEADER_WIDTH + plan.frozenDataWidth;
+            boolean inFrozenRow = plan.effectiveRows > 0
+                && targetRect.centerY() < SheetRenderer.HEADER_HEIGHT + plan.frozenDataHeight;
+            float centerX = ((SheetRenderer.HEADER_WIDTH + plan.frozenDataWidth) * s + getWidth()) / 2f;
+            float centerY = ((SheetRenderer.HEADER_HEIGHT + plan.frozenDataHeight) * s + getHeight()) / 2f;
+            clampX = inFrozenColumn
+                ? Math.round(offsetX)
+                : Math.max(0, Math.min(maxX(), Math.round(targetRect.centerX() * s - centerX)));
+            clampY = inFrozenRow
+                ? Math.round(offsetY)
+                : Math.max(0, Math.min(maxY(), Math.round(targetRect.centerY() * s - centerY)));
+        } else {
+            clampX = Math.max(0, Math.min(maxX(), Math.round(targetRect.centerX() * s + left() - getWidth() / 2f)));
+            clampY = Math.max(0, Math.min(maxY(), Math.round(targetRect.centerY() * s + top() - getHeight() / 2f)));
+        }
         int dx = clampX - Math.round(offsetX);
         int dy = clampY - Math.round(offsetY);
         if (dx != 0 || dy != 0) {
@@ -1088,12 +1107,16 @@ public final class OfficePreviewView extends View {
         highlightStrokePaint.setStrokeWidth(1.5f / scale());
 
         boolean isSheet = isSpreadsheet();
+        SheetRenderer.FreezePlan plan = null;
         if (isSheet) {
             float bodyLeft = Math.max(SheetRenderer.HEADER_WIDTH, visibleLeft + SheetRenderer.HEADER_WIDTH);
             float bodyTop = Math.max(SheetRenderer.HEADER_HEIGHT, visibleTop + SheetRenderer.HEADER_HEIGHT);
             float bodyRight = Math.min(sheetRenderer.width, visibleRight);
             float bodyBottom = Math.min(sheetRenderer.height, visibleBottom);
             if (bodyRight <= bodyLeft || bodyBottom <= bodyTop) return;
+            plan = sheetRenderer.layout != null
+                ? sheetRenderer.currentPlan(new RectF(visibleLeft, visibleTop, visibleRight, visibleBottom))
+                : null;
             canvas.save();
             canvas.clipRect(bodyLeft, bodyTop, bodyRight, bodyBottom);
         }
@@ -1121,20 +1144,51 @@ public final class OfficePreviewView extends View {
                 List<RectF> rects = computeHighlightRects(match);
                 for (int r = 0; r < rects.size(); r++) {
                     RectF rect = rects.get(r);
-                    if (isCurrent) {
-                        highlightPaint.setColor(0xbfFFA000);
-                        canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
-                        canvas.drawRoundRect(rect, 2f, 2f, highlightStrokePaint);
-                    } else {
-                        highlightPaint.setColor(0x73FFEB3B);
-                        canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
+                    if (plan != null && plan.hasFrozen()) {
+                        // 冻结窗格下按象限裁剪：滚动区高亮绝不覆盖冻结区，冻结区高亮随未冻结轴滚动
+                        drawHighlightByQuadrant(canvas, rect, plan, isCurrent);
+                        continue;
                     }
+                    drawHighlightRect(canvas, rect, isCurrent);
                 }
             }
         } finally {
             if (isSheet) {
                 canvas.restore();
             }
+        }
+    }
+
+    /** 单个检索高亮矩形，选定当前命中配色 */
+    private void drawHighlightRect(Canvas canvas, RectF rect, boolean isCurrent) {
+        if (isCurrent) {
+            highlightPaint.setColor(0xbfFFA000);
+            canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
+            canvas.drawRoundRect(rect, 2f, 2f, highlightStrokePaint);
+        } else {
+            highlightPaint.setColor(0x73FFEB3B);
+            canvas.drawRoundRect(rect, 2f, 2f, highlightPaint);
+        }
+    }
+
+    /**
+     * 把文档坐标下的高亮矩形按冻结象限逐个平移并裁剪绘制。
+     * 交叉角锁定双轴；冻结行/列只随未冻结轴滚动；滚动区随双轴滚动且严格裁剪在冻结区之外。
+     */
+    private void drawHighlightByQuadrant(Canvas canvas, RectF rect, SheetRenderer.FreezePlan plan, boolean isCurrent) {
+        List<SheetRenderer.Quadrant> quadrants = SheetRenderer.quadrants(plan);
+        RectF shifted = new RectF();
+        for (int q = 0; q < quadrants.size(); q++) {
+            SheetRenderer.Quadrant quadrant = quadrants.get(q);
+            if (quadrant.isEmpty()) continue;
+            shifted.set(rect);
+            shifted.offset(quadrant.translateX, quadrant.translateY);
+            if (shifted.right <= quadrant.clipLeft || shifted.left >= quadrant.clipRight
+                || shifted.bottom <= quadrant.clipTop || shifted.top >= quadrant.clipBottom) continue;
+            int save = canvas.save();
+            canvas.clipRect(quadrant.clipLeft, quadrant.clipTop, quadrant.clipRight, quadrant.clipBottom);
+            drawHighlightRect(canvas, shifted, isCurrent);
+            canvas.restoreToCount(save);
         }
     }
 
