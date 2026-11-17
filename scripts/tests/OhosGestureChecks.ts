@@ -191,12 +191,22 @@ function checkDragSuppressesScroll(path: string, label: string): void {
   if (docx) {
     expect(docx.includes('enableScrollInteraction(!this.isSelectionDragging)'),
       `${label} DOCX 拖选期间必须通过 enableScrollInteraction 关闭列表滚动`);
+    const panIdx = docx.indexOf('PanGesture({ direction: PanDirection.Horizontal })');
+    expect(panIdx !== -1, `${label} 未找到 DOCX 横向 PanGesture`);
+    if (panIdx !== -1) {
+      expect(docx.slice(panIdx).includes('this.isSelectionDragging'),
+        `${label} DOCX 拖选期间横向 PanGesture 必须让步`);
+    }
+    expect(docx.includes('GestureMode.Exclusive'),
+      `${label} DOCX 单击与双击必须通过 GestureMode.Exclusive 互斥`);
   }
   const pptx = structSource(source, 'PptxSlidesView');
   expect(pptx !== null, `${label} 未找到 PptxSlidesView`);
   if (pptx) {
     expect(pptx.includes('this.isSelectionDragging'),
       `${label} PPTX 拖选期间必须屏蔽 PanGesture`);
+    expect(pptx.includes('GestureMode.Exclusive'),
+      `${label} PPTX 单击与双击必须通过 GestureMode.Exclusive 互斥`);
   }
 }
 

@@ -2347,23 +2347,27 @@ struct DocxFlowView {
       .gesture(
         GestureGroup(
           GestureMode.Parallel,
-          TapGesture({ count: 2, distanceThreshold: 3 })
-            .onAction((event: GestureEvent) => {
-              this.isGesturing = false;
-              const focusX = event.fingerList && event.fingerList.length > 0
-                ? event.fingerList[0].localX
-                : (this.viewportWidth / 2);
-              const focusY = event.fingerList && event.fingerList.length > 0
-                ? event.fingerList[0].localY
-                : (this.viewportHeight / 2);
-              this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
-              this.syncSettledZoomPad();
-            }),
-          // 单击：存在选区时清除选区并消费本次点击
-          TapGesture({ count: 1 })
-            .onAction((_event: GestureEvent) => {
-              this.handleSingleTap();
-            }),
+          // 双击缩放优先于单击清除选区，避免双击第二次点击误清选区
+          GestureGroup(
+            GestureMode.Exclusive,
+            TapGesture({ count: 2, distanceThreshold: 3 })
+              .onAction((event: GestureEvent) => {
+                this.isGesturing = false;
+                const focusX = event.fingerList && event.fingerList.length > 0
+                  ? event.fingerList[0].localX
+                  : (this.viewportWidth / 2);
+                const focusY = event.fingerList && event.fingerList.length > 0
+                  ? event.fingerList[0].localY
+                  : (this.viewportHeight / 2);
+                this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
+                this.syncSettledZoomPad();
+              }),
+            // 单击：存在选区时清除选区并消费本次点击
+            TapGesture({ count: 1 })
+              .onAction((_event: GestureEvent) => {
+                this.handleSingleTap();
+              })
+          ),
           // 长按 400ms 选词，之后不抬手即可滑动扩选
           LongPressGesture({ duration: SELECTION_LONG_PRESS_MS, repeat: false })
             .onAction((event: GestureEvent) => {
@@ -2381,6 +2385,11 @@ struct DocxFlowView {
             }),
           PinchGesture({ fingers: 2 })
             .onActionStart(() => {
+              if (this.dragMode !== 0) {
+                this.dragMode = 0;
+                this.isSelectionDragging = false;
+                this.stopEdgeScroll();
+              }
               this.isGesturing = true;
               this.pinchStartZoom = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
               this.pinchStartOffsetX = this.offsetX;
@@ -2450,10 +2459,12 @@ struct DocxFlowView {
             }),
           PanGesture({ direction: PanDirection.Horizontal })
             .onActionStart(() => {
+              if (this.isSelectionDragging) return;
               this.isGesturing = true;
               this.panStartX = this.offsetX;
             })
             .onActionUpdate((event: GestureEvent) => {
+              if (this.isSelectionDragging) return;
               if (this.zoom > 1.05) {
                 this.offsetX = this.panStartX + event.offsetX;
                 this.clampOffsets();
@@ -5088,23 +5099,27 @@ struct PptxSlidesView {
         .gesture(
           GestureGroup(
             GestureMode.Parallel,
-            TapGesture({ count: 2, distanceThreshold: 3 })
-              .onAction((event: GestureEvent) => {
-                this.stopFling();
-                const focusX = event.fingerList && event.fingerList.length > 0
-                  ? event.fingerList[0].localX
-                  : (this.canvasWidth / 2);
-                const focusY = event.fingerList && event.fingerList.length > 0
-                  ? event.fingerList[0].localY
-                  : (this.canvasHeight / 2);
-                const targetZoom = this.zoom > 1.1 ? 1.0 : 2.0;
-                this.startZoomTween(targetZoom, focusX, focusY, RenderUtils.ZOOM_ANIMATION_MS);
-              }),
-            // 单击：存在选区时清除选区并消费本次点击
-            TapGesture({ count: 1 })
-              .onAction((_event: GestureEvent) => {
-                this.handleSingleTap();
-              }),
+            // 双击缩放优先于单击清除选区，避免双击第二次点击误清选区
+            GestureGroup(
+              GestureMode.Exclusive,
+              TapGesture({ count: 2, distanceThreshold: 3 })
+                .onAction((event: GestureEvent) => {
+                  this.stopFling();
+                  const focusX = event.fingerList && event.fingerList.length > 0
+                    ? event.fingerList[0].localX
+                    : (this.canvasWidth / 2);
+                  const focusY = event.fingerList && event.fingerList.length > 0
+                    ? event.fingerList[0].localY
+                    : (this.canvasHeight / 2);
+                  const targetZoom = this.zoom > 1.1 ? 1.0 : 2.0;
+                  this.startZoomTween(targetZoom, focusX, focusY, RenderUtils.ZOOM_ANIMATION_MS);
+                }),
+              // 单击：存在选区时清除选区并消费本次点击
+              TapGesture({ count: 1 })
+                .onAction((_event: GestureEvent) => {
+                  this.handleSingleTap();
+                })
+            ),
             // 长按 400ms 选词，之后不抬手即可滑动扩选（捏合过程中跳过）
             LongPressGesture({ duration: SELECTION_LONG_PRESS_MS, repeat: false })
               .onAction((event: GestureEvent) => {
@@ -5122,10 +5137,16 @@ struct PptxSlidesView {
               }),
             PinchGesture({ fingers: 2 })
               .onActionStart(() => {
+                if (this.dragMode !== 0) {
+                  this.dragMode = 0;
+                  this.isSelectionDragging = false;
+                  this.stopEdgeScroll();
+                }
                 this.stopFling();
                 this.stopZoomTween();
                 this.isPinching = true;
                 this.pinchStartZoom = this.clampZoom(this.zoom);
+                this.bubbleShown = false;
               })
               .onActionUpdate((event: GestureEvent) => {
                 const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.canvasWidth / 2);
