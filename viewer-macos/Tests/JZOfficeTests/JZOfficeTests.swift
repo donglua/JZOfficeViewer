@@ -1660,6 +1660,63 @@ struct JZOfficeTests {
         #expect(frozenColPieces[0].clip.minX == farPlan.frozenOriginX)
     }
 
+    @Test("PPTX TEXT 元素在紧缩文本框高度下允许纵向溢出不裁切字形，固定 RECT 仍按框裁剪")
+    func textElementDoesNotClipOverflowingLineBox() throws {
+        let jsonBase: (String) -> Data = { kind in
+            """
+            {
+              "type": "\(kind)",
+              "x": 0,
+              "y": 0,
+              "width": 200,
+              "height": 15.45,
+              "padding": 0,
+              "textWrap": true,
+              "verticalAlignment": "TOP",
+              "paragraphs": [{
+                "alignment": 0,
+                "lineSpacingRule": "AUTO",
+                "lineSpacing": 1.55,
+                "runs": [{ "text": "难点：选股指标迁移ygp", "size": 12.75, "color": 4278190080 }]
+              }]
+            }
+            """.data(using: .utf8)!
+        }
+
+        let textEl = try JSONDecoder().decode(OfficeElement.self, from: jsonBase("TEXT"))
+        let rectEl = try JSONDecoder().decode(OfficeElement.self, from: jsonBase("RECT"))
+
+        func hasDarkPixelBelow(_ el: OfficeElement, yStart: Int) -> Bool {
+            let w = 220, h = 40
+            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+            var bytes = [UInt8](repeating: 255, count: w * h * 4)
+            let ctx = CGContext(
+                data: &bytes,
+                width: w,
+                height: h,
+                bitsPerComponent: 8,
+                bytesPerRow: w * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            ctx.translateBy(x: 0, y: CGFloat(h))
+            ctx.scaleBy(x: 1, y: -1)
+            CGElementDrawer.drawElement(in: ctx, element: el, images: [:])
+            for y in yStart..<h {
+                for x in 0..<w {
+                    let idx = (y * w + x) * 4
+                    if bytes[idx] < 240 || bytes[idx + 1] < 240 || bytes[idx + 2] < 240 {
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+
+        #expect(hasDarkPixelBelow(textEl, yStart: 16))
+        #expect(!hasDarkPixelBelow(rectEl, yStart: 17))
+    }
+
     private func createTestCGImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         var bytes = [UInt8](repeating: 128, count: width * height * 4)

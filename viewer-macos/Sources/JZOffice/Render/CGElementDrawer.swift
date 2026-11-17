@@ -576,7 +576,8 @@ public enum CGElementDrawer {
         }
 
         ctx.saveGState()
-        if wrap && element.width > 0 && element.height > 0 {
+        // TEXT 元素（如 PPTX 文本框）默认按 OOXML overflow 语义不沿文本框高度硬裁剪，避免 spAutoFit 或字体替换导致字形底端被截断
+        if element.type != .text && wrap && element.width > 0 && element.height > 0 {
             ctx.clip(to: CGRect(x: 0, y: 0, width: element.width, height: element.height))
         }
         drawLaidOutLines(in: ctx, lines: lines, originX: padding, originY: offsetY, availableWidth: availW)
