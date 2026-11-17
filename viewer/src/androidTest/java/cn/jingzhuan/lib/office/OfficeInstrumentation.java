@@ -23,13 +23,14 @@ public final class OfficeInstrumentation extends Instrumentation {
     private final StringBuilder results = new StringBuilder();
     private boolean layoutOnly, limitsOnly, imagesOnly, xlsxOnly, demoOnly, pptxOnly, pathsOnly, tablesOnly, backgroundsOnly;
     private boolean demoSamplesOnly, sheetLayoutOnly, pptxGeometryOnly, pptxLayoutOnly, imageCacheOnly;
-    private boolean compatibilityOnly, xlsxTextOnly, accessibilityOnly;
+    private boolean compatibilityOnly, xlsxTextOnly, accessibilityOnly, selectionOnly;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         compatibilityOnly = arguments != null && "compatibility".equals(arguments.getString("suite"));
         xlsxTextOnly = arguments != null && "xlsx-text".equals(arguments.getString("suite"));
         accessibilityOnly = arguments != null && "accessibility".equals(arguments.getString("suite"));
+        selectionOnly = arguments != null && "selection".equals(arguments.getString("suite"));
         layoutOnly = arguments != null && "layout".equals(arguments.getString("suite"));
         limitsOnly = arguments != null && "limits".equals(arguments.getString("suite"));
         imagesOnly = arguments != null && "images".equals(arguments.getString("suite"));
@@ -110,7 +111,7 @@ public final class OfficeInstrumentation extends Instrumentation {
                 finish(Activity.RESULT_OK, output);
                 return;
             }
-            if (!layoutOnly && !imagesOnly && !imageCacheOnly && !xlsxOnly && !xlsxTextOnly && !pptxOnly && !pptxLayoutOnly && !compatibilityOnly && !accessibilityOnly) {
+            if (!layoutOnly && !imagesOnly && !imageCacheOnly && !xlsxOnly && !xlsxTextOnly && !pptxOnly && !pptxLayoutOnly && !compatibilityOnly && !accessibilityOnly && !selectionOnly) {
                 results.append(PackageOpeningChecks.run(getTargetContext()));
                 results.append(PackageLimitChecks.run(getTargetContext()));
                 results.append(OfficeMetadataChecks.run(getTargetContext()));
@@ -143,6 +144,13 @@ public final class OfficeInstrumentation extends Instrumentation {
                 results.append(AccessibilityChecks.run(this, activity));
                 runOnMainSync(() -> activity.finish());
                 output.putString("stream", "\n" + results + "ALL ACCESSIBILITY CHECKS PASSED\n");
+                finish(Activity.RESULT_OK, output);
+                return;
+            }
+            if (selectionOnly) {
+                results.append(TextSelectionChecks.run(this, activity));
+                runOnMainSync(() -> activity.finish());
+                output.putString("stream", "\n" + results + "ALL SELECTION CHECKS PASSED\n");
                 finish(Activity.RESULT_OK, output);
                 return;
             }
@@ -225,6 +233,8 @@ public final class OfficeInstrumentation extends Instrumentation {
             runOnMainSync(() -> activity.preview.setZoom(2));
             check(activity.preview.getZoom() == 2, "Zoom changes scale");
             capture("pptx-zoom", 1080, 1600);
+            // 选区契约纳入默认全量序列，任何格式的选区 API 退化都会在这里暴露
+            results.append(TextSelectionChecks.run(this, activity));
             expectError("broken");
             expectError("missing");
             rapidReplacement();
