@@ -32,6 +32,7 @@ final class TextSelectionChecks {
         StringBuilder results = new StringBuilder();
         OfficePreviewView view = activity.preview;
         docx(instrumentation, activity, view);
+        multilineWrapping(instrumentation);
         longPressAndDrag(instrumentation, activity, view);
         pptx(instrumentation, activity, view);
         spreadsheet(instrumentation, activity, view);
@@ -94,6 +95,48 @@ final class TextSelectionChecks {
 
         // 6. 无障碍动作
         accessibilityActions(instrumentation, activity, view);
+    }
+
+    /** 多行自动折行段落：验证非末行行尾高亮宽度不退化，且行中点命中不短路到行尾 */
+    private static void multilineWrapping(OfficeInstrumentation instrumentation) {
+        OfficeDocument doc = new OfficeDocument();
+        doc.kind = OfficeDocument.Kind.DOCX;
+        doc.width = 240f;
+        doc.marginLeft = 20f;
+        doc.marginRight = 20f;
+        OfficeDocument.Element element = new OfficeDocument.Element();
+        element.type = OfficeDocument.Type.TEXT;
+        OfficeDocument.Paragraph para = new OfficeDocument.Paragraph();
+        OfficeDocument.Run run = new OfficeDocument.Run();
+        run.text = "Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda";
+        run.size = 14f;
+        para.runs.add(run);
+        element.paragraphs.add(para);
+        doc.blocks.add(element);
+
+        OfficeRenderer renderer = new OfficeRenderer();
+        renderer.layout(doc);
+        TextSelectionModel.DocumentTextLayout layout = AndroidTextLayoutBuilder.build(doc, renderer);
+        instrumentation.check(layout.blockCount() == 1, "Multiline fixture builds single block");
+        TextSelectionModel.TextBlockLayout block = layout.blocks().get(0);
+        instrumentation.check(block.lines().size() >= 2,
+            "Multiline paragraph wraps into multiple lines: " + block.lines().size());
+
+        TextSelectionModel.TextSelection all = layout.allTextRange();
+        List<TextSelectionModel.Rect> rects = layout.selectionRects(all);
+        instrumentation.check(rects.size() >= 2, "Multiline select-all yields multiple highlight rects");
+        TextSelectionModel.Rect firstLineRect = rects.get(0);
+        instrumentation.check(firstLineRect.width() > 40f,
+            "First line highlight width must span wrapped line instead of collapsing: " + firstLineRect.width());
+
+        TextSelectionModel.LineMetrics firstLine = block.lines().get(0);
+        float midX = block.bounds().left + (firstLine.left() + firstLine.right()) * 0.5f;
+        float midY = block.bounds().top + (firstLine.top() + firstLine.bottom()) * 0.5f;
+        TextSelectionModel.TextPosition midHit = layout.hitTest(midX, midY);
+        instrumentation.check(midHit != null
+                && midHit.charIndex > firstLine.charStart()
+                && midHit.charIndex < firstLine.charEnd(),
+            "Middle hit on wrapped first line does not short-circuit to lineEnd: " + midHit);
     }
 
     /** 无障碍动作 ID 与文案：全选文本 / 复制选中文本 / 清除选区 */

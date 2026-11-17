@@ -404,11 +404,20 @@ final class AndroidTextLayoutBuilder {
         /**
          * 返回相对 {@link #lineX()} 的 X 偏移（未加 {@code lineX()}）。
          * 空段落占位行恒返回 {@code 0}。
+         *
+         * <p>多行 {@link StaticLayout} 中，第 {@code i} 行的 {@code getLineEnd(i)} 等于下一行的
+         * {@code getLineStart(i + 1)}；若直接调用 {@code getPrimaryHorizontal(lineEnd)}，系统会按
+         * 下一行行首解析并返回 {@code 0} 而非本行行尾。此处对跨行/显式换行末端改用行边界。
          */
         @Override
         public float horizontalOffset(int localCharIndex) {
             if (rawLen == 0) return 0f;
-            int layoutIndex = clampToLine(localCharIndex - paraBaseOffset);
+            int lineStart = layout.getLineStart(lineIndex);
+            int lineEnd = Math.min(layout.getLineEnd(lineIndex), rawLen);
+            int layoutIndex = Math.max(lineStart, Math.min(lineEnd, localCharIndex - paraBaseOffset));
+            if (isLineTrailingBoundary(lineStart, lineEnd, layoutIndex)) {
+                return trailingEdgeX() - layoutLineLeft();
+            }
             return layout.getPrimaryHorizontal(layoutIndex) - layoutLineLeft();
         }
 
@@ -420,13 +429,15 @@ final class AndroidTextLayoutBuilder {
         public int charIndexForX(float relativeX) {
             if (rawLen == 0) return paraBaseOffset;
             int lineStart = layout.getLineStart(lineIndex);
-            int lineEnd = layout.getLineEnd(lineIndex);
+            int lineEnd = Math.min(layout.getLineEnd(lineIndex), rawLen);
             float layoutX = relativeX + layoutLineLeft();
+            float leading = layout.getPrimaryHorizontal(lineStart);
+            float trailing = trailingEdgeX();
+            float minX = Math.min(layoutLineLeft(), Math.min(leading, trailing));
+            float maxX = Math.max(layoutLineRight(), Math.max(leading, trailing));
             // 行首/行尾外侧直接归到端点，避免 getOffsetForHorizontal 在缩进区返回首字符
-            if (layoutX <= Math.min(layoutLineLeft(), layout.getPrimaryHorizontal(lineStart))) {
-                return charStart;
-            }
-            if (layoutX >= layout.getPrimaryHorizontal(lineEnd)) return charEnd;
+            if (layoutX <= minX) return layout.getParagraphDirection(lineIndex) < 0 ? charEnd : charStart;
+            if (layoutX >= maxX) return layout.getParagraphDirection(lineIndex) < 0 ? charStart : charEnd;
             int offset = layout.getOffsetForHorizontal(lineIndex, layoutX);
             int blockIndex = paraBaseOffset + Math.max(lineStart, Math.min(lineEnd, offset));
             return Math.max(charStart, Math.min(charEnd, blockIndex));
@@ -437,11 +448,22 @@ final class AndroidTextLayoutBuilder {
             return layout.getLineLeft(lineIndex);
         }
 
-        /** 把段内排版索引夹紧到本行的排版范围，避免跨行取值。 */
-        private int clampToLine(int layoutIndex) {
-            int lineStart = layout.getLineStart(lineIndex);
-            int lineEnd = Math.min(layout.getLineEnd(lineIndex), rawLen);
-            return Math.max(lineStart, Math.min(lineEnd, layoutIndex));
+        private float layoutLineRight() {
+            return layout.getLineRight(lineIndex);
+        }
+
+        /** 行末尾偏移是否会被 StaticLayout 误归到下一行行首或跳过结尾换行符 */
+        private boolean isLineTrailingBoundary(int lineStart, int lineEnd, int layoutIndex) {
+            if (layoutIndex < lineEnd) return false;
+            if (lineIndex < layout.getLineCount() - 1) return true;
+            if (layout.getLineForOffset(layoutIndex) != lineIndex) return true;
+            return layoutIndex > lineStart && layout.getText().charAt(layoutIndex - 1) == '\n';
+        }
+
+        /** 按段落书写方向返回当前行的真实末尾 X（StaticLayout 坐标系） */
+        private float trailingEdgeX() {
+            return layout.getParagraphDirection(lineIndex) < 0
+                ? layoutLineLeft() : layoutLineRight();
         }
     }
 }
