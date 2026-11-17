@@ -1325,33 +1325,15 @@ struct DocxFlowView {
       plans.set(index, plan);
       for (let k = 0; k < parts.length; k++) {
         blockToItem.set(base + k, index);
+        blocks.push(makeContainerBlock(base + k, 0, parts[k], []));
       }
       base += parts.length;
-    }
-    // 全局轻量索引：只有块编号与纯文本，行几何在各 ListItem 首次需要时懒测量
-    for (const plan of plans.values()) {
-      const parts = this.collectPlanTextParts(plan);
-      for (let k = 0; k < parts.length; k++) {
-        blocks.push(makeContainerBlock(plan.blockBase + k, 0, parts[k], []));
-      }
     }
     this.itemTextPlans = plans;
     this.blockToItem = blockToItem;
     this.textLayout = new DocumentTextLayout(blocks);
     this.measuredItemLayouts.clear();
     this.measuredContentWidth = this.getContentWidth();
-  }
-
-  /** 重新提取某个渲染单元的纯文本（与 rebuildTextIndex 中的拆分规则一致） */
-  private collectPlanTextParts(plan: DocxItemTextPlan): string[] {
-    if (plan.role === DOCX_ROLE_GROUP) {
-      const group = this.wrapGroups.get(plan.itemIndex);
-      if (group) {
-        return [...docxGroupFlowTextParts(group), ...docxGroupFloatTextParts(group)];
-      }
-      return [];
-    }
-    return CanvasElementDrawer.extractElementFullText(plan.element);
   }
 
   /** 行几何缓存是否已因内容宽度变化而失效 */
@@ -3328,16 +3310,13 @@ struct DocxTextBlockView {
       el.verticalAlignment,
       el.textWrap !== false
     );
-    // 行矩形的 top/bottom 已包含段落 before 与累计行高，最后一段的 after 与底 padding 需补上
-    let contentBottom = 0;
-    for (const line of layout.lines) {
-      if (line.bottom > contentBottom) {
-        contentBottom = line.bottom;
-      }
-    }
-    let total = contentBottom + padding;
-    const lastPara = el.paragraphs[el.paragraphs.length - 1];
-    total += Math.max(0, lastPara.after || 0);
+    const contentHeight = CanvasElementDrawer.measureParagraphsHeight(
+      ctx,
+      el.paragraphs,
+      availW,
+      el.textWrap !== false
+    );
+    const total = contentHeight + padding * 2;
     const next = Math.max(1, Math.ceil(total));
     if (Math.abs(next - this.measuredHeight) > 0.5) {
       this.measuredHeight = next;
@@ -3638,17 +3617,10 @@ struct DocxTableView {
       }
     }
 
-    // 选区高亮叠加在表格文字之上，保证与检索高亮可区分
+    // 选区高亮叠加在表格文字之上，保证与检索高亮可区分（drawTable 已直接在局部坐标绘制）
     const selRects = this.selectionRects();
     if (selRects.length > 0) {
-      ctx.save();
-      ctx.transform(
-        this.element.transform[0], this.element.transform[1],
-        this.element.transform[2], this.element.transform[3],
-        this.element.transform[4], this.element.transform[5]
-      );
       CanvasElementDrawer.drawSelectionHighlights(ctx, selRects);
-      ctx.restore();
     }
   }
 
