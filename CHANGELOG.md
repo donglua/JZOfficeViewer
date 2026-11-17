@@ -11,6 +11,16 @@
   - **检索高亮与跳转避让**：命中高亮按象限裁剪，滚动区高亮不会覆盖冻结区；跳转命中冻结行/列时该轴保持当前滚动位置，命中滚动区时才对齐到可滚动视口中心。
   - **macOS 视口修正**：`.xlsx` 分支改为传入真实滚动视口 `docVisible`，并在 `NSScrollView` 滚动时触发重绘，修正长表格滚动时连外围行列标头一起滚走的问题。
 
+- **DOCX / PPTX 正文划词选区与复制（`viewer` / `viewer-ohos`）**：
+  - **纯逻辑选区模型（双端同构）**：新增 `TextSelectionModel.java`（纯 Java 11，零 `android.*` 依赖）与 `TextSelectionModel.ts`（纯 TypeScript，零 ArkUI / `@kit.*` 依赖），语义与 macOS 端 `TextSelectionModel.swift` 保持一致：块索引 + UTF-16 码元偏移定位、锚点/焦点支持反向拖选、代理对边界夹紧、跨段落与跨块 `\n` 拼接、命中测试、分词选词、选区高亮矩形与手柄几何计算。`core/` 与 `schemaVersion` 保持 9 不变。
+  - **排版几何衔接（Android）**：新增 `AndroidTextLayoutBuilder`，把 `OfficeRenderer` 的 `StaticLayout` + `Matrix` 布局结果转换为文档文本索引，直接复用系统排版度量保证“所见即所选”，兼容多字体混排、上下标、字间距与四类对齐；表格按非空文本单元格聚合成独立块（行优先）；PPTX 远端未排版页先建纯文本轻量占位块，滚入视口后再懒补行几何，`blockIndex` 在补全前后严格稳定。
+  - **排版几何衔接（HarmonyOS）**：`CanvasElementDrawer` 新增 `buildParagraphsBlockLines` / `buildElementTextBlocks` / `extractElementFullText` / `CanvasTextLineMetrics`，行度量与既有检索高亮共用同一套坐标规则（两端对齐拉伸、字符间距、居中/右对齐偏移、段落 `before`/`after` 与元素垂直对齐）；普通文本块由 `Text/Span` 统一为 Canvas 绘制，与绕排图文块排版间距完全一致。
+  - **触屏交互**：长按默认选词并支持不松手直接滑动扩选，松手展示起止水滴手柄与浮动气泡（「复制」/「全选」），支持拖拽手柄微调（可跨越锚点反向选择）与四边自动滚动；拖拽时对触点纵向补偿避免指腹遮挡。单击空白清除选区，双击缩放与双指捏合、惯性 Fling、单指滚动均不退化。
+  - **绘制与无障碍**：选区高亮 `#551A73E8`、光标竖线 2vp 与固定物理尺寸水滴手柄；Android 通过 `onInitializeAccessibilityNodeInfo` 补充“全选文本 / 复制选中文本 / 清除选区”自定义动作，HarmonyOS 浮动气泡样式对齐 `OfficeSearchBar`。
+  - **编程控制 API（双端对齐）**：Android `OfficePreviewView` 与 HarmonyOS `OfficePreviewController` / `OfficePreviewActions` 均提供 `selectAll`、`clearSelection`、`hasSelection`、`getSelectedText`、`copySelection`；剪贴板分别经 `ClipboardManager` 与 `pasteboard.setDataSync` 同步写入。打开新文档、清空与组件销毁时同步取消自动滚动、隐藏气泡并清空选区。
+  - **支持范围**：本期覆盖 DOCX 与 PPTX 的正文段落、文本框、浮动绕排文本与内嵌表格单元格；XLSX 暂不参与自由划词（`selectAll` 返回 `false`）。
+  - **测试**：新增纯 JVM `scripts/tests/TextSelectionChecks.java`（`javac --release 11 -Xlint:all -Werror`，已接入 CI）与 Node.js `scripts/tests/TextSelectionChecks.ts`，并扩展 `OhosGestureChecks.ts` 覆盖长按与双击阈值回归；Android 端新增设备 `selection` 专项 suite。
+
 ## 0.14.0
 
 发布页面：[v0.14.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.14.0)。

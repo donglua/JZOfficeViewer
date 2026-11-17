@@ -107,6 +107,13 @@ javac --release 11 -Xlint:all -Werror -cp "$ANDROID_HOME/platforms/android-35/an
     scripts/tests/OfficeMetadataChecks.java
 java -cp "viewer/build/sheet-layout-checks:$ANDROID_HOME/platforms/android-35/android.jar" \
     cn.jingzhuan.lib.office.OfficeMetadataChecks
+
+# 4. 文本选区模型检查（纯 Java 11，零 Android 依赖）
+mkdir -p /tmp/jz-selection-checks
+javac --release 11 -Xlint:all -Werror -d /tmp/jz-selection-checks \
+    viewer/src/main/java/cn/jingzhuan/lib/office/TextSelectionModel.java \
+    scripts/tests/TextSelectionChecks.java
+java -cp /tmp/jz-selection-checks cn.jingzhuan.lib.office.TextSelectionChecks
 ```
 
 ### 4.3 Android 构建与设备 Instrumentation 测试
@@ -139,6 +146,7 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 - `pptx` / `pptx-geometry` / `backgrounds`：组合变换、折线图、渐变文字、换行对照、背景图与 Display P3 色差容差（±1）
 - `images` / `image-cache`：图片按需解码、清晰度升级、LRU 复用与 256 MiB 累计读取限制
 - `layout` / `limits`：DOCX 流式排版、页码回调、异常容器与超限拦截
+- `selection`：DOCX / PPTX 文本选区与复制；覆盖 `selectAll` 无空段占位、高亮像素比对、剪贴板往返、程序化复制保留选区、真实长按选词与拖拽扩选/手柄收窄、单击清除、单指拖拽零退化，以及 XLSX `selectAll()` 返回 `false` 且长按不产生选区
 - `accessibility`：读屏摘要、自定义动作菜单、动作执行、Fling 停稳播报与失败态摘要清理；`accessibility` 末段会尝试启用测试探针服务验证播报事件流。部分厂商 ROM（如 MIUI）禁止以 shell 启用无障碍服务，模拟器与部分受限环境则会接受设置写入但不向测试服务下发绑定，两种场景都自动 SKIP 并保持其余断言生效
 - `demo-samples` / `demo-xlsx`：需先安装 `demo-debug.apk`，验证内置综合样例加载、翻页与无障碍切表
 

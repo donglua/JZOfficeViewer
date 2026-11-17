@@ -53,6 +53,7 @@ This library targets **lightweight, offline, read-only basic preview**. It does 
 | **XLSX** | Multi-sheet switching, row / column headers, frozen panes (row / column header locking with viewport ratio protection and a freeze divider), smooth two-way scrolling and zooming, merged cells, row heights and column widths, font / fill / border / alignment / wrap text, custom indexed palette and `tint` colors, multi-section number formats (positive / negative / zero / text, percent, date, locale tag stripping), cached formula values | Formulas and macros are not executed; floating images, charts, conditional formatting, pivot tables and non-frozen free-split panes are ignored; rich text is merged into plain cell text |
 
 - **Legacy binary formats are not supported**: `.doc`, `.ppt` and `.xls` must first be converted to `.docx`, `.pptx` and `.xlsx` (renaming the extension does not work).
+- **Text selection and copy (Android / HarmonyOS NEXT)**: DOCX and PPTX body text supports long-press word selection, drag-extended selection with start / end handles, a floating "Copy" / "Select All" bubble, and the `selectAll` / `clearSelection` / `hasSelection` / `getSelectedText` / `copySelection` control API. Selection covers body paragraphs, text boxes, floating wrapped text and embedded table cells across blocks; XLSX does not take part in free-form selection.
 - **Encrypted documents, ZIP64 / split archives and editing are not supported.**
 - **Unsupported-content hints**: omitted items detected during parsing are returned via `Info.warnings`.
 
