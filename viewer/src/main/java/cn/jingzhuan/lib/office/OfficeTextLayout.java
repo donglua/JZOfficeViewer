@@ -28,6 +28,11 @@ final class OfficeTextLayout {
         int background;
         int borderTop, borderBottom, borderLeft, borderRight;
         float borderWidth;
+        /**
+         * 该段落不含 {@code " "} 空段占位符的原始字符数（{@code bullet} + {@code runs.text}）。
+         * 选区模型据此区分“真正的空段落”与 OfficeTextLayout 为保证行高插入的占位空格。
+         */
+        int rawCharCount;
     }
 
     static final class WrapObstacle {
@@ -59,6 +64,7 @@ final class OfficeTextLayout {
             block.borderRight = paragraph.borderRight;
             block.borderWidth = paragraph.borderWidth;
             block.layout = paragraph(paragraph, x, y, width, pptx, wrap, obstacles);
+            block.rawCharCount = rawParagraphText(paragraph).length();
             if (!wrap) {
                 float extra = Math.max(1, (int) width) - block.layout.getWidth();
                 block.x += paragraph.alignment == 1 ? extra / 2 : paragraph.alignment == 2 ? extra : 0;
@@ -71,6 +77,23 @@ final class OfficeTextLayout {
 
     static float measure(List<OfficeDocument.Paragraph> paragraphs, float width, boolean pptx) {
         return append(paragraphs, 0, 0, width, null, pptx, true);
+    }
+
+    /**
+     * 返回段落真实的纯文本（{@code bullet} 前缀 + 按顺序拼接各 {@code runs.text}）。
+     *
+     * <p>与 {@code paragraph(...)} 排版用的 {@link SpannableStringBuilder} 文本不同，
+     * 空段落这里返回 {@code ""}，不含保证行高用的 {@code " "} 占位符。
+     * 选区模型用它判断段落是否真正为空，避免把占位空格计入复制文本。
+     */
+    static String rawParagraphText(OfficeDocument.Paragraph paragraph) {
+        if (paragraph == null) return "";
+        StringBuilder builder = new StringBuilder();
+        if (paragraph.bullet != null) builder.append(paragraph.bullet);
+        for (OfficeDocument.Run run : paragraph.runs) {
+            if (run != null && run.text != null) builder.append(run.text);
+        }
+        return builder.toString();
     }
 
     static StaticLayout paragraph(OfficeDocument.Paragraph paragraph, float width) {

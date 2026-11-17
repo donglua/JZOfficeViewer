@@ -24,6 +24,12 @@ final class OfficeRenderer {
     static final class Element {
         OfficeDocument.Element source;
         final List<OfficeTextLayout.Block> texts = new ArrayList<>();
+        /**
+         * 表格每个非空文本单元格在 {@link #texts} 中的起止范围，每项为
+         * {@code {startTextIdx, endTextIdx}}（左闭右开），顺序与行优先遍历一致。
+         * 非表格元素为空列表；选区模型据此把单元格聚合成独立文本块。
+         */
+        final List<int[]> cellTextRanges = new ArrayList<>();
         final List<RectF> cells = new ArrayList<>();
         final List<CellImage> cellImages = new ArrayList<>();
         float x, y, width, height;
@@ -283,6 +289,7 @@ final class OfficeRenderer {
                         }
                         float vOffset = cellH > cellContentH + 10 ? Math.max(5, (cellH - cellContentH) / 2.0f) : 5;
                         float curY = y1 + vOffset;
+                        int startTextIdx = d.texts.size();
                         for (OfficeDocument.Paragraph para : cell) {
                             if (para.image != null && para.imageWidth != null && para.imageHeight != null
                                     && para.imageWidth > 0 && para.imageHeight > 0) {
@@ -303,6 +310,10 @@ final class OfficeRenderer {
                             } else {
                                 curY = OfficeTextLayout.append(Collections.singletonList(para), x1 + 5, curY, availW, d.texts, !flow);
                             }
+                        }
+                        // 只登记产生了排版块的非空单元格，保证聚合时的块顺序与 texts 一致
+                        if (d.texts.size() > startTextIdx) {
+                            d.cellTextRanges.add(new int[] {startTextIdx, d.texts.size()});
                         }
                     }
                 }
