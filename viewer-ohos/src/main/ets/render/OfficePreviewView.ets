@@ -1,10 +1,9 @@
 import { image } from '@kit.ImageKit';
 import { displaySync } from '@kit.ArkGraphics2D';
-import { LengthMetrics, LengthUnit } from '@kit.ArkUI';
 import * as model from '../core/OfficeModel';
 import { NativeCore } from '../core/NativeCore';
 import { RenderUtils } from './RenderUtils';
-import { CanvasElementDrawer, OfficeRect, WrapObstacle } from './CanvasElementDrawer';
+import { CanvasElementDrawer, CanvasTextLineMetrics, OfficeRect, WrapObstacle } from './CanvasElementDrawer';
 import {
   DocxWrapBlockInput,
   DocxWrapGroupPlan,
@@ -21,6 +20,19 @@ import {
   resolvePptxCurrentPage,
   resolvePptxVisibleRange
 } from './PptxViewport';
+import { SelectionMenuBubble, copyTextToPasteboard } from './SelectionMenuBubble';
+import {
+  DocumentTextLayout,
+  TextBlockLayout,
+  TextLineMetrics,
+  TextPosition,
+  TextRect,
+  TextSelection,
+  isSelectionEmpty,
+  makeTextPosition,
+  makeTextRect,
+  makeTextSelection
+} from './TextSelectionModel';
 
 class ArrayDataSource<T> implements IDataSource {
   private readonly items: T[];
@@ -45,6 +57,330 @@ class ArrayDataSource<T> implements IDataSource {
   unregisterDataChangeListener(listener: DataChangeListener): void {
     this.listeners.delete(listener);
   }
+}
+
+// MARK: - 文本选区公共常量与工具
+
+/** 水滴手柄半径（vp），固定物理尺寸不随缩放变化 */
+const SELECTION_HANDLE_RADIUS: number = 10;
+/** 手柄命中热区半径（vp），略大于视觉半径以便手指按住 */
+const SELECTION_HANDLE_HIT_RADIUS: number = 24;
+/** 手柄圆心相对光标底端的下移量（vp），避免指腹遮挡选区端点 */
+const SELECTION_HANDLE_DROP: number = 14;
+/** 拖选时向命中测试传入的 Y 坐标上移补偿（vp），抵消指腹遮挡 */
+const SELECTION_TOUCH_LIFT: number = 20;
+/** 边缘自动滚动热区（vp） */
+const SELECTION_EDGE_SCROLL_ZONE: number = 36;
+/** 边缘自动滚动单帧最大步长（vp） */
+const SELECTION_EDGE_SCROLL_MAX_STEP: number = 12;
+/** 边缘自动滚动步进间隔（ms） */
+const SELECTION_EDGE_SCROLL_INTERVAL: number = 16;
+/** 长按选词触发时长（ms），与设计稿一致 */
+const SELECTION_LONG_PRESS_MS: number = 400;
+/** 手柄/选区不可见时使用的哨兵坐标，叠加层据此跳过绘制 */
+const SELECTION_HIDDEN_COORD: number = -100000;
+/** 选区高亮色（与 CanvasElementDrawer.drawSelectionHighlights 一致） */
+const SELECTION_LINE_COLOR: string = '#1a73e8';
+
+/** 二维点（避免借用文档位置类型承载坐标） */
+interface PlanePoint {
+  x: number;
+  y: number;
+}
+
+/** ListItem 在未缩放的 List 容器坐标系下的矩形 */
+interface DocxItemRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** 选区手柄在屏幕坐标系下的锚点（x 固定，topY/bottomY 为光标竖线端点） */
+interface SelectionHandleAnchor {
+  x: number;
+  y: number;
+  bottomY: number;
+}
+
+/** 选区叠加层几何：一次性以数组传给子组件，避免多个 @Prop 各自触发重绘 */
+interface SelectionOverlayGeometry {
+  readonly startX: number;
+  readonly startTopY: number;
+  readonly startBottomY: number;
+  readonly endX: number;
+  readonly endTopY: number;
+  readonly endBottomY: number;
+}
+
+/** 恒等仿射变换；每次返回新数组，避免共享可变矩阵被就地修改 */
+function identityTransform(): number[] {
+  const matrix: number[] = [1, 0, 0, 1, 0, 0];
+  return matrix;
+}
+
+/** 由行度量推导块的容器局部包围框（行几何为空时退化为零矩形） */
+function boundsFromLines(lines: TextLineMetrics[]): TextRect {
+  if (lines.length === 0) {
+    return makeTextRect(0, 0, 0, 0);
+  }
+  let left = lines[0].left;
+  let top = lines[0].top;
+  let right = lines[0].right;
+  let bottom = lines[0].bottom;
+  for (const line of lines) {
+    if (line.left < left) left = line.left;
+    if (line.top < top) top = line.top;
+    if (line.right > right) right = line.right;
+    if (line.bottom > bottom) bottom = line.bottom;
+  }
+  return makeTextRect(left, top, right, bottom);
+}
+
+/**
+ * 构造一个「容器局部坐标 + 恒等变换」的文本块。
+ *
+ * 视图层各渲染单元的坐标系互不相同（ListItem 局部、绕排组画布局部、幻灯片内容坐标），
+ * 因此统一在构建时把行度量平移到目标坐标系并把仿射矩阵归一为恒等矩阵：
+ * 命中测试、选区矩形与手柄几何随后都只需处理轴对齐坐标，不再依赖逆矩阵。
+ * 代价是旋转/翻转元素的高亮包围框按轴对齐外接矩形近似（复制出的文本仍然精确）。
+ */
+function makeContainerBlock(
+  blockIndex: number,
+  pageIndex: number,
+  fullText: string,
+  lines: TextLineMetrics[]
+): TextBlockLayout {
+  const block = new TextBlockLayout(
+    blockIndex,
+    pageIndex,
+    boundsFromLines(lines),
+    identityTransform(),
+    fullText,
+    lines
+  );
+  return block;
+}
+
+/**
+ * 平移一组行度量（返回新数组，原度量保持不变）。
+ *
+ * <p>入参按 {@link TextBlockLayout#lines} 的声明类型 {@link TextLineMetrics} 接收，
+ * 内部下转型为 {@link CanvasTextLineMetrics} 以复用其 {@code translatedBy}。
+ * 不使用 {@code instanceof} 收窄——跨 .ts/.ets 边界的值判断在 ArkTS 下不保证可用。
+ * 调用方传入的行度量全部由 {@code buildParagraphsBlockLines} /
+ * {@code buildElementTextBlocks} 产出，类型不变式由这两个函数保证。
+ */
+function translateLineMetrics(lines: TextLineMetrics[], dx: number, dy: number): TextLineMetrics[] {
+  const result: TextLineMetrics[] = [];
+  for (const line of lines) {
+    const canvasLine = line as CanvasTextLineMetrics;
+    result.push(canvasLine.translatedBy(dx, dy));
+  }
+  return result;
+}
+
+/** 由起止块/字符编号重建选区；startBlock < 0 表示无选区 */
+function buildSelectionFromNumbers(
+  startBlock: number,
+  startChar: number,
+  endBlock: number,
+  endChar: number
+): TextSelection | null {
+  if (startBlock < 0 || endBlock < 0) {
+    return null;
+  }
+  return makeTextSelection(
+    makeTextPosition(startBlock, startChar),
+    makeTextPosition(endBlock, endChar)
+  );
+}
+
+/** 判断块索引是否落在当前选区覆盖的块区间内（用于跳过无关子组件的矩形计算） */
+function blockTouchesSelection(blockIndex: number, startBlock: number, endBlock: number): boolean {
+  return startBlock >= 0 && blockIndex >= startBlock && blockIndex <= endBlock;
+}
+
+/**
+ * 选区数值快照：以纯数字承载选区，供 @Prop 传递（避免 @Prop 深拷贝大型选区对象）。
+ * startBlock < 0 表示当前无选区。
+ */
+interface SelectionSpan {
+  readonly startBlock: number;
+  readonly startChar: number;
+  readonly endBlock: number;
+  readonly endChar: number;
+  readonly active: boolean;
+}
+
+/** 无选区快照 */
+function emptySelectionSpan(): SelectionSpan {
+  const span: SelectionSpan = {
+    startBlock: -1,
+    startChar: 0,
+    endBlock: -1,
+    endChar: 0,
+    active: false
+  };
+  return span;
+}
+
+/** 选区逻辑起点（anchor/focus 中较早者） */
+function spanStartPosition(selection: TextSelection): TextPosition {
+  const a = selection.anchor;
+  const b = selection.focus;
+  if (a.blockIndex !== b.blockIndex) {
+    return a.blockIndex < b.blockIndex ? a : b;
+  }
+  return a.charIndex <= b.charIndex ? a : b;
+}
+
+/** 选区逻辑终点（anchor/focus 中较晚者） */
+function spanEndPosition(selection: TextSelection): TextPosition {
+  const a = selection.anchor;
+  const b = selection.focus;
+  if (a.blockIndex !== b.blockIndex) {
+    return a.blockIndex > b.blockIndex ? a : b;
+  }
+  return a.charIndex >= b.charIndex ? a : b;
+}
+
+/**
+ * 将选区编码为 `"startBlock:startChar-endBlock:endChar"`。
+ * ArkUI 的 @Prop 只观察简单类型，字符串既能驱动子组件刷新又不会触发大对象深拷贝。
+ */
+function encodeSelectionKey(selection: TextSelection | null): string {
+  if (!selection || isSelectionEmpty(selection)) {
+    return '';
+  }
+  const start = spanStartPosition(selection);
+  const end = spanEndPosition(selection);
+  return `${start.blockIndex}:${start.charIndex}-${end.blockIndex}:${end.charIndex}`;
+}
+
+/** 解析选区身份字符串；空串或格式非法返回无选区快照 */
+function decodeSelectionKey(key: string): SelectionSpan {
+  if (!key || key.length === 0) {
+    return emptySelectionSpan();
+  }
+  const dash = key.indexOf('-');
+  if (dash <= 0) {
+    return emptySelectionSpan();
+  }
+  const head = key.substring(0, dash).split(':');
+  const tail = key.substring(dash + 1).split(':');
+  if (head.length !== 2 || tail.length !== 2) {
+    return emptySelectionSpan();
+  }
+  const sb = Number(head[0]);
+  const sc = Number(head[1]);
+  const eb = Number(tail[0]);
+  const ec = Number(tail[1]);
+  if (!Number.isFinite(sb) || !Number.isFinite(sc) || !Number.isFinite(eb) || !Number.isFinite(ec)) {
+    return emptySelectionSpan();
+  }
+  const span: SelectionSpan = {
+    startBlock: sb,
+    startChar: sc,
+    endBlock: eb,
+    endChar: ec,
+    active: sb >= 0 && eb >= 0 && (sb !== eb || sc !== ec)
+  };
+  return span;
+}
+
+/** 由数值快照还原选区（供子组件计算自身块内高亮矩形） */
+function selectionFromSpan(span: SelectionSpan): TextSelection | null {
+  if (!span.active) {
+    return null;
+  }
+  return buildSelectionFromNumbers(span.startBlock, span.startChar, span.endBlock, span.endChar);
+}
+
+// MARK: - DOCX 文本索引角色与纯文本拆分
+
+/** 渲染单元角色：普通流式文本块（DocxTextBlockView） */
+const DOCX_ROLE_TEXT: number = 1;
+/** 渲染单元角色：表格（每个非空单元格一个块） */
+const DOCX_ROLE_TABLE: number = 2;
+/** 渲染单元角色：矢量形状内文字 */
+const DOCX_ROLE_SHAPE: number = 3;
+/** 渲染单元角色：绕排图文复合组（flows + floats） */
+const DOCX_ROLE_GROUP: number = 4;
+/** DocxTableView 的 Canvas 在 ListItem 内带 8vp 上外边距，块几何需同样下移 */
+const TABLE_ITEM_CANVAS_TOP: number = 8;
+/** DocxShapeView 内联时 Row 带 4vp 上外边距，块几何需同样下移 */
+const SHAPE_INLINE_MARGIN_TOP: number = 4;
+
+/** 一个 ListItem 在全局文本索引中占用的块区间 */
+interface DocxItemTextPlan {
+  readonly itemIndex: number;
+  readonly blockBase: number;
+  readonly blockCount: number;
+  readonly role: number;
+  readonly element: model.Element;
+}
+
+/** 普通流式文本块的段内 padding：与 DocxTextBlockView 的 Canvas 绘制保持一致 */
+function docxTextPadding(element: model.Element): number {
+  return Math.max(0, element.padding ?? 0);
+}
+
+/**
+ * 搜索结果的身份字符串。ArkUI 的 @Prop 只能观察简单类型，普通属性在 LazyForEach 复用后
+ * 不会随父组件更新，因此用字符串承载「当前命中」驱动 DOCX 子组件刷新。
+ */
+export function searchMatchKey(match: model.SearchMatch | null): string {
+  if (!match) return '';
+  return `${match.pageIndex}|${match.elementIndex}|${match.paragraphIndex}|${match.row}|${match.column}|${match.startChar}|${match.endChar}`;
+}
+
+/** 段落数组的纯文本（跳过空段落，段间以 \n 连接），与 buildParagraphsBlockLines 的 fullText 一致 */
+function paragraphsPlainText(paragraphs: model.Paragraph[]): string {
+  const parts: string[] = [];
+  for (const para of paragraphs) {
+    const plain = CanvasElementDrawer.paragraphPlainText(para);
+    if (plain.length > 0) {
+      parts.push(plain);
+    }
+  }
+  return parts.join('\n');
+}
+
+/** 绕排组内全部 flow 块的纯文本（按 flows 数组顺序，每个 flow 一项） */
+function docxGroupFlowTextParts(group: DocxWrapGroup): string[] {
+  const parts: string[] = [];
+  for (const flow of group.flows) {
+    const text = paragraphsPlainText(flow.element.paragraphs ?? []);
+    if (text.length > 0) {
+      parts.push(text);
+    }
+  }
+  return parts;
+}
+
+/** 绕排组内浮动元素内文字的纯文本（按 floats 数组顺序，每个含文字的浮动元素一项） */
+function docxGroupFloatTextParts(group: DocxWrapGroup): string[] {
+  const parts: string[] = [];
+  for (const floatItem of group.floats) {
+    const text = paragraphsPlainText(floatItem.element.paragraphs ?? []);
+    if (text.length > 0) {
+      parts.push(text);
+    }
+  }
+  return parts;
+}
+
+/**
+ * 选区控制钩子集合：子视图（DocxFlowView / PptxSlidesView）在 aboutToAppear 时回填，
+ * 由 OfficePreviewView 转交给 OfficePreviewActions / OfficePreviewController。
+ */
+export interface SelectionControlHooks {
+  selectAll: () => boolean;
+  clearSelection: () => void;
+  hasSelection: () => boolean;
+  getSelectedText: () => string;
+  copySelection: () => boolean;
 }
 
 /**
@@ -84,6 +420,17 @@ export interface OfficePreviewActions {
   showSearchBar: () => void;
   hideSearchBar: () => void;
   isSearchBarVisible: () => boolean;
+  // MARK: 文本选区控制（对齐 Android OfficePreviewView 的公开 API）
+  /** 全选正文；无选区能力（XLSX 或无可选文本）返回 false */
+  selectAll: () => boolean;
+  /** 清空选区并隐藏手柄与浮动气泡 */
+  clearSelection: () => void;
+  /** 当前是否存在非空选区 */
+  hasSelection: () => boolean;
+  /** 当前选中的纯文本（跨块以 \n 连接），无选区返回空串 */
+  getSelectedText: () => string;
+  /** 将选中文本写入系统剪贴板，无选区返回 false */
+  copySelection: () => boolean;
 }
 
 /**
@@ -230,6 +577,31 @@ export class OfficePreviewController {
   public isSearchBarVisible(): boolean {
     return this.actions ? this.actions.isSearchBarVisible() : false;
   }
+
+  /** 全选正文（DOCX/PPTX）；无可选文本或当前为 XLSX 时返回 false */
+  public selectAll(): boolean {
+    return this.actions ? this.actions.selectAll() : false;
+  }
+
+  /** 清空当前选区、手柄与浮动操作气泡 */
+  public clearSelection(): void {
+    this.actions?.clearSelection();
+  }
+
+  /** 当前是否存在非空选区 */
+  public hasSelection(): boolean {
+    return this.actions ? this.actions.hasSelection() : false;
+  }
+
+  /** 当前选中的纯文本，跨段落/跨块以换行符连接；无选区返回空串 */
+  public getSelectedText(): string {
+    return this.actions ? this.actions.getSelectedText() : '';
+  }
+
+  /** 将当前选中文本写入系统剪贴板；无选区返回 false */
+  public copySelection(): boolean {
+    return this.actions ? this.actions.copySelection() : false;
+  }
 }
 
 /**
@@ -259,6 +631,12 @@ export struct OfficePreviewView {
   private childJumpToPage: ((pageNumber: number) => void) | null = null;
   private childSelectSheet: ((sheetNumber: number) => void) | null = null;
   private childScrollToMatch: ((match: model.SearchMatch) => void) | null = null;
+  // 选区控制委派给当前格式的子视图（DOCX/PPTX）；XLSX 不注册，相关 API 返回 false
+  private childSelectAll: (() => boolean) | null = null;
+  private childClearSelection: (() => void) | null = null;
+  private childHasSelection: (() => boolean) | null = null;
+  private childGetSelectedText: (() => string) | null = null;
+  private childCopySelection: (() => boolean) | null = null;
 
   @State searchMatches: model.SearchMatch[] = [];
   @State currentMatchIndex: number = -1;
@@ -310,7 +688,17 @@ export struct OfficePreviewView {
         this.isSearchBarShown = false;
         this.clearSearch();
       },
-      isSearchBarVisible: (): boolean => this.isSearchBarShown
+      isSearchBarVisible: (): boolean => this.isSearchBarShown,
+      selectAll: (): boolean => {
+        if (this.childSelectAll) return this.childSelectAll();
+        return false;
+      },
+      clearSelection: (): void => {
+        if (this.childClearSelection) this.childClearSelection();
+      },
+      hasSelection: (): boolean => (this.childHasSelection ? this.childHasSelection() : false),
+      getSelectedText: (): string => (this.childGetSelectedText ? this.childGetSelectedText() : ''),
+      copySelection: (): boolean => (this.childCopySelection ? this.childCopySelection() : false)
     });
   }
 
@@ -441,8 +829,35 @@ export struct OfficePreviewView {
     this.childJumpToPage = null;
     this.childSelectSheet = null;
     this.childScrollToMatch = null;
+    this.clearChildSelectionHooks();
     this.clearSearch();
     this.controller?.bind(null);
+  }
+
+  /**
+   * 解绑子视图的选区控制回调。
+   * 文档切换或组件销毁时子视图即将消失，其选区与定时器由子视图自身清理，
+   * 此处只清除父视图持有的函数引用，避免控制器调用到已销毁的子组件。
+   */
+  private clearChildSelectionHooks(): void {
+    this.childSelectAll = null;
+    this.childClearSelection = null;
+    this.childHasSelection = null;
+    this.childGetSelectedText = null;
+    this.childCopySelection = null;
+  }
+
+  /** 接收子视图回填的选区控制钩子（子视图未提供时视为不支持选区） */
+  private applySelectionHooks(hooks?: SelectionControlHooks): void {
+    if (!hooks) {
+      this.clearChildSelectionHooks();
+      return;
+    }
+    this.childSelectAll = hooks.selectAll;
+    this.childClearSelection = hooks.clearSelection;
+    this.childHasSelection = hooks.hasSelection;
+    this.childGetSelectedText = hooks.getSelectedText;
+    this.childCopySelection = hooks.copySelection;
   }
 
   onFilePathChanged(): void {
@@ -462,6 +877,7 @@ export struct OfficePreviewView {
     this.childJumpToPage = null;
     this.childSelectSheet = null;
     this.childScrollToMatch = null;
+    this.clearChildSelectionHooks();
     this.clearSearch();
     this.notifyPageChanged(0, 0);
     try {
@@ -517,12 +933,14 @@ export struct OfficePreviewView {
               jumpToPage: (pageNumber: number) => void,
               getZoom: () => number,
               setZoom: (value: number) => void,
-              scrollToMatch?: (match: model.SearchMatch) => void
+              scrollToMatch?: (match: model.SearchMatch) => void,
+              selection?: SelectionControlHooks
             ): void => {
               this.childJumpToPage = jumpToPage;
               this.childGetZoom = getZoom;
               this.childSetZoom = setZoom;
               this.childScrollToMatch = scrollToMatch ?? null;
+              this.applySelectionHooks(selection);
             }
           })
             .id(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
@@ -541,12 +959,14 @@ export struct OfficePreviewView {
               jumpToPage: (pageNumber: number) => void,
               getZoom: () => number,
               setZoom: (value: number) => void,
-              scrollToMatch?: (match: model.SearchMatch) => void
+              scrollToMatch?: (match: model.SearchMatch) => void,
+              selection?: SelectionControlHooks
             ): void => {
               this.childJumpToPage = jumpToPage;
               this.childGetZoom = getZoom;
               this.childSetZoom = setZoom;
               this.childScrollToMatch = scrollToMatch ?? null;
+              this.applySelectionHooks(selection);
             }
           })
             .id(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)
@@ -631,7 +1051,8 @@ struct DocxFlowView {
     jumpToPage: (pageNumber: number) => void,
     getZoom: () => number,
     setZoom: (value: number) => void,
-    scrollToMatch?: (match: model.SearchMatch) => void
+    scrollToMatch?: (match: model.SearchMatch) => void,
+    selection?: SelectionControlHooks
   ) => void;
   private imageStore: ImageStore = new ImageStore('');
   private blockSource: ArrayDataSource<model.Element> = new ArrayDataSource([]);
@@ -646,6 +1067,47 @@ struct DocxFlowView {
   private bodyCount: number = 0;
   /** 页眉与正文、正文与页脚之间的额外留白，对齐 Android OfficeRenderer 的 10pt 分隔 */
   private sectionGap: number = 10;
+
+  // MARK: - 文本选区状态
+  /** 选区身份字符串（空串表示无选区），作为 @Prop 下发给各块驱动高亮刷新 */
+  @State private selectionKey: string = '';
+  /** 叠加层是否可见；仅在选区出现/消失时切换，避免高频手势反复触发整树脏检查 */
+  @State private hasSelectionLayer: boolean = false;
+  /** 浮动气泡状态：仅在手势停稳后更新，拖选与缩放过程中保持关闭 */
+  @State private bubbleShown: boolean = false;
+  @State private bubbleAnchorX: number = 0;
+  @State private bubbleAnchorY: number = 0;
+  @State private bubbleBottomY: number = 0;
+  @State private bubbleShowSelectAll: boolean = true;
+  /** 拖选期间关闭列表滚动交互，防止 List 抢走纵向手势 */
+  @State private isSelectionDragging: boolean = false;
+
+  private selection: TextSelection | null = null;
+  /** 拖拽模式：0 无 / 1 起点手柄 / 2 终点手柄 / 3 长按拖选 */
+  private dragMode: number = 0;
+  private overlayCtx: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
+  private overlayReady: boolean = false;
+  /** 起止手柄屏幕锚点，供命中测试与绘制共用；对端不可见时为 null 但槽位保持不变 */
+  private startHandleAnchor: SelectionHandleAnchor | null = null;
+  private endHandleAnchor: SelectionHandleAnchor | null = null;
+  private lastTouchX: number = 0;
+  private lastTouchY: number = 0;
+  private edgeScrollTimer: number = -1;
+  private edgeScrollDirection: number = 0;
+  /** 选区超时重定位：手势停稳后延迟计算气泡位置 */
+  private bubbleTimer: number = -1;
+
+  // MARK: - 文本索引（全量轻量索引 + 按 ListItem 懒测量）
+  private textLayout: DocumentTextLayout | null = null;
+  private itemTextPlans: Map<number, DocxItemTextPlan> = new Map();
+  private blockToItem: Map<number, number> = new Map();
+  /** 已测量行几何的 ListItem 布局缓存，键为 ListItem 索引 */
+  private measuredItemLayouts: Map<number, DocumentTextLayout> = new Map();
+  /** 已测量的内容宽度，宽度变化时清空行几何缓存 */
+  private measuredContentWidth: number = 0;
+  /** 当前可见 ListItem 区间，由 onScrollIndex 维护 */
+  private visibleStart: number = 0;
+  private visibleEnd: number = 0;
 
   onCurrentMatchChanged(): void {
     this.reuseVersion++;
@@ -665,6 +1127,7 @@ struct DocxFlowView {
     this.bodyCount = bodyBlocks.length;
     this.blockSource = new ArrayDataSource([...headerBlocks, ...bodyBlocks, ...footerBlocks]);
     this.rebuildWrapPlan(this.getContentWidth());
+    this.rebuildTextIndex();
     if (this.registerControls) {
       this.registerControls(
         (_pageNumber: number): void => {
@@ -682,13 +1145,33 @@ struct DocxFlowView {
             const targetIndex = hostIndex !== undefined ? hostIndex : match.elementIndex;
             this.scroller.scrollToIndex(targetIndex, true, ScrollAlign.CENTER);
           }
-        }
+        },
+        this.buildSelectionHooks()
       );
     }
   }
 
   aboutToDisappear(): void {
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.selection = null;
+    this.startHandleAnchor = null;
+    this.endHandleAnchor = null;
+    this.measuredItemLayouts.clear();
+    this.overlayReady = false;
     this.imageStore.release();
+  }
+
+  /** 组装选区控制钩子，交给 OfficePreviewController 统一调度 */
+  private buildSelectionHooks(): SelectionControlHooks {
+    const hooks: SelectionControlHooks = {
+      selectAll: (): boolean => this.selectAll(),
+      clearSelection: (): void => this.clearSelection(),
+      hasSelection: (): boolean => this.hasSelection(),
+      getSelectedText: (): string => this.getSelectedText(),
+      copySelection: (): boolean => this.copySelection()
+    };
+    return hooks;
   }
 
   private pinchStartZoom: number = 1.0;
@@ -777,6 +1260,841 @@ struct DocxFlowView {
     this.wrapGroups = groups;
     this.consumedToGroup = plan.consumedToGroup;
     this.plannedWidth = contentWidth;
+  }
+
+  // MARK: - 文本索引构建
+
+  /**
+   * 构建全量文本索引：按与 LazyForEach 完全相同的遍历顺序为每个渲染单元分配 blockIndex，
+   * 初始只提取纯文本（不触发 Canvas measureText），保证未滚动到的块也能参与全选与复制。
+   */
+  private rebuildTextIndex(): void {
+    const plans: Map<number, DocxItemTextPlan> = new Map();
+    const blockToItem: Map<number, number> = new Map();
+    const blocks: TextBlockLayout[] = [];
+    let base = 0;
+    const total = this.blockSource.totalCount();
+    for (let index = 0; index < total; index++) {
+      const element = this.blockSource.getData(index);
+      if (this.consumedToGroup.has(index)) {
+        continue;
+      }
+      const group = this.wrapGroups.get(index);
+      const parts: string[] = [];
+      let role: number = DOCX_ROLE_TEXT;
+      if (group) {
+        role = DOCX_ROLE_GROUP;
+        const flowParts = docxGroupFlowTextParts(group);
+        for (const part of flowParts) {
+          parts.push(part);
+        }
+        const floatParts = docxGroupFloatTextParts(group);
+        for (const part of floatParts) {
+          parts.push(part);
+        }
+      } else if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
+        role = DOCX_ROLE_TABLE;
+        const cellParts = CanvasElementDrawer.extractElementFullText(element);
+        for (const part of cellParts) {
+          parts.push(part);
+        }
+      } else if (element.type === 'RECT' || element.type === 'ELLIPSE' || element.type === 'LINE' || element.type === 'PATH') {
+        role = DOCX_ROLE_SHAPE;
+        const shapeParts = CanvasElementDrawer.extractElementFullText(element);
+        for (const part of shapeParts) {
+          parts.push(part);
+        }
+      } else if (element.paragraphs && element.paragraphs.length > 0) {
+        role = DOCX_ROLE_TEXT;
+        const textParts = CanvasElementDrawer.extractElementFullText(element);
+        for (const part of textParts) {
+          parts.push(part);
+        }
+      }
+      if (parts.length === 0) {
+        continue;
+      }
+      const plan: DocxItemTextPlan = {
+        itemIndex: index,
+        blockBase: base,
+        blockCount: parts.length,
+        role: role,
+        element: element
+      };
+      plans.set(index, plan);
+      for (let k = 0; k < parts.length; k++) {
+        blockToItem.set(base + k, index);
+      }
+      base += parts.length;
+    }
+    // 全局轻量索引：只有块编号与纯文本，行几何在各 ListItem 首次需要时懒测量
+    for (const plan of plans.values()) {
+      const parts = this.collectPlanTextParts(plan);
+      for (let k = 0; k < parts.length; k++) {
+        blocks.push(makeContainerBlock(plan.blockBase + k, 0, parts[k], []));
+      }
+    }
+    this.itemTextPlans = plans;
+    this.blockToItem = blockToItem;
+    this.textLayout = new DocumentTextLayout(blocks);
+    this.measuredItemLayouts.clear();
+    this.measuredContentWidth = this.getContentWidth();
+  }
+
+  /** 重新提取某个渲染单元的纯文本（与 rebuildTextIndex 中的拆分规则一致） */
+  private collectPlanTextParts(plan: DocxItemTextPlan): string[] {
+    if (plan.role === DOCX_ROLE_GROUP) {
+      const group = this.wrapGroups.get(plan.itemIndex);
+      if (group) {
+        return [...docxGroupFlowTextParts(group), ...docxGroupFloatTextParts(group)];
+      }
+      return [];
+    }
+    return CanvasElementDrawer.extractElementFullText(plan.element);
+  }
+
+  /** 行几何缓存是否已因内容宽度变化而失效 */
+  private ensureMeasuredWidth(): void {
+    const width = this.getContentWidth();
+    if (Math.abs(width - this.measuredContentWidth) > 0.5) {
+      this.measuredContentWidth = width;
+      this.measuredItemLayouts.clear();
+    }
+  }
+
+  /**
+   * 懒测量单个 ListItem 内的行几何（ListItem 局部坐标 + 恒等仿射变换）。
+   * 命中测试、选区矩形与手柄几何都基于同一份结果，与子组件 Canvas 的绘制参数保持一致。
+   */
+  private ensureItemLayout(itemIndex: number): DocumentTextLayout | null {
+    this.ensureMeasuredWidth();
+    const cached = this.measuredItemLayouts.get(itemIndex);
+    if (cached) {
+      return cached;
+    }
+    const plan = this.itemTextPlans.get(itemIndex);
+    if (!plan) {
+      return null;
+    }
+    const ctx = this.ensureMeasureCtx();
+    const blocks: TextBlockLayout[] = [];
+    if (plan.role === DOCX_ROLE_GROUP) {
+      const group = this.wrapGroups.get(itemIndex);
+      if (group) {
+        this.appendGroupBlocks(ctx, group, blocks, plan.blockBase);
+      }
+    } else if (plan.role === DOCX_ROLE_TABLE) {
+      const rawBlocks = CanvasElementDrawer.buildElementTextBlocks(ctx, plan.element, plan.blockBase, 0);
+      for (const block of rawBlocks) {
+        // 表格画布在 ListItem 内带有 8vp 上外边距，块几何需同样下移
+        const lines = translateLineMetrics(block.lines, 0, TABLE_ITEM_CANVAS_TOP);
+        blocks.push(makeContainerBlock(block.blockIndex, 0, block.fullText, lines));
+      }
+    } else if (plan.role === DOCX_ROLE_SHAPE) {
+      // 与 DocxShapeView 完全一致：内联形状的 Row 带 4vp 上外边距，浮动形状则以 floatingOffsetX 左移
+      const floating = isDocxFloating(plan.element);
+      const floatOffsetX = floating ? this.getStandaloneOffsetX(plan.element) : 0;
+      const pad = Math.max(0, plan.element.padding ?? 4);
+      const availW = Math.max(1, (plan.element.width > 0 ? plan.element.width : this.getContentWidth()) - pad * 2);
+      const layout = CanvasElementDrawer.buildParagraphsBlockLines(
+        ctx,
+        plan.element.paragraphs ?? [],
+        pad,
+        availW,
+        plan.element.height,
+        plan.element.verticalAlignment,
+        plan.element.textWrap !== false
+      );
+      if (layout.fullText.length > 0) {
+        const dy = floating ? 0 : SHAPE_INLINE_MARGIN_TOP;
+        const dx = floatOffsetX > 0 ? floatOffsetX : 0;
+        const lines = translateLineMetrics(layout.lines, dx, dy);
+        blocks.push(makeContainerBlock(plan.blockBase, 0, layout.fullText, lines));
+      }
+    } else {
+      // 与 DocxTextBlockView 完全一致：普通流式块 padding 缺省为 0，可用宽度取 ListItem 内容宽度，
+      // 块高度未知（core 下发 height 为 0），因此 verticalAlignment 不产生纵向偏移
+      const pad = docxTextPadding(plan.element);
+      const availW = Math.max(1, this.getContentWidth() - pad * 2);
+      const layout = CanvasElementDrawer.buildParagraphsBlockLines(
+        ctx,
+        plan.element.paragraphs ?? [],
+        pad,
+        availW,
+        0,
+        plan.element.verticalAlignment,
+        plan.element.textWrap !== false
+      );
+      if (layout.fullText.length > 0) {
+        blocks.push(makeContainerBlock(plan.blockBase, 0, layout.fullText, layout.lines));
+      }
+    }
+    const layout = new DocumentTextLayout(blocks);
+    this.measuredItemLayouts.set(itemIndex, layout);
+    return layout;
+  }
+
+  /** 追加上绕排组内各 flow 与浮动文本的行几何（与 DocxWrappedBlockView 的索引顺序一致） */
+  private appendGroupBlocks(
+    ctx: OffscreenCanvasRenderingContext2D,
+    group: DocxWrapGroup,
+    blocks: TextBlockLayout[],
+    base: number
+  ): void {
+    let blockIndex = base;
+    let curY = group.flowStartY;
+    for (const flow of group.flows) {
+      const paras = flow.element.paragraphs ?? [];
+      const layout = CanvasElementDrawer.buildParagraphsBlockLines(
+        ctx, paras, 0, group.width, 0, 'TOP', true, group.obstacles, curY, 0
+      );
+      if (layout.fullText.length > 0) {
+        blocks.push(makeContainerBlock(blockIndex, 0, layout.fullText, translateLineMetrics(layout.lines, 0, curY)));
+        blockIndex++;
+      }
+      // 与 drawComposite 一致地推进 flow 纵向位置，保证后续 flow 的块几何不偏移
+      for (let pIdx = 0; pIdx < paras.length; pIdx++) {
+        const para = paras[pIdx];
+        curY += Math.max(0, para.before || 0);
+        const lines = CanvasElementDrawer.layoutParagraph(ctx, para, group.width, true, group.obstacles, curY, 0);
+        let drawnH = 0;
+        for (const line of lines) {
+          drawnH += line.height;
+        }
+        curY += drawnH + Math.max(0, para.after || 0);
+      }
+      curY += 8;
+    }
+    for (const floatItem of group.floats) {
+      const paras = floatItem.element.paragraphs ?? [];
+      if (paras.length === 0) {
+        continue;
+      }
+      const pad = Math.max(0, floatItem.element.padding ?? 4);
+      const rawW = floatItem.element.width > 0 ? floatItem.element.width : floatItem.width;
+      const availW = Math.max(1, rawW - pad * 2);
+      const layout = CanvasElementDrawer.buildParagraphsBlockLines(
+        ctx, paras, pad, availW, floatItem.height, floatItem.element.verticalAlignment,
+        floatItem.element.textWrap !== false
+      );
+      if (layout.fullText.length > 0) {
+        blocks.push(makeContainerBlock(
+          blockIndex, 0, layout.fullText, translateLineMetrics(layout.lines, floatItem.x, floatItem.y)
+        ));
+        blockIndex++;
+      }
+    }
+  }
+
+  // MARK: - 选区控制 API
+
+  /** 全选正文：使用全局轻量索引，无需等待各行测量完成 */
+  public selectAll(): boolean {
+    const layout = this.textLayout;
+    if (!layout || !layout.hasText()) {
+      return false;
+    }
+    const range = layout.allTextRange();
+    if (!range || isSelectionEmpty(range)) {
+      return false;
+    }
+    this.setSelection(range);
+    this.scheduleBubble();
+    return true;
+  }
+
+  /** 清空选区、手柄与浮动气泡 */
+  public clearSelection(): void {
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.setSelection(null);
+  }
+
+  /** 当前是否存在非空选区 */
+  public hasSelection(): boolean {
+    return this.selection !== null && !isSelectionEmpty(this.selection);
+  }
+
+  /** 当前选中的纯文本（跨块以换行连接） */
+  public getSelectedText(): string {
+    const layout = this.textLayout;
+    const selection = this.selection;
+    if (!layout || !selection) {
+      return '';
+    }
+    return layout.selectedText(selection);
+  }
+
+  /** 将选中文本写入系统剪贴板 */
+  public copySelection(): boolean {
+    const text = this.getSelectedText();
+    if (text.length === 0) {
+      return false;
+    }
+    return copyTextToPasteboard(text);
+  }
+
+  /** 更新选区并同步子组件与叠加层 */
+  private setSelection(selection: TextSelection | null): void {
+    if (selection && isSelectionEmpty(selection)) {
+      selection = null;
+    }
+    this.selection = selection;
+    this.selectionKey = encodeSelectionKey(selection);
+    const visible = selection !== null;
+    if (this.hasSelectionLayer !== visible) {
+      this.hasSelectionLayer = visible;
+    }
+    if (!visible) {
+      this.startHandleAnchor = null;
+      this.endHandleAnchor = null;
+      this.bubbleShown = false;
+    }
+    this.refreshSelectionOverlay();
+  }
+
+  // MARK: - 屏幕坐标映射
+
+  /**
+   * 屏幕坐标 -> List 容器（未缩放、未平移）坐标。
+   * 外层 Stack 以自身中心为缩放原点，再整体平移 (offsetX, offsetY)：
+   *   screen = center + zoom * (panel - center) + offset
+   * 反解得 panel = (screen - offset - center) / zoom + center。
+   */
+  private screenToPanel(screenX: number, screenY: number): PlanePoint {
+    const zoom = this.zoom > 0 ? this.zoom : 1.0;
+    const centerX = this.viewportWidth / 2;
+    const centerY = this.viewportHeight / 2;
+    const point: PlanePoint = {
+      x: (screenX - this.offsetX - centerX) / zoom + centerX,
+      y: (screenY - this.offsetY - centerY) / zoom + centerY
+    };
+    return point;
+  }
+
+  /** List 容器坐标 -> 屏幕坐标（screenToPanel 的正向变换） */
+  private panelToScreen(panelX: number, panelY: number): PlanePoint {
+    const zoom = this.zoom > 0 ? this.zoom : 1.0;
+    const centerX = this.viewportWidth / 2;
+    const centerY = this.viewportHeight / 2;
+    const point: PlanePoint = {
+      x: centerX + (panelX - centerX) * zoom + this.offsetX,
+      y: centerY + (panelY - centerY) * zoom + this.offsetY
+    };
+    return point;
+  }
+
+  /** 读取 ListItem 在 List 容器坐标系下的矩形（不可见或控制器未绑定时返回 null） */
+  private itemRectOf(itemIndex: number): DocxItemRect | null {
+    const total = this.blockSource.totalCount();
+    if (itemIndex < 0 || itemIndex >= total) {
+      return null;
+    }
+    try {
+      const rect = this.scroller.getItemRect(itemIndex);
+      if (!rect || Math.abs(rect.width) < 0.01 || Math.abs(rect.height) < 0.01) {
+        return null;
+      }
+      const result: DocxItemRect = {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
+      };
+      return result;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  /**
+   * 当前参与命中测试的 ListItem 索引区间（可见区间前后各留 2 项缓冲）。
+   * onScrollIndex 尚未回调时可见区间未知（start==end==0），此时退化为全量扫描：
+   * getItemRect 对未进入节点树的 ListItem 返回空矩形，遍历开销可接受且不会漏命中。
+   */
+  private hitScanRange(): number[] {
+    const total = this.blockSource.totalCount();
+    if (total <= 0) {
+      return [0, -1];
+    }
+    const windowKnown = this.visibleEnd > this.visibleStart || this.visibleStart > 0;
+    if (!windowKnown) {
+      return [0, total - 1];
+    }
+    const first = Math.max(0, this.visibleStart - 2);
+    const last = Math.min(total - 1, Math.max(this.visibleEnd, first) + 2);
+    return [first, last];
+  }
+
+  /**
+   * 屏幕坐标命中：先按 ListItem 矩形筛选，再在单元局部坐标系内做字符级命中；
+   * 未落在任何单元内时取最近单元，保证跨行空白间隙拖选不跳断。
+   */
+  private hitTestScreen(screenX: number, screenY: number, lift: number): TextPosition | null {
+    const panel = this.screenToPanel(screenX, screenY - lift);
+    const range = this.hitScanRange();
+    let nearestPosition: TextPosition | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (let index = range[0]; index <= range[1]; index++) {
+      const rect = this.itemRectOf(index);
+      if (!rect) {
+        continue;
+      }
+      const layout = this.ensureItemLayout(index);
+      if (!layout || !layout.hasText()) {
+        continue;
+      }
+      const localX = panel.x - rect.x;
+      const localY = panel.y - rect.y;
+      const inside = localX >= -8 && localX <= rect.width + 8 && localY >= -4 && localY <= rect.height + 4;
+      const position = layout.hitTest(localX, localY);
+      if (!position) {
+        continue;
+      }
+      if (inside) {
+        return position;
+      }
+      const dx = Math.max(rect.x - panel.x, 0, panel.x - (rect.x + rect.width));
+      const dy = Math.max(rect.y - panel.y, 0, panel.y - (rect.y + rect.height));
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestPosition = position;
+      }
+    }
+    return nearestPosition;
+  }
+
+  /** 计算某个文本位置的屏幕手柄锚点（不可见时返回 null） */
+  private resolveHandleAnchor(position: TextPosition): SelectionHandleAnchor | null {
+    const itemIndex = this.blockToItem.get(position.blockIndex);
+    if (itemIndex === undefined) {
+      return null;
+    }
+    const rect = this.itemRectOf(itemIndex);
+    if (!rect) {
+      return null;
+    }
+    const layout = this.ensureItemLayout(itemIndex);
+    if (!layout) {
+      return null;
+    }
+    const handles = layout.handleGeometry(makeTextSelection(position, position));
+    if (!handles) {
+      return null;
+    }
+    const top = this.panelToScreen(rect.x + handles.start.docX, rect.y + handles.start.docTopY);
+    const bottom = this.panelToScreen(rect.x + handles.start.docX, rect.y + handles.start.docBottomY);
+    const anchor: SelectionHandleAnchor = { x: top.x, y: top.y, bottomY: bottom.y };
+    return anchor;
+  }
+
+  /** 重算起止手柄锚点并重绘叠加层（手柄与气泡不进入 ArkUI 脏检查，只做 Canvas 重绘） */
+  private refreshSelectionOverlay(): void {
+    const selection = this.selection;
+    if (selection && !isSelectionEmpty(selection)) {
+      this.startHandleAnchor = this.resolveHandleAnchor(spanStartPosition(selection));
+      this.endHandleAnchor = this.resolveHandleAnchor(spanEndPosition(selection));
+    } else {
+      this.startHandleAnchor = null;
+      this.endHandleAnchor = null;
+    }
+    this.drawOverlayCanvas();
+  }
+
+  /** 绘制屏幕坐标系的起止光标竖线与水滴手柄 */
+  private drawOverlayCanvas(): void {
+    if (!this.overlayReady) {
+      return;
+    }
+    const ctx = this.overlayCtx;
+    const width = ctx.width;
+    const height = ctx.height;
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+    ctx.clearRect(0, 0, width, height);
+    const start = this.startHandleAnchor;
+    const end = this.endHandleAnchor;
+    if (start) {
+      this.drawHandle(ctx, start, true);
+    }
+    if (end) {
+      this.drawHandle(ctx, end, false);
+    }
+  }
+
+  /** 单个手柄：2vp 光标竖线 + 固定物理尺寸的水滴圆头 */
+  private drawHandle(ctx: CanvasRenderingContext2D, anchor: SelectionHandleAnchor, isStart: boolean): void {
+    const topY = Math.min(anchor.y, anchor.bottomY);
+    const bottomY = Math.max(anchor.y, anchor.bottomY);
+    ctx.save();
+    ctx.strokeStyle = SELECTION_LINE_COLOR;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(anchor.x, topY);
+    ctx.lineTo(anchor.x, bottomY);
+    ctx.stroke();
+    const centerY = bottomY + SELECTION_HANDLE_DROP;
+    ctx.fillStyle = SELECTION_LINE_COLOR;
+    ctx.beginPath();
+    ctx.arc(anchor.x, centerY, SELECTION_HANDLE_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    // 圆头内圈留白，视觉上指向光标底端（起始手柄朝左下、结束手柄朝右下）
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(anchor.x, centerY + SELECTION_HANDLE_RADIUS - 1);
+    ctx.lineTo(anchor.x + (isStart ? -4 : 4), centerY + SELECTION_HANDLE_RADIUS + 3);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** 命中起止手柄热区：返回 1（起点）或 2（终点），未命中返回 0 */
+  private hitHandle(screenX: number, screenY: number): number {
+    if (this.hitsHandleAnchor(this.startHandleAnchor, screenX, screenY)) {
+      return 1;
+    }
+    if (this.hitsHandleAnchor(this.endHandleAnchor, screenX, screenY)) {
+      return 2;
+    }
+    return 0;
+  }
+
+  /** 触点是否落在某个手柄圆心（光标底端下移 SELECTION_HANDLE_DROP）的热区内 */
+  private hitsHandleAnchor(anchor: SelectionHandleAnchor | null, screenX: number, screenY: number): boolean {
+    if (!anchor) {
+      return false;
+    }
+    const cx = anchor.x;
+    const cy = Math.max(anchor.y, anchor.bottomY) + SELECTION_HANDLE_DROP;
+    const dx = screenX - cx;
+    const dy = screenY - cy;
+    return Math.sqrt(dx * dx + dy * dy) <= SELECTION_HANDLE_HIT_RADIUS;
+  }
+
+  // MARK: - 手势处理
+
+  /** 手柄优先拦截 + 拖选跟随；不消费事件，列表滚动仍由 List 自行处理 */
+  private handleDocxTouch(event: TouchEvent): void {
+    const touches = event.touches;
+    if (!touches || touches.length === 0) {
+      return;
+    }
+    const touch = touches[0];
+    if (event.type === TouchType.Down) {
+      this.lastTouchX = touch.x;
+      this.lastTouchY = touch.y;
+      const hit = this.hitHandle(touch.x, touch.y);
+      if (hit !== 0) {
+        this.beginDrag(hit);
+      }
+      return;
+    }
+    if (event.type === TouchType.Move) {
+      if (this.dragMode === 0) {
+        return;
+      }
+      this.lastTouchX = touch.x;
+      this.lastTouchY = touch.y;
+      this.updateDrag(touch.x, touch.y);
+      this.updateEdgeScroll(touch.x, touch.y);
+      return;
+    }
+    if (this.dragMode !== 0) {
+      this.endDrag();
+    }
+  }
+
+  /** 进入拖拽：锁定锚点、停止边缘滚动、隐藏气泡并接管纵向手势 */
+  private beginDrag(mode: number): void {
+    const selection = this.selection;
+    if (!selection) {
+      return;
+    }
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.bubbleShown = false;
+    this.dragMode = mode;
+    if (this.isSelectionDragging !== true) {
+      this.isSelectionDragging = true;
+    }
+  }
+
+  /** 拖拽更新焦点；手柄拖拽时锚点固定为选区另一端，长按拖选时锚点固定为首次选词起点 */
+  private updateDrag(screenX: number, screenY: number): void {
+    const selection = this.selection;
+    if (!selection) {
+      return;
+    }
+    const position = this.hitTestScreen(screenX, screenY, SELECTION_TOUCH_LIFT);
+    if (!position) {
+      return;
+    }
+    let anchor = selection.anchor;
+    if (this.dragMode === 1) {
+      // 拖起点手柄：锚点保持原选区终点
+      anchor = spanEndPosition(selection);
+    } else if (this.dragMode === 2) {
+      // 拖终点手柄：锚点保持原选区起点
+      anchor = spanStartPosition(selection);
+    }
+    this.setSelection(makeTextSelection(anchor, position));
+  }
+
+  /** 结束拖拽：恢复列表滚动并在下一帧重定位气泡 */
+  private endDrag(): void {
+    this.dragMode = 0;
+    this.stopEdgeScroll();
+    if (this.isSelectionDragging) {
+      this.isSelectionDragging = false;
+    }
+    this.refreshSelectionOverlay();
+    if (this.hasSelection()) {
+      this.scheduleBubble();
+    } else {
+      this.bubbleShown = false;
+    }
+  }
+
+  /** 长按选词：命中文字后立即进入拖选态，允许不抬手继续滑动扩选 */
+  private handleLongPress(event: GestureEvent): void {
+    if (this.isGesturing || !this.document) {
+      return;
+    }
+    const fingerList = event.fingerList;
+    if (!fingerList || fingerList.length === 0) {
+      return;
+    }
+    const screenX = fingerList[0].localX;
+    const screenY = fingerList[0].localY;
+    this.lastTouchX = screenX;
+    this.lastTouchY = screenY;
+    const position = this.hitTestScreen(screenX, screenY, 0);
+    if (!position) {
+      return;
+    }
+    const layout = this.textLayout;
+    if (!layout) {
+      return;
+    }
+    const range = layout.wordRange(position);
+    if (!range) {
+      return;
+    }
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.bubbleShown = false;
+    this.dragMode = 3;
+    if (this.isSelectionDragging !== true) {
+      this.isSelectionDragging = true;
+    }
+    this.setSelection(range);
+  }
+
+  /** 单击：存在选区时清除并消费本次点击，避免误触发其它行为 */
+  private handleSingleTap(): void {
+    if (this.hasSelection()) {
+      this.clearSelection();
+    }
+  }
+
+  // MARK: - 边缘自动滚动
+
+  /** 触点进入上下边缘热区时启动定时滚动，步长随深入程度线性递增 */
+  private updateEdgeScroll(screenX: number, screenY: number): void {
+    let direction = 0;
+    if (screenY < SELECTION_EDGE_SCROLL_ZONE) {
+      direction = -1;
+    } else if (screenY > this.viewportHeight - SELECTION_EDGE_SCROLL_ZONE) {
+      direction = 1;
+    }
+    if (direction === 0) {
+      this.stopEdgeScroll();
+      return;
+    }
+    if (this.edgeScrollTimer !== -1 && this.edgeScrollDirection === direction) {
+      return;
+    }
+    this.stopEdgeScroll();
+    this.edgeScrollDirection = direction;
+    this.edgeScrollTimer = setInterval(() => {
+      this.stepEdgeScroll();
+    }, SELECTION_EDGE_SCROLL_INTERVAL);
+  }
+
+  /** 单步边缘滚动：按到边缘的距离决定步长，滚动后以最新触点重算焦点 */
+  private stepEdgeScroll(): void {
+    if (this.dragMode === 0 || this.edgeScrollDirection === 0) {
+      this.stopEdgeScroll();
+      return;
+    }
+    const zone = SELECTION_EDGE_SCROLL_ZONE;
+    let depth = 0;
+    if (this.edgeScrollDirection < 0) {
+      depth = Math.max(0, zone - this.lastTouchY);
+    } else {
+      depth = Math.max(0, this.lastTouchY - (this.viewportHeight - zone));
+    }
+    if (depth <= 0) {
+      this.stopEdgeScroll();
+      return;
+    }
+    const ratio = Math.min(1, depth / zone);
+    const step = Math.max(1, SELECTION_EDGE_SCROLL_MAX_STEP * ratio);
+    this.scroller.scrollBy(0, step * this.edgeScrollDirection);
+    this.updateDrag(this.lastTouchX, this.lastTouchY);
+    this.refreshSelectionOverlay();
+  }
+
+  private stopEdgeScroll(): void {
+    if (this.edgeScrollTimer !== -1) {
+      clearInterval(this.edgeScrollTimer);
+      this.edgeScrollTimer = -1;
+    }
+    this.edgeScrollDirection = 0;
+  }
+
+  // MARK: - 浮动气泡
+
+  /** 手势停稳后延迟一拍再定位气泡，避免在滚动/缩放过程中反复布局 */
+  private scheduleBubble(): void {
+    this.cancelBubbleTimer();
+    this.bubbleTimer = setTimeout(() => {
+      this.bubbleTimer = -1;
+      this.repositionBubble();
+    }, 32);
+  }
+
+  private cancelBubbleTimer(): void {
+    if (this.bubbleTimer !== -1) {
+      clearTimeout(this.bubbleTimer);
+      this.bubbleTimer = -1;
+    }
+  }
+
+  /** 依据选区整体屏幕包围框定位气泡，并判断是否已全选 */
+  private repositionBubble(): void {
+    const selection = this.selection;
+    if (!selection || isSelectionEmpty(selection)) {
+      this.bubbleShown = false;
+      return;
+    }
+    const bounds = this.selectionScreenBounds(selection);
+    if (!bounds) {
+      // 选区当前不在可见区域（如全选后尚未滚动到），不展示气泡避免悬空
+      this.bubbleShown = false;
+      return;
+    }
+    this.bubbleAnchorX = (bounds.left + bounds.right) / 2;
+    this.bubbleAnchorY = bounds.top;
+    this.bubbleBottomY = bounds.bottom;
+    this.bubbleShowSelectAll = !this.isWholeDocumentSelected(selection);
+    this.bubbleShown = true;
+  }
+
+  /** 选区在屏幕坐标系下的整体包围框（仅统计可见 ListItem 内的矩形） */
+  private selectionScreenBounds(selection: TextSelection): TextRect | null {
+    const start = spanStartPosition(selection);
+    const end = spanEndPosition(selection);
+    const range = this.hitScanRange();
+    let left = 0;
+    let top = 0;
+    let right = 0;
+    let bottom = 0;
+    let found = false;
+    for (let index = range[0]; index <= range[1]; index++) {
+      const plan = this.itemTextPlans.get(index);
+      if (!plan) {
+        continue;
+      }
+      if (plan.blockBase + plan.blockCount - 1 < start.blockIndex || plan.blockBase > end.blockIndex) {
+        continue;
+      }
+      const rect = this.itemRectOf(index);
+      const layout = this.ensureItemLayout(index);
+      if (!rect || !layout) {
+        continue;
+      }
+      const localRects = layout.selectionRects(selection);
+      for (const highlight of localRects) {
+        const docRect = highlight.docBounds;
+        const p1 = this.panelToScreen(rect.x + docRect.left, rect.y + docRect.top);
+        const p2 = this.panelToScreen(rect.x + docRect.right, rect.y + docRect.bottom);
+        const x1 = Math.min(p1.x, p2.x);
+        const x2 = Math.max(p1.x, p2.x);
+        const y1 = Math.min(p1.y, p2.y);
+        const y2 = Math.max(p1.y, p2.y);
+        if (!found) {
+          left = x1;
+          top = y1;
+          right = x2;
+          bottom = y2;
+          found = true;
+        } else {
+          left = Math.min(left, x1);
+          top = Math.min(top, y1);
+          right = Math.max(right, x2);
+          bottom = Math.max(bottom, y2);
+        }
+      }
+    }
+    if (!found) {
+      return null;
+    }
+    return makeTextRect(left, top, right, bottom);
+  }
+
+  /** 选区是否已覆盖全文（用于隐藏气泡中的「全选」） */
+  private isWholeDocumentSelected(selection: TextSelection): boolean {
+    const layout = this.textLayout;
+    if (!layout) {
+      return false;
+    }
+    const all = layout.allTextRange();
+    if (!all) {
+      return false;
+    }
+    const allStart = spanStartPosition(all);
+    const allEnd = spanEndPosition(all);
+    const start = spanStartPosition(selection);
+    const end = spanEndPosition(selection);
+    return start.blockIndex === allStart.blockIndex && start.charIndex <= allStart.charIndex &&
+      end.blockIndex === allEnd.blockIndex && end.charIndex >= allEnd.charIndex;
+  }
+
+  /** 气泡「复制」：写入剪贴板后清除选区并隐藏气泡 */
+  private onBubbleCopy(): void {
+    if (this.copySelection()) {
+      this.clearSelection();
+    } else {
+      this.bubbleShown = false;
+    }
+  }
+
+  /** 气泡「全选」：全选正文并重定位气泡 */
+  private onBubbleSelectAll(): void {
+    if (this.selectAll()) {
+      this.scheduleBubble();
+    }
+  }
+
+  /** List 滚动中：手柄跟随滚动实时刷新，气泡整段隐藏，停稳后再出现 */
+  private onListScrolled(): void {
+    if (this.hasSelection()) {
+      if (this.bubbleShown) {
+        this.bubbleShown = false;
+      }
+      this.refreshSelectionOverlay();
+    }
+  }
+
+  /** List 滚动停稳：刷新手柄并重新弹出气泡 */
+  private onScrollSettled(): void {
+    if (this.hasSelection()) {
+      this.refreshSelectionOverlay();
+      this.scheduleBubble();
+    }
   }
 
   private matchesOfGroup(group: DocxWrapGroup | null): model.SearchMatch[] {
@@ -879,6 +2197,11 @@ struct DocxFlowView {
       }
     }
     this.syncSettledZoomPad();
+    // 缩放后手柄锚点必须按新变换重算
+    if (this.hasSelection()) {
+      this.refreshSelectionOverlay();
+      this.scheduleBubble();
+    }
   }
 
   /** 当前命中的身份字符串，作为 @Prop 传给子组件以驱动高亮刷新 */
@@ -895,6 +2218,12 @@ struct DocxFlowView {
       if (m.elementIndex === index) result.push(m);
     }
     return result;
+  }
+
+  /** 某个渲染单元在全局文本索引中的起始块编号 */
+  private blockBaseOf(index: number): number {
+    const plan = this.itemTextPlans.get(index);
+    return plan ? plan.blockBase : -1;
   }
 
   /** 计算块在 LazyForEach 中的缓存键，保证当前命中切换与环绕布局刷新 */
@@ -934,14 +2263,18 @@ struct DocxFlowView {
                       group: this.wrapGroups.get(index) ?? null,
                       imageStore: this.imageStore,
                       groupMatches: this.matchesOfGroup(this.wrapGroups.get(index) ?? null),
-                      currentMatchKey: this.currentMatchKey()
+                      currentMatchKey: this.currentMatchKey(),
+                      blockBaseIndex: this.blockBaseOf(index),
+                      selectionKey: this.selectionKey
                     })
                   } else if (element.type === 'TABLE' && element.rows && element.rows.length > 0) {
                     DocxTableView({
                       element: element,
                       imageStore: this.imageStore,
                       blockMatches: this.matchesOfBlock(index),
-                      currentMatchKey: this.currentMatchKey()
+                      currentMatchKey: this.currentMatchKey(),
+                      blockBaseIndex: this.blockBaseOf(index),
+                      selectionKey: this.selectionKey
                     })
                   } else if (element.type === 'IMAGE') {
                     DocxImageView({
@@ -953,13 +2286,18 @@ struct DocxFlowView {
                     DocxShapeView({
                       element: element,
                       imageStore: this.imageStore,
-                      floatingOffsetX: isDocxFloating(element) ? this.getStandaloneOffsetX(element) : -1
+                      floatingOffsetX: isDocxFloating(element) ? this.getStandaloneOffsetX(element) : -1,
+                      blockBaseIndex: this.blockBaseOf(index),
+                      selectionKey: this.selectionKey
                     })
                   } else if (element.paragraphs && element.paragraphs.length > 0) {
                     DocxTextBlockView({
                       element: element,
                       blockMatches: this.matchesOfBlock(index),
-                      currentMatchKey: this.currentMatchKey()
+                      currentMatchKey: this.currentMatchKey(),
+                      blockBaseIndex: this.blockBaseOf(index),
+                      selectionKey: this.selectionKey,
+                      contentWidth: this.getContentWidth()
                     })
                   }
                 }
@@ -983,6 +2321,16 @@ struct DocxFlowView {
             bottom: 24 + this.settledZoomPad
           })
           .backgroundColor('#ffffff')
+          // 拖选期间禁用列表滚动，避免纵向手势被 List 抢走
+          .enableScrollInteraction(!this.isSelectionDragging)
+          .onScrollIndex((start: number, end: number, _center: number) => {
+            this.visibleStart = start;
+            this.visibleEnd = end;
+            this.onListScrolled();
+          })
+          .onScrollStop(() => {
+            this.onScrollSettled();
+          })
         }
         .width('100%')
         .height('100%')
@@ -1001,10 +2349,17 @@ struct DocxFlowView {
         const nextContentW = this.getContentWidth();
         if (Math.abs(nextContentW - this.plannedWidth) > 1) {
           this.rebuildWrapPlan(nextContentW);
+          this.rebuildTextIndex();
           this.layoutRevision++;
         }
         this.clampOffsets();
         this.syncSettledZoomPad();
+        if (this.hasSelection()) {
+          this.refreshSelectionOverlay();
+        }
+      })
+      .onTouch((event: TouchEvent) => {
+        this.handleDocxTouch(event);
       })
       .gesture(
         GestureGroup(
@@ -1021,11 +2376,32 @@ struct DocxFlowView {
               this.setZoom(this.zoom > 1.1 ? 1.0 : 2.0, focusX, focusY);
               this.syncSettledZoomPad();
             }),
+          // 单击：存在选区时清除选区并消费本次点击
+          TapGesture({ count: 1 })
+            .onAction((_event: GestureEvent) => {
+              this.handleSingleTap();
+            }),
+          // 长按 400ms 选词，之后不抬手即可滑动扩选
+          LongPressGesture({ duration: SELECTION_LONG_PRESS_MS, repeat: false })
+            .onAction((event: GestureEvent) => {
+              this.handleLongPress(event);
+            })
+            .onActionEnd(() => {
+              if (this.dragMode === 3) {
+                this.endDrag();
+              }
+            })
+            .onActionCancel(() => {
+              if (this.dragMode === 3) {
+                this.endDrag();
+              }
+            }),
           PinchGesture({ fingers: 2 })
             .onActionStart(() => {
               this.isGesturing = true;
               this.pinchStartZoom = Math.max(1.0, Math.min(RenderUtils.ZOOM_MAX, this.zoom));
               this.pinchStartOffsetX = this.offsetX;
+              this.bubbleShown = false;
             })
             .onActionUpdate((event: GestureEvent) => {
               const focusX = event.pinchCenterX > 0 ? event.pinchCenterX : (this.viewportWidth / 2);
@@ -1046,6 +2422,9 @@ struct DocxFlowView {
               this.offsetY = 0;
               this.zoom = display;
               this.clampOffsets();
+              if (this.hasSelection()) {
+                this.refreshSelectionOverlay();
+              }
             })
             .onActionEnd(() => {
               this.isGesturing = false;
@@ -1062,6 +2441,10 @@ struct DocxFlowView {
               this.zoom = settled;
               this.clampOffsets();
               this.syncSettledZoomPad();
+              if (this.hasSelection()) {
+                this.refreshSelectionOverlay();
+                this.scheduleBubble();
+              }
             })
             .onActionCancel(() => {
               this.isGesturing = false;
@@ -1077,6 +2460,10 @@ struct DocxFlowView {
               this.zoom = settled;
               this.clampOffsets();
               this.syncSettledZoomPad();
+              if (this.hasSelection()) {
+                this.refreshSelectionOverlay();
+                this.scheduleBubble();
+              }
             }),
           PanGesture({ direction: PanDirection.Horizontal })
             .onActionStart(() => {
@@ -1097,6 +2484,39 @@ struct DocxFlowView {
             })
         )
       )
+
+      // 手柄叠加层：全尺寸透明 Canvas，不参与命中测试，只做屏幕坐标绘制
+      if (this.hasSelectionLayer) {
+        Canvas(this.overlayCtx)
+          .width('100%')
+          .height('100%')
+          .hitTestBehavior(HitTestMode.None)
+          .onReady(() => {
+            this.overlayReady = true;
+            this.drawOverlayCanvas();
+          })
+          .onAreaChange(() => {
+            this.drawOverlayCanvas();
+          })
+      }
+
+      // 浮动操作气泡：仅在停稳后出现
+      if (this.bubbleShown) {
+        SelectionMenuBubble({
+          anchorX: this.bubbleAnchorX,
+          anchorY: this.bubbleAnchorY,
+          anchorBottomY: this.bubbleBottomY,
+          viewportWidth: this.viewportWidth,
+          viewportHeight: this.viewportHeight,
+          showSelectAll: this.bubbleShowSelectAll,
+          onCopy: (): void => {
+            this.onBubbleCopy();
+          },
+          onSelectAll: (): void => {
+            this.onBubbleSelectAll();
+          }
+        })
+      }
     }
   }
 }
@@ -1307,11 +2727,22 @@ struct DocxShapeView {
   element: model.Element | null = null;
   imageStore: ImageStore = new ImageStore('');
   floatingOffsetX: number = -1;
+  /** 形状内文字在全局文本索引中的起始块编号（无文字时为 -1） */
+  @Prop blockBaseIndex: number = -1;
+  /** 选区身份字符串；变化即重绘以刷新形状内文字的选区高亮 */
+  @Prop @Watch('onSelectionChanged') selectionKey: string = '';
   @State private reuseVersion: number = 0;
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private measureCtx: OffscreenCanvasRenderingContext2D | null = null;
   private isReady: boolean = false;
+
+  onSelectionChanged(): void {
+    if (this.isReady) {
+      this.drawShape();
+    }
+  }
 
   aboutToReuse(params: Record<string, Object>): void {
     if (params['element']) {
@@ -1321,10 +2752,53 @@ struct DocxShapeView {
       this.imageStore = params['imageStore'] as ImageStore;
     }
     this.floatingOffsetX = params['floatingOffsetX'] !== undefined ? (params['floatingOffsetX'] as number) : -1;
+    this.blockBaseIndex = params['blockBaseIndex'] !== undefined ? (params['blockBaseIndex'] as number) : -1;
+    this.selectionKey = params['selectionKey'] !== undefined ? (params['selectionKey'] as string) : '';
     this.reuseVersion++;
     if (this.isReady) {
       this.drawShape();
     }
+  }
+
+  private ensureMeasureCtx(): OffscreenCanvasRenderingContext2D {
+    if (!this.measureCtx) {
+      this.measureCtx = new OffscreenCanvas(1, 1).getContext('2d', new RenderingContextSettings(true));
+    }
+    return this.measureCtx;
+  }
+
+  /**
+   * 形状内文字的选区高亮矩形（形状元素局部坐标）。
+   * 行度量由 CanvasElementDrawer 以与 drawElement 相同的 padding / 可用宽度构建，
+   * 因此可直接叠加在已绘制的文字之上。
+   */
+  private selectionRects(): TextRect[] {
+    const el = this.element;
+    if (!el || !this.selectionKey || this.blockBaseIndex < 0) {
+      return [];
+    }
+    const paragraphs = el.paragraphs ?? [];
+    if (paragraphs.length === 0) {
+      return [];
+    }
+    const span = decodeSelectionKey(this.selectionKey);
+    if (!span.active || !blockTouchesSelection(this.blockBaseIndex, span.startBlock, span.endBlock)) {
+      return [];
+    }
+    const selection = selectionFromSpan(span);
+    if (!selection) {
+      return [];
+    }
+    const padding = Math.max(0, el.padding ?? 4);
+    const availW = Math.max(1, el.width - padding * 2);
+    const layout = CanvasElementDrawer.buildParagraphsBlockLines(
+      this.ensureMeasureCtx(), paragraphs, padding, availW, el.height, el.verticalAlignment, el.textWrap !== false
+    );
+    if (layout.fullText.length === 0) {
+      return [];
+    }
+    const block = makeContainerBlock(this.blockBaseIndex, 0, layout.fullText, layout.lines);
+    return new DocumentTextLayout([block]).blockSelectionRects(selection, this.blockBaseIndex);
   }
 
   private drawShape(): void {
@@ -1340,6 +2814,10 @@ struct DocxShapeView {
     const scale = Math.min(w / elW, h / elH);
     ctx.scale(scale, scale);
     CanvasElementDrawer.drawElement(ctx, this.element, this.imageStore.cache);
+    const selRects = this.selectionRects();
+    if (selRects.length > 0) {
+      CanvasElementDrawer.drawSelectionHighlights(ctx, selRects);
+    }
     ctx.restore();
   }
 
@@ -1464,6 +2942,10 @@ struct DocxWrappedBlockView {
   imageStore: ImageStore = new ImageStore('');
   @Prop @Watch('onHighlightsChanged') groupMatches: model.SearchMatch[] = [];
   @Prop @Watch('onHighlightsChanged') currentMatchKey: string = '';
+  /** 组内首个 flow 块在全局文本索引中的起始块编号；floats 文本紧随其后 */
+  @Prop blockBaseIndex: number = -1;
+  /** 选区身份字符串；变化即重绘以刷新组内选区高亮 */
+  @Prop @Watch('onHighlightsChanged') selectionKey: string = '';
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
@@ -1506,9 +2988,88 @@ struct DocxWrappedBlockView {
     if (params['currentMatchKey'] !== undefined) {
       this.currentMatchKey = params['currentMatchKey'] as string;
     }
+    this.blockBaseIndex = params['blockBaseIndex'] !== undefined ? (params['blockBaseIndex'] as number) : -1;
+    this.selectionKey = params['selectionKey'] !== undefined ? (params['selectionKey'] as string) : '';
     this.releaseAcquired();
     this.loadImages();
     this.drawComposite();
+  }
+
+  /**
+   * 组内选区高亮矩形（组画布局部坐标）。
+   * 块编号顺序与 DocxFlowView 的全量索引一致：先按 flows 顺序，再按 floats 顺序，
+   * 只对含文字的 flow/float 递增编号，因此这里的累加必须与索引构建完全同步。
+   */
+  private selectionRects(): TextRect[] {
+    const group = this.group;
+    if (!group || !this.selectionKey || this.blockBaseIndex < 0) {
+      return [];
+    }
+    const span = decodeSelectionKey(this.selectionKey);
+    if (!span.active || span.endBlock < this.blockBaseIndex) {
+      return [];
+    }
+    const selection = selectionFromSpan(span);
+    if (!selection) {
+      return [];
+    }
+    const result: TextRect[] = [];
+    let blockIndex = this.blockBaseIndex;
+    let curY = group.flowStartY;
+    for (const flow of group.flows) {
+      const paras = flow.element.paragraphs ?? [];
+      const layout = CanvasElementDrawer.buildParagraphsBlockLines(
+        this.ctx, paras, 0, group.width, 0, 'TOP', true, group.obstacles, curY, 0
+      );
+      if (layout.fullText.length > 0) {
+        if (blockTouchesSelection(blockIndex, span.startBlock, span.endBlock)) {
+          const lines = translateLineMetrics(layout.lines, 0, curY);
+          const block = makeContainerBlock(blockIndex, 0, layout.fullText, lines);
+          const rects = new DocumentTextLayout([block]).blockSelectionRects(selection, blockIndex);
+          for (const rect of rects) {
+            result.push(rect);
+          }
+        }
+        blockIndex++;
+      }
+      // 同步推进纵向位置：绘制侧同样按 before/行高/after 累加
+      for (const para of paras) {
+        curY += Math.max(0, para.before || 0);
+        const lines = CanvasElementDrawer.layoutParagraph(this.ctx, para, group.width, true, group.obstacles, curY, 0);
+        let drawnH = 0;
+        for (const line of lines) {
+          drawnH += line.height;
+        }
+        curY += drawnH + Math.max(0, para.after || 0);
+      }
+      curY += 8;
+    }
+    for (const floatItem of group.floats) {
+      const paras = floatItem.element.paragraphs ?? [];
+      if (paras.length === 0) {
+        continue;
+      }
+      const pad = Math.max(0, floatItem.element.padding ?? 4);
+      const rawW = floatItem.element.width > 0 ? floatItem.element.width : floatItem.width;
+      const availW = Math.max(1, rawW - pad * 2);
+      const layout = CanvasElementDrawer.buildParagraphsBlockLines(
+        this.ctx, paras, pad, availW, floatItem.height, floatItem.element.verticalAlignment,
+        floatItem.element.textWrap !== false
+      );
+      if (layout.fullText.length === 0) {
+        continue;
+      }
+      if (blockTouchesSelection(blockIndex, span.startBlock, span.endBlock)) {
+        const lines = translateLineMetrics(layout.lines, floatItem.x, floatItem.y);
+        const block = makeContainerBlock(blockIndex, 0, layout.fullText, lines);
+        const rects = new DocumentTextLayout([block]).blockSelectionRects(selection, blockIndex);
+        for (const rect of rects) {
+          result.push(rect);
+        }
+      }
+      blockIndex++;
+    }
+    return result;
   }
 
   private releaseAcquired(): void {
@@ -1608,6 +3169,12 @@ struct DocxWrappedBlockView {
         this.drawFloat(f);
       }
     }
+
+    // 选区高亮最后绘制，保证覆盖在绕排文字与检索高亮之上
+    const selRects = this.selectionRects();
+    if (selRects.length > 0) {
+      CanvasElementDrawer.drawSelectionHighlights(this.ctx, selRects);
+    }
   }
 
   build() {
@@ -1629,299 +3196,66 @@ struct DocxWrappedBlockView {
   }
 }
 
-interface TextSpanItem {
-  text: string;
-  run: model.Run;
-  isHighlight: boolean;
-  isCurrent: boolean;
-}
-
-interface RunOverlap {
-  start: number;
-  end: number;
-  isCur: boolean;
-}
 
 /**
- * 搜索结果的身份字符串。ArkUI 的 @Prop 只能观察简单类型，普通属性在 LazyForEach 复用后
- * 不会随父组件更新，因此用字符串承载「当前命中」驱动 DOCX 子组件刷新。
+ * DOCX 普通流式文本块：单个自测量 Canvas 绘制全部段落。
+ *
+ * 从 ArkUI Text/Span 迁移到 Canvas 的原因：只有 Canvas 才能拿到逐行几何与字符 X 偏移，
+ * 从而支持跨段落连续划词、精确高亮与手柄定位；同时与 DocxWrappedBlockView / DocxTableView
+ * 共用 CanvasElementDrawer 的同一套排版规则，使普通块与绕排块的间距、缩进、
+ * 上下标、下划线、删除线、字间距与两端对齐完全一致。
+ *
+ * 保留 @Reusable 与 List + LazyForEach 虚拟化：每个 ListItem 依然是独立可回收组件，
+ * Canvas 只在 onReady / onAreaChange / 命中/选区变化时重绘。
  */
-export function searchMatchKey(match: model.SearchMatch | null): string {
-  if (!match) return '';
-  return `${match.pageIndex}|${match.elementIndex}|${match.paragraphIndex}|${match.row}|${match.column}|${match.startChar}|${match.endChar}`;
-}
-
-function buildHighlightedSpans(
-  para: model.Paragraph,
-  paraMatches: model.SearchMatch[] | undefined,
-  currentMatchKey: string
-): TextSpanItem[] {
-  const allRuns: model.Run[] = [];
-  if (para.bullet && para.bullet.length > 0) {
-    const firstRun = para.runs && para.runs.length > 0 ? para.runs[0] : null;
-    const bulletRun: model.Run = {
-      text: para.bullet,
-      size: firstRun?.size || 14,
-      fontFace: firstRun?.fontFace || '',
-      color: firstRun?.color ?? 0xff202124,
-      bold: firstRun ? RenderUtils.resolveFontBold(firstRun.fontFace, firstRun.bold) : false,
-      italic: firstRun?.italic || false,
-      underline: false
-    };
-    allRuns.push(bulletRun);
-  }
-  if (para.runs && para.runs.length > 0) {
-    allRuns.push(...para.runs);
-  }
-
-  if (allRuns.length === 0) {
-    return [];
-  }
-  if (!paraMatches || paraMatches.length === 0) {
-    return allRuns.map((r): TextSpanItem => {
-      const item: TextSpanItem = {
-        text: r.text,
-        run: r,
-        isHighlight: false,
-        isCurrent: false
-      };
-      return item;
-    });
-  }
-
-  let charCursor = 0;
-  const result: TextSpanItem[] = [];
-
-  for (const run of allRuns) {
-    const runText = run.text;
-    const runLen = runText.length;
-    if (runLen === 0) continue;
-
-    const runStart = charCursor;
-    const runEnd = runStart + runLen;
-    charCursor = runEnd;
-
-    const overlaps: RunOverlap[] = [];
-    for (const m of paraMatches) {
-      if (m.endChar > runStart && m.startChar < runEnd) {
-        const oStart = Math.max(0, m.startChar - runStart);
-        const oEnd = Math.min(runLen, m.endChar - runStart);
-        if (oEnd > oStart) {
-          const isCur = currentMatchKey.length > 0 && searchMatchKey(m) === currentMatchKey;
-          const overlap: RunOverlap = { start: oStart, end: oEnd, isCur: isCur };
-          overlaps.push(overlap);
-        }
-      }
-    }
-
-    if (overlaps.length === 0) {
-      const normalItem: TextSpanItem = { text: runText, run: run, isHighlight: false, isCurrent: false };
-      result.push(normalItem);
-      continue;
-    }
-
-    let localIdx = 0;
-    while (localIdx < runLen) {
-      const activeOverlap = overlaps.find((o: RunOverlap): boolean => localIdx >= o.start && localIdx < o.end);
-      if (activeOverlap) {
-        const segEnd = activeOverlap.end;
-        const hlItem: TextSpanItem = {
-          text: runText.substring(localIdx, segEnd),
-          run: run,
-          isHighlight: true,
-          isCurrent: activeOverlap.isCur
-        };
-        result.push(hlItem);
-        localIdx = segEnd;
-      } else {
-        let nextStart = runLen;
-        for (const o of overlaps) {
-          if (o.start > localIdx && o.start < nextStart) {
-            nextStart = o.start;
-          }
-        }
-        const nonHlItem: TextSpanItem = {
-          text: runText.substring(localIdx, nextStart),
-          run: run,
-          isHighlight: false,
-          isCurrent: false
-        };
-        result.push(nonHlItem);
-        localIdx = nextStart;
-      }
-    }
-  }
-
-  return result;
-}
-
-@Component
-struct DocxParagraphView {
-  para: model.Paragraph | null = null;
-  @Prop paraMatches: model.SearchMatch[] = [];
-  @Prop currentMatchKey: string = '';
-
-  private calcLineHeight(): number | undefined {
-    if (!this.para || !this.para.runs || this.para.runs.length === 0) return undefined;
-    let maxFontSize = 14;
-    for (const r of this.para.runs) {
-      if (r.size && r.size > maxFontSize) maxFontSize = r.size;
-    }
-    if (this.para.lineSpacingRule === 'EXACT') {
-      return Math.max(1, this.para.lineSpacing || (maxFontSize * 1.2));
-    }
-    if (this.para.lineSpacingRule === 'AT_LEAST') {
-      return Math.max(maxFontSize * 1.2, this.para.lineSpacing || (maxFontSize * 1.2));
-    }
-    if (this.para.lineSpacing && this.para.lineSpacing > 0 && Math.abs(this.para.lineSpacing - 1.0) > 0.05) {
-      return Math.max(1, maxFontSize * 1.2 * this.para.lineSpacing);
-    }
-    return undefined;
-  }
-
-  private calcBaselineOffset(run: model.Run): LengthMetrics {
-    const fontSize = (run.size || 14) * 0.65;
-    const offset = run.vertAlign === 'superscript'
-      ? fontSize * 0.45
-      : (run.vertAlign === 'subscript' ? -fontSize * 0.25 : 0);
-    return new LengthMetrics(offset, LengthUnit.VP);
-  }
-
-  build() {
-    if (this.para) {
-      Text() {
-        ForEach(
-          buildHighlightedSpans(this.para, this.paraMatches, this.currentMatchKey),
-          (item: TextSpanItem, rIdx: number) => {
-            Span(item.text)
-              .fontSize(
-                item.run.vertAlign === 'superscript' || item.run.vertAlign === 'subscript'
-                  ? (item.run.size || 14) * 0.65
-                  : (item.run.size || 14)
-              )
-              .baselineOffset(this.calcBaselineOffset(item.run))
-              .fontFamily(RenderUtils.resolveFontFamily(item.run.fontFace, false))
-              .fontColor(
-                item.isCurrent
-                  ? '#000000'
-                  : (RenderUtils.argbToCss(item.run.color) ?? '#202124')
-              )
-              .fontWeight(
-                item.isCurrent
-                  ? FontWeight.Bolder
-                  : RenderUtils.resolveFontWeight(item.run.fontFace, item.run.bold, item.run.weight)
-              )
-              .fontStyle(item.run.italic ? FontStyle.Italic : FontStyle.Normal)
-              .letterSpacing(item.run.spacing ? `${item.run.spacing}vp` : undefined)
-              .textBackgroundStyle(
-                item.isHighlight
-                  ? {
-                      color: item.isCurrent ? '#FFA726' : '#FFF59D',
-                      radius: '2vp'
-                    }
-                  : (item.run.background && item.run.background !== 0
-                      ? {
-                          color: RenderUtils.argbToCss(item.run.background) ?? '#00000000',
-                          radius: '0vp'
-                        }
-                      : undefined)
-              )
-              .decoration({
-                type: item.run.strike
-                  ? TextDecorationType.LineThrough
-                  : (item.run.underline ? TextDecorationType.Underline : TextDecorationType.None),
-                color: RenderUtils.argbToCss(item.run.color) ?? '#202124'
-              })
-          },
-          (item: TextSpanItem, rIdx: number) => `span-${rIdx}-${item.text.length}-${item.isHighlight ? (item.isCurrent ? 2 : 1) : 0}-${item.run.background ?? 0}`
-        )
-      }
-      .width('100%')
-      .textAlign(this.mapAlignment(this.para.alignment))
-      .textIndent(this.para.firstLineIndent && this.para.firstLineIndent > 0 ? this.para.firstLineIndent : 0)
-      .lineHeight(this.calcLineHeight())
-      .margin({
-        top: this.para.before ?? 2,
-        bottom: this.para.after ?? 4,
-        left: Math.max(0, this.para.indent ?? 0),
-        right: Math.max(0, this.para.rightIndent ?? 0)
-      })
-      .backgroundColor(
-        this.para.background && this.para.background !== 0
-          ? (RenderUtils.argbToCss(this.para.background) ?? undefined)
-          : undefined
-      )
-      .border(this.calcBorder())
-      .padding(this.calcPadding())
-    }
-  }
-
-  private calcBorder(): BorderOptions | undefined {
-    if (!this.para || !this.para.borderWidth || this.para.borderWidth <= 0) {
-      return undefined;
-    }
-    const bw = this.para.borderWidth;
-    const topColor = this.para.borderTop && this.para.borderTop !== 0 ? RenderUtils.argbToCss(this.para.borderTop) : undefined;
-    const bottomColor = this.para.borderBottom && this.para.borderBottom !== 0 ? RenderUtils.argbToCss(this.para.borderBottom) : undefined;
-    const leftColor = this.para.borderLeft && this.para.borderLeft !== 0 ? RenderUtils.argbToCss(this.para.borderLeft) : undefined;
-    const rightColor = this.para.borderRight && this.para.borderRight !== 0 ? RenderUtils.argbToCss(this.para.borderRight) : undefined;
-    if (!topColor && !bottomColor && !leftColor && !rightColor) {
-      return undefined;
-    }
-    return {
-      width: {
-        top: topColor ? `${bw}vp` : '0vp',
-        bottom: bottomColor ? `${bw}vp` : '0vp',
-        left: leftColor ? `${bw}vp` : '0vp',
-        right: rightColor ? `${bw}vp` : '0vp'
-      },
-      color: {
-        top: topColor ?? '#000000',
-        bottom: bottomColor ?? '#000000',
-        left: leftColor ?? '#000000',
-        right: rightColor ?? '#000000'
-      }
-    };
-  }
-
-  private calcPadding(): Padding | undefined {
-    if (!this.para) return undefined;
-    const hasBorder = !!(this.para.borderWidth && this.para.borderWidth > 0 &&
-      (this.para.borderTop || this.para.borderBottom || this.para.borderLeft || this.para.borderRight));
-    const hasBg = !!(this.para.background && this.para.background !== 0);
-    if (!hasBorder && !hasBg) return undefined;
-    return {
-      top: (this.para.borderTop || hasBg) ? 2 : 0,
-      bottom: (this.para.borderBottom || hasBg) ? 2 : 0,
-      left: (this.para.borderLeft || hasBg) ? 4 : 0,
-      right: (this.para.borderRight || hasBg) ? 4 : 0
-    };
-  }
-
-  private mapAlignment(align: number): TextAlign {
-    switch (align) {
-      case 1: return TextAlign.Center;
-      case 2: return TextAlign.End;
-      case 3: return TextAlign.JUSTIFY;
-      default: return TextAlign.Start;
-    }
-  }
-}
-
 @Reusable
 @Component
 struct DocxTextBlockView {
   element: model.Element | null = null;
   @Prop @Watch('onMatchesChanged') blockMatches: model.SearchMatch[] = [];
   @Prop @Watch('onCurrentMatchKeyChanged') currentMatchKey: string = '';
+  /** 本块在全局文本索引中的起始块编号（普通元素块数恒为 1） */
+  @Prop blockBaseIndex: number = -1;
+  /** 选区身份字符串；变化即重绘以刷新块内选区高亮 */
+  @Prop @Watch('onSelectionChanged') selectionKey: string = '';
+  /**
+   * ListItem 内容宽度（vp）。与 DocxFlowView 建立文本索引时使用的宽度同源，
+   * 保证命中测试/选区矩形与这里实际绘制的折行结果完全一致。
+   */
+  contentWidth: number = 0;
   @State private reuseVersion: number = 0;
+  @State private measuredHeight: number = 0;
+
+  private settings: RenderingContextSettings = new RenderingContextSettings(true);
+  private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private measureCtx: OffscreenCanvasRenderingContext2D | null = null;
+  private isReady: boolean = false;
+  private measuredWidth: number = 0;
+  /**
+   * 本块的行几何、拼接纯文本与预构建文本块。
+   * 只在 memo 宽度/内容变化时重建：CanvasTextLineMetrics 内部会缓存逐字 X 偏移，
+   * 复用它可避免拖选时每帧对整块正文重新 measureText。
+   */
+  private block: TextBlockLayout | null = null;
+  private blockLayout: DocumentTextLayout | null = null;
 
   onCurrentMatchKeyChanged(): void {
-    this.reuseVersion++;
+    this.drawBlock();
   }
 
   onMatchesChanged(): void {
-    this.reuseVersion++;
+    this.drawBlock();
+  }
+
+  onSelectionChanged(): void {
+    this.drawBlock();
+  }
+
+  aboutToAppear(): void {
+    this.measureHeight();
+    if (this.isReady) {
+      this.drawBlock();
+    }
   }
 
   aboutToReuse(params: Record<string, Object>): void {
@@ -1935,31 +3269,204 @@ struct DocxTextBlockView {
     if (params['currentMatchKey'] !== undefined) {
       this.currentMatchKey = params['currentMatchKey'] as string;
     }
+    this.blockBaseIndex = params['blockBaseIndex'] !== undefined ? (params['blockBaseIndex'] as number) : -1;
+    this.selectionKey = params['selectionKey'] !== undefined ? (params['selectionKey'] as string) : '';
+    this.contentWidth = params['contentWidth'] !== undefined ? (params['contentWidth'] as number) : 0;
+    this.measuredWidth = 0;
+    this.measureHeight();
+    this.drawBlock();
+  }
+
+  private ensureMeasureCtx(): OffscreenCanvasRenderingContext2D {
+    if (!this.measureCtx) {
+      this.measureCtx = new OffscreenCanvas(1, 1).getContext('2d', new RenderingContextSettings(true));
+    }
+    return this.measureCtx;
+  }
+
+  /** 段内水平内边距：普通流式块 core 下发 padding 为 0，缺省时同样按 0 处理 */
+  private resolvePadding(): number {
+    const el = this.element;
+    return el ? docxTextPadding(el) : 0;
+  }
+
+  /**
+   * 可用排版宽度（vp），与 buildParagraphsBlockLines 的 availableWidth 参数一致。
+   * 优先用实测画布宽度（Canvas 为 100% 宽，即 ListItem 内容宽度），
+   * 首帧尚未测量时回退到父组件下发的 contentWidth，两者同源因此不会产生折行差异。
+   */
+  private resolveAvailableWidth(): number {
+    const padding = this.resolvePadding();
+    const base = this.measuredWidth > 0
+      ? this.measuredWidth
+      : (this.contentWidth > 0 ? this.contentWidth : 320);
+    return Math.max(1, base - padding * 2);
+  }
+
+  /**
+   * 测量块高度：以与绘制完全相同的参数调用 buildParagraphsBlockLines，
+   * 累加行高与段落 before/after，得到 Canvas 需要占用的纵向尺寸。
+   */
+  private measureHeight(): void {
+    const el = this.element;
+    if (!el || !el.paragraphs || el.paragraphs.length === 0) {
+      if (this.measuredHeight !== 0) {
+        this.measuredHeight = 0;
+      }
+      return;
+    }
+    const ctx = this.ensureMeasureCtx();
+    const padding = this.resolvePadding();
+    const availW = this.resolveAvailableWidth();
+    const layout = CanvasElementDrawer.buildParagraphsBlockLines(
+      ctx,
+      el.paragraphs,
+      padding,
+      availW,
+      0,
+      el.verticalAlignment,
+      el.textWrap !== false
+    );
+    // 行矩形的 top/bottom 已包含段落 before 与累计行高，最后一段的 after 与底 padding 需补上
+    let contentBottom = 0;
+    for (const line of layout.lines) {
+      if (line.bottom > contentBottom) {
+        contentBottom = line.bottom;
+      }
+    }
+    let total = contentBottom + padding;
+    const lastPara = el.paragraphs[el.paragraphs.length - 1];
+    total += Math.max(0, lastPara.after || 0);
+    const next = Math.max(1, Math.ceil(total));
+    if (Math.abs(next - this.measuredHeight) > 0.5) {
+      this.measuredHeight = next;
+    }
+    // 预构建文本块：选区高亮与手柄几何直接复用这份行度量（含逐字偏移缓存）
+    if (this.blockBaseIndex >= 0 && layout.fullText.length > 0) {
+      this.block = makeContainerBlock(this.blockBaseIndex, 0, layout.fullText, layout.lines);
+      this.blockLayout = new DocumentTextLayout([this.block]);
+    } else {
+      this.block = null;
+      this.blockLayout = null;
+    }
+  }
+
+  /** 本块在选区中的高亮矩形（块局部坐标） */
+  private selectionRects(): TextRect[] {
+    if (!this.selectionKey || this.blockBaseIndex < 0) {
+      return [];
+    }
+    const span = decodeSelectionKey(this.selectionKey);
+    if (!span.active || !blockTouchesSelection(this.blockBaseIndex, span.startBlock, span.endBlock)) {
+      return [];
+    }
+    const selection = selectionFromSpan(span);
+    if (!selection || !this.blockLayout) {
+      return [];
+    }
+    return this.blockLayout.blockSelectionRects(selection, this.blockBaseIndex);
+  }
+
+  private drawBlock(): void {
+    if (!this.isReady || !this.element) {
+      return;
+    }
+    const w = this.ctx.width;
+    const h = this.ctx.height;
+    if (w <= 0 || h <= 0) {
+      return;
+    }
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, w, h);
+    const el = this.element;
+    const paragraphs = el.paragraphs ?? [];
+    if (paragraphs.length === 0) {
+      return;
+    }
+    const padding = this.resolvePadding();
+    const availW = Math.max(1, w - padding * 2);
+    const wrap = el.textWrap !== false;
+
+    // 逐段绘制：与 buildParagraphsBlockLines 相同的 before/after 与纵向累加规则
+    let curY = padding;
+    for (let pIdx = 0; pIdx < paragraphs.length; pIdx++) {
+      const para = paragraphs[pIdx];
+      curY += Math.max(0, para.before || 0);
+      const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, wrap);
+      const drawnH = CanvasElementDrawer.drawParagraphLines(ctx, para, lines, padding, curY, availW);
+      curY += drawnH + Math.max(0, para.after || 0);
+    }
+
+    // 检索高亮：在文字之上叠加半透明底色，当前命中加重
+    if (this.blockMatches && this.blockMatches.length > 0) {
+      for (const m of this.blockMatches) {
+        const isCurrent = this.currentMatchKey.length > 0 && searchMatchKey(m) === this.currentMatchKey;
+        if (m.paragraphIndex < 0 || m.paragraphIndex >= paragraphs.length) {
+          continue;
+        }
+        const para = paragraphs[m.paragraphIndex];
+        // 计算该段起始 Y：重放 before/after 累加，避免依赖未导出的内部布局表
+        let paraY = padding;
+        for (let i = 0; i < m.paragraphIndex; i++) {
+          const prev = paragraphs[i];
+          paraY += Math.max(0, prev.before || 0);
+          const prevLines = CanvasElementDrawer.layoutParagraph(ctx, prev, availW, wrap);
+          for (const line of prevLines) {
+            paraY += line.height;
+          }
+          paraY += Math.max(0, prev.after || 0);
+        }
+        paraY += Math.max(0, para.before || 0);
+        const rects = CanvasElementDrawer.computeParagraphHighlightRects(
+          ctx, para, m.startChar, m.endChar, padding, paraY, availW, wrap
+        );
+        for (const r of rects) {
+          if (isCurrent) {
+            ctx.fillStyle = 'rgba(255, 160, 0, 0.75)';
+            ctx.fillRect(r.x, r.y, r.width, r.height);
+            ctx.strokeStyle = '#e65100';
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(r.x, r.y, r.width, r.height);
+          } else {
+            ctx.fillStyle = 'rgba(255, 235, 59, 0.45)';
+            ctx.fillRect(r.x, r.y, r.width, r.height);
+          }
+        }
+      }
+    }
+
+    // 选区高亮最后绘制，保证覆盖在文字与检索高亮之上
+    const selRects = this.selectionRects();
+    if (selRects.length > 0) {
+      CanvasElementDrawer.drawSelectionHighlights(ctx, selRects);
+    }
   }
 
   build() {
-    if (this.element && this.element.paragraphs) {
-      Column({ space: 4 }) {
-        ForEach(
-          this.element.paragraphs,
-          (para: model.Paragraph, pIdx: number) => {
-            DocxParagraphView({
-              para: para,
-              paraMatches: this.blockMatches ? this.blockMatches.filter(m => m.paragraphIndex === pIdx) : [],
-              currentMatchKey: this.currentMatchKey
-            })
-          },
-          // key 带上当前命中，切换命中时仅重建受影响的段落
-          (_para: model.Paragraph, pIdx: number): string => {
-            const isCur = this.blockMatches && this.blockMatches.some((m: model.SearchMatch): boolean =>
-              m.paragraphIndex === pIdx && searchMatchKey(m) === this.currentMatchKey
-            );
-            return `p-${pIdx}-${this.reuseVersion}-${this.blockMatches.length}-${isCur ? this.currentMatchKey : 'idle'}`;
-          }
-        )
+    if (this.element && this.element.paragraphs && this.element.paragraphs.length > 0) {
+      Row() {
+        Canvas(this.ctx)
+          .width('100%')
+          .height(this.measuredHeight > 0 ? this.measuredHeight : 1)
+          .constraintSize({ maxWidth: '100%' })
+          .onReady(() => {
+            this.isReady = true;
+            this.measureHeight();
+            this.drawBlock();
+          })
+          .onAreaChange((_oldVal: Area, newVal: Area) => {
+            const newW = Number(newVal.width);
+            if (newW > 0 && Math.abs(newW - this.measuredWidth) > 0.5) {
+              this.measuredWidth = newW;
+              // 宽度变化会改变折行结果与块高度，必须重新测量后重绘
+              this.measureHeight();
+              this.drawBlock();
+            }
+          })
       }
+      .id(`text-${this.reuseVersion}`)
       .width('100%')
-      .alignItems(HorizontalAlign.Start)
+      .justifyContent(resolveInlineFlexAlign(this.element))
     }
   }
 }
@@ -1972,6 +3479,10 @@ struct DocxTableView {
   @Prop @Watch('onMatchesChanged') blockMatches: model.SearchMatch[] = [];
   // Canvas 不会被 ArkUI 自动重绘，@Watch 保证「当前命中」变化时立即重画
   @Prop @Watch('onCurrentMatchKeyChanged') currentMatchKey: string = '';
+  /** 表格首个非空单元格在全局文本索引中的起始块编号，其余单元格按行优先依次递增 */
+  @Prop blockBaseIndex: number = -1;
+  /** 选区身份字符串；变化即重绘以刷新单元格内选区高亮 */
+  @Prop @Watch('onSelectionChanged') selectionKey: string = '';
   @State private reuseVersion: number = 0;
   @State private measuredHeight: number = 60;
 
@@ -1996,6 +3507,10 @@ struct DocxTableView {
     this.drawTable();
   }
 
+  onSelectionChanged(): void {
+    this.drawTable();
+  }
+
   aboutToReuse(params: Record<string, Object>): void {
     this.releaseImages();
     if (params['element']) {
@@ -2010,12 +3525,47 @@ struct DocxTableView {
     if (params['currentMatchKey'] !== undefined) {
       this.currentMatchKey = params['currentMatchKey'] as string;
     }
+    this.blockBaseIndex = params['blockBaseIndex'] !== undefined ? (params['blockBaseIndex'] as number) : -1;
+    this.selectionKey = params['selectionKey'] !== undefined ? (params['selectionKey'] as string) : '';
     this.reuseVersion++;
     this.updateHeight();
     this.preloadImages();
     if (this.isReady) {
       this.drawTable();
     }
+  }
+
+  /**
+   * 表格内各单元格的选区高亮矩形（表格元素局部坐标）。
+   * 每个非空单元格独立成一个文本块，块编号从 blockBaseIndex 起按行优先递增，
+   * 与 DocxFlowView 建立的全量索引、CanvasElementDrawer.buildElementTextBlocks 完全一致。
+   */
+  private selectionRects(): TextRect[] {
+    const el = this.element;
+    if (!el || !this.selectionKey || this.blockBaseIndex < 0) {
+      return [];
+    }
+    const span = decodeSelectionKey(this.selectionKey);
+    if (!span.active || span.endBlock < this.blockBaseIndex) {
+      return [];
+    }
+    const selection = selectionFromSpan(span);
+    if (!selection) {
+      return [];
+    }
+    const blocks = CanvasElementDrawer.buildElementTextBlocks(this.ctx, el, this.blockBaseIndex, 0);
+    const result: TextRect[] = [];
+    for (const block of blocks) {
+      if (!blockTouchesSelection(block.blockIndex, span.startBlock, span.endBlock)) {
+        continue;
+      }
+      const layout = new DocumentTextLayout([block]);
+      const rects = layout.blockSelectionRects(selection, block.blockIndex);
+      for (const rect of rects) {
+        result.push(rect);
+      }
+    }
+    return result;
   }
 
   private preloadImages(): void {
@@ -2085,6 +3635,19 @@ struct DocxTableView {
           }
         }
       }
+    }
+
+    // 选区高亮叠加在表格文字之上，保证与检索高亮可区分
+    const selRects = this.selectionRects();
+    if (selRects.length > 0) {
+      ctx.save();
+      ctx.transform(
+        this.element.transform[0], this.element.transform[1],
+        this.element.transform[2], this.element.transform[3],
+        this.element.transform[4], this.element.transform[5]
+      );
+      CanvasElementDrawer.drawSelectionHighlights(ctx, selRects);
+      ctx.restore();
     }
   }
 
@@ -2160,7 +3723,8 @@ struct PptxSlidesView {
     jumpToPage: (pageNumber: number) => void,
     getZoom: () => number,
     setZoom: (value: number) => void,
-    scrollToMatch?: (match: model.SearchMatch) => void
+    scrollToMatch?: (match: model.SearchMatch) => void,
+    selection?: SelectionControlHooks
   ) => void;
 
   private imageStore: ImageStore = new ImageStore('');
@@ -2168,6 +3732,39 @@ struct PptxSlidesView {
   private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
   private isReady: boolean = false;
   private isDisappeared: boolean = false;
+
+  // MARK: - 文本选区状态
+  /** 选区身份字符串（空串表示无选区），变化即触发 Canvas 重绘 */
+  @State private selectionKey: string = '';
+  /** 浮动气泡状态：仅在手势停稳后更新 */
+  @State private bubbleShown: boolean = false;
+  @State private bubbleAnchorX: number = 0;
+  @State private bubbleAnchorY: number = 0;
+  @State private bubbleBottomY: number = 0;
+  @State private bubbleShowSelectAll: boolean = true;
+  /** 拖选期间屏蔽 PanGesture，防止画布在拖选时抢占手指 */
+  @State private isSelectionDragging: boolean = false;
+
+  private selection: TextSelection | null = null;
+  /** 拖拽模式：0 无 / 1 起点手柄 / 2 终点手柄 / 3 长按拖选 */
+  private dragMode: number = 0;
+  /** 起止手柄屏幕锚点；对端所在页不可见时为 null 但槽位保持不变 */
+  private startHandleAnchor: SelectionHandleAnchor | null = null;
+  private endHandleAnchor: SelectionHandleAnchor | null = null;
+  private lastTouchX: number = 0;
+  private lastTouchY: number = 0;
+  private edgeScrollTimer: number = -1;
+  private edgeScrollDirectionX: number = 0;
+  private edgeScrollDirectionY: number = 0;
+  private bubbleTimer: number = -1;
+
+  // MARK: - 文本索引（按页懒构建）
+  /** 全量轻量索引：所有页的纯文本，用于全选与复制 */
+  private textLayout: DocumentTextLayout | null = null;
+  /** 页 -> 该页首个块的全局块编号 */
+  private pageBlockBase: Map<number, number> = new Map();
+  /** 已构建完整行度量的页布局，键为页索引 */
+  private measuredPageLayouts: Map<number, DocumentTextLayout> = new Map();
 
   private pageLayouts: PptxPageLayout[] = [];
   private contentWidth: number = 720;
@@ -2230,6 +3827,7 @@ struct PptxSlidesView {
     this.isDisappeared = false;
     this.imageStore = new ImageStore(this.filePath);
     this.initLayouts();
+    this.rebuildTextIndex();
     if (this.registerControls) {
       this.registerControls(
         (pageNumber: number): void => {
@@ -2241,8 +3839,696 @@ struct PptxSlidesView {
         },
         (match: model.SearchMatch): void => {
           this.scrollToMatch(match);
-        }
+        },
+        this.buildSelectionHooks()
       );
+    }
+  }
+
+  /** 组装选区控制钩子，交给 OfficePreviewController 统一调度 */
+  private buildSelectionHooks(): SelectionControlHooks {
+    const hooks: SelectionControlHooks = {
+      selectAll: (): boolean => this.selectAll(),
+      clearSelection: (): void => this.clearSelection(),
+      hasSelection: (): boolean => this.hasSelection(),
+      getSelectedText: (): string => this.getSelectedText(),
+      copySelection: (): boolean => this.copySelection()
+    };
+    return hooks;
+  }
+
+  // MARK: - 文本索引构建
+
+  /**
+   * 按页构建全量文本索引：每页按 elements 顺序、每元素按单元格/段落顺序分配 blockIndex。
+   * 初始只提取纯文本（不触发 Canvas measureText），使 selectAll 与 getSelectedText
+   * 在未访问过的远端页上也能立即返回完整结果；行几何在该页绘制或命中时懒补齐。
+   */
+  private rebuildTextIndex(): void {
+    const blocks: TextBlockLayout[] = [];
+    const pageBase: Map<number, number> = new Map();
+    let blockIndex = 0;
+    for (let pageIdx = 0; pageIdx < this.pageLayouts.length; pageIdx++) {
+      const layout = this.pageLayouts[pageIdx];
+      pageBase.set(pageIdx, blockIndex);
+      for (const element of layout.page.elements ?? []) {
+        const parts = CanvasElementDrawer.extractElementFullText(element);
+        for (const part of parts) {
+          blocks.push(makeContainerBlock(blockIndex, pageIdx, part, []));
+          blockIndex++;
+        }
+      }
+    }
+    this.textLayout = new DocumentTextLayout(blocks);
+    this.pageBlockBase = pageBase;
+    this.measuredPageLayouts.clear();
+  }
+
+  /** 某一页在全局索引中的块区间 [首个块编号, 末块编号]；无文本时返回 [-1, -1] */
+  private pageBlockRange(pageIdx: number): number[] {
+    const base = this.pageBlockBase.get(pageIdx);
+    if (base === undefined) {
+      return [-1, -1];
+    }
+    const nextBase = this.pageBlockBase.get(pageIdx + 1);
+    let end = (nextBase !== undefined ? nextBase : Number.MAX_SAFE_INTEGER) - 1;
+    const layout = this.textLayout;
+    if (layout) {
+      const total = layout.blocks.length;
+      if (nextBase === undefined) {
+        end = total - 1;
+      }
+    }
+    return [base, end];
+  }
+
+  /**
+   * 懒构建单页的完整行度量（页内容坐标 + 恒等仿射变换）。
+   * 与 drawPptx 中 `translate(slideLeft, layout.y); drawElement()` 的绘制路径一致，
+   * 行度量以「页左上角为原点」表达，屏幕映射时再叠加 slideLeft / layout.y / 视口变换。
+   */
+  private ensurePageLayout(pageIdx: number): DocumentTextLayout | null {
+    const cached = this.measuredPageLayouts.get(pageIdx);
+    if (cached) {
+      return cached;
+    }
+    const layout = this.pageLayouts[pageIdx];
+    if (!layout) {
+      return null;
+    }
+    const baseInfo = this.pageBlockRange(pageIdx);
+    if (baseInfo[0] < 0) {
+      return null;
+    }
+    const blocks: TextBlockLayout[] = [];
+    let blockIndex = baseInfo[0];
+    for (const element of layout.page.elements ?? []) {
+      const rawBlocks = CanvasElementDrawer.buildElementTextBlocks(this.ctx, element, blockIndex, pageIdx);
+      for (const block of rawBlocks) {
+        blocks.push(makeContainerBlock(block.blockIndex, pageIdx, block.fullText, block.lines));
+        blockIndex++;
+      }
+    }
+    const pageLayout = new DocumentTextLayout(blocks);
+    this.measuredPageLayouts.set(pageIdx, pageLayout);
+    return pageLayout;
+  }
+
+  // MARK: - 选区控制 API
+
+  /** 全选全部幻灯片的文本 */
+  public selectAll(): boolean {
+    const layout = this.textLayout;
+    if (!layout || !layout.hasText()) {
+      return false;
+    }
+    const range = layout.allTextRange();
+    if (!range || isSelectionEmpty(range)) {
+      return false;
+    }
+    this.setSelection(range);
+    this.scheduleBubble();
+    return true;
+  }
+
+  /** 清空选区、手柄与浮动气泡 */
+  public clearSelection(): void {
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.setSelection(null);
+  }
+
+  /** 当前是否存在非空选区 */
+  public hasSelection(): boolean {
+    return this.selection !== null && !isSelectionEmpty(this.selection);
+  }
+
+  /** 当前选中的纯文本（跨页跨块以换行连接） */
+  public getSelectedText(): string {
+    const layout = this.textLayout;
+    const selection = this.selection;
+    if (!layout || !selection) {
+      return '';
+    }
+    return layout.selectedText(selection);
+  }
+
+  /** 将选中文本写入系统剪贴板 */
+  public copySelection(): boolean {
+    const text = this.getSelectedText();
+    if (text.length === 0) {
+      return false;
+    }
+    return copyTextToPasteboard(text);
+  }
+
+  /** 更新选区并触发重绘 */
+  private setSelection(selection: TextSelection | null): void {
+    if (selection && isSelectionEmpty(selection)) {
+      selection = null;
+    }
+    this.selection = selection;
+    this.selectionKey = encodeSelectionKey(selection);
+    if (!selection) {
+      this.startHandleAnchor = null;
+      this.endHandleAnchor = null;
+      this.bubbleShown = false;
+    }
+    this.refreshSelectionOverlay();
+    this.redraw();
+  }
+
+  // MARK: - 屏幕坐标映射与手柄
+
+  /**
+   * 屏幕坐标 -> 幻灯片内容坐标。
+   * drawPptx 的变换链为：ctx.translate(left - offsetX, top - offsetY); ctx.scale(scale, scale)，
+   * 页内再 translate(slideLeft, layout.y)，因此反解为：
+   *   content = (screen + offset - left/top) / scale - (slideLeft, layout.y)
+   */
+  private screenToSlide(screenX: number, screenY: number): PlanePoint {
+    const scale = this.getScale();
+    const left = this.getLeft();
+    const top = this.getTop();
+    const point: PlanePoint = {
+      x: (scale > 0 ? (screenX + this.offsetX - left) / scale : 0),
+      y: (scale > 0 ? (screenY + this.offsetY - top) / scale : 0)
+    };
+    return point;
+  }
+
+  /** 幻灯片内容坐标 -> 屏幕坐标 */
+  private slideToScreen(contentX: number, contentY: number): PlanePoint {
+    const scale = this.getScale();
+    const left = this.getLeft();
+    const top = this.getTop();
+    const point: PlanePoint = {
+      x: contentX * scale + left - this.offsetX,
+      y: contentY * scale + top - this.offsetY
+    };
+    return point;
+  }
+
+  /** 内容坐标 -> 某页页内局部坐标 */
+  private toPageLocal(contentX: number, contentY: number, pageIdx: number): PlanePoint {
+    const layout = this.pageLayouts[pageIdx];
+    const point: PlanePoint = { x: contentX, y: contentY };
+    if (!layout) {
+      return point;
+    }
+    const slideLeft = (this.contentWidth - layout.width) / 2;
+    const local: PlanePoint = { x: contentX - slideLeft, y: contentY - layout.y };
+    return local;
+  }
+
+  /** 在可见页内做字符级命中；未落在任何页内时取纵向最近页 */
+  private hitTestScreen(screenX: number, screenY: number, lift: number): TextPosition | null {
+    if (this.pageLayouts.length === 0) {
+      return null;
+    }
+    const content = this.screenToSlide(screenX, screenY - lift);
+    const range = resolvePptxVisibleRange(
+      this.pageLayouts, content.y - 1, content.y + 1
+    );
+    const first = Math.max(0, Math.min(this.pageLayouts.length - 1, range.start - 1));
+    const last = Math.max(first, Math.min(this.pageLayouts.length - 1, range.end));
+    let nearest: TextPosition | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (let pageIdx = first; pageIdx <= last; pageIdx++) {
+      const pageLayout = this.ensurePageLayout(pageIdx);
+      if (!pageLayout || !pageLayout.hasText()) {
+        continue;
+      }
+      const local = this.toPageLocal(content.x, content.y, pageIdx);
+      const position = pageLayout.hitTest(local.x, local.y);
+      if (!position) {
+        continue;
+      }
+      const layout = this.pageLayouts[pageIdx];
+      const inside = local.x >= -8 && local.x <= layout.width + 8 && local.y >= -4 && local.y <= layout.height + 4;
+      if (inside) {
+        return position;
+      }
+      const distance = Math.abs(local.y - layout.height / 2);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = position;
+      }
+    }
+    return nearest;
+  }
+
+  /** 计算某个文本位置的屏幕手柄锚点（所在页当前不可见时返回 null） */
+  private resolveHandleAnchor(position: TextPosition): SelectionHandleAnchor | null {
+    const layout = this.textLayout;
+    if (!layout) {
+      return null;
+    }
+    const block = layout.blockAt(position.blockIndex);
+    if (!block) {
+      return null;
+    }
+    const pageIdx = block.pageIndex;
+    const pageLayout = this.ensurePageLayout(pageIdx);
+    if (!pageLayout) {
+      return null;
+    }
+    const localBlock = pageLayout.blockAt(position.blockIndex);
+    if (!localBlock) {
+      return null;
+    }
+    const handles = pageLayout.handleGeometry(makeTextSelection(position, position));
+    if (!handles) {
+      return null;
+    }
+    const pageInfo = this.pageLayouts[pageIdx];
+    if (!pageInfo) {
+      return null;
+    }
+    const slideLeft = (this.contentWidth - pageInfo.width) / 2;
+    const contentX = slideLeft + handles.start.docX;
+    const topPoint = this.slideToScreen(contentX, pageInfo.y + handles.start.docTopY);
+    const bottomPoint = this.slideToScreen(contentX, pageInfo.y + handles.start.docBottomY);
+    const anchor: SelectionHandleAnchor = { x: topPoint.x, y: topPoint.y, bottomY: bottomPoint.y };
+    return anchor;
+  }
+
+  /** 重算起止手柄锚点（供 forceDraw 复用） */
+  private refreshSelectionOverlay(): void {
+    const selection = this.selection;
+    if (selection && !isSelectionEmpty(selection)) {
+      this.startHandleAnchor = this.resolveHandleAnchor(spanStartPosition(selection));
+      this.endHandleAnchor = this.resolveHandleAnchor(spanEndPosition(selection));
+    } else {
+      this.startHandleAnchor = null;
+      this.endHandleAnchor = null;
+    }
+  }
+
+  /** 命中起止手柄热区：返回 1（起点）或 2（终点），未命中返回 0 */
+  private hitHandle(screenX: number, screenY: number): number {
+    if (this.hitsHandleAnchor(this.startHandleAnchor, screenX, screenY)) {
+      return 1;
+    }
+    if (this.hitsHandleAnchor(this.endHandleAnchor, screenX, screenY)) {
+      return 2;
+    }
+    return 0;
+  }
+
+  /** 触点是否落在某个手柄圆心（光标底端下移 SELECTION_HANDLE_DROP）的热区内 */
+  private hitsHandleAnchor(anchor: SelectionHandleAnchor | null, screenX: number, screenY: number): boolean {
+    if (!anchor) {
+      return false;
+    }
+    const cx = anchor.x;
+    const cy = Math.max(anchor.y, anchor.bottomY) + SELECTION_HANDLE_DROP;
+    const dx = screenX - cx;
+    const dy = screenY - cy;
+    return Math.sqrt(dx * dx + dy * dy) <= SELECTION_HANDLE_HIT_RADIUS;
+  }
+
+  /** 在当前红色绘制上下文中绘制手柄（屏幕坐标系，位于 ctx.restore() 之后） */
+  private drawSelectionHandles(): void {
+    const ctx = this.ctx;
+    const start = this.startHandleAnchor;
+    const end = this.endHandleAnchor;
+    if (start) {
+      this.drawHandle(ctx, start, true);
+    }
+    if (end) {
+      this.drawHandle(ctx, end, false);
+    }
+  }
+
+  /** 单个手柄：2vp 光标竖线 + 固定物理尺寸的水滴圆头 */
+  private drawHandle(ctx: CanvasRenderingContext2D, anchor: SelectionHandleAnchor, isStart: boolean): void {
+    const topY = Math.min(anchor.y, anchor.bottomY);
+    const bottomY = Math.max(anchor.y, anchor.bottomY);
+    ctx.save();
+    ctx.strokeStyle = SELECTION_LINE_COLOR;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(anchor.x, topY);
+    ctx.lineTo(anchor.x, bottomY);
+    ctx.stroke();
+    const centerY = bottomY + SELECTION_HANDLE_DROP;
+    ctx.fillStyle = SELECTION_LINE_COLOR;
+    ctx.beginPath();
+    ctx.arc(anchor.x, centerY, SELECTION_HANDLE_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(anchor.x, centerY + SELECTION_HANDLE_RADIUS - 1);
+    ctx.lineTo(anchor.x + (isStart ? -4 : 4), centerY + SELECTION_HANDLE_RADIUS + 3);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // MARK: - 手势处理
+
+  /** 手柄优先拦截；拖选期间不消费事件但独占移动跟随 */
+  private handlePptxTouch(event: TouchEvent): void {
+    const touches = event.touches;
+    if (!touches || touches.length === 0) {
+      return;
+    }
+    const touch = touches[0];
+    if (event.type === TouchType.Down) {
+      this.lastTouchX = touch.x;
+      this.lastTouchY = touch.y;
+      const hit = this.hitHandle(touch.x, touch.y);
+      if (hit !== 0) {
+        this.beginDrag(hit);
+      }
+      return;
+    }
+    if (event.type === TouchType.Move) {
+      if (this.dragMode === 0) {
+        return;
+      }
+      this.lastTouchX = touch.x;
+      this.lastTouchY = touch.y;
+      this.updateDrag(touch.x, touch.y);
+      this.updateEdgeScroll(touch.x, touch.y);
+      return;
+    }
+    if (this.dragMode !== 0) {
+      this.endDrag();
+    }
+  }
+
+  /** 进入拖拽：停止惯性/补间、隐藏气泡并屏蔽平移手势 */
+  private beginDrag(mode: number): void {
+    if (!this.selection) {
+      return;
+    }
+    this.stopFling();
+    this.stopZoomTween();
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.bubbleShown = false;
+    this.dragMode = mode;
+    if (this.isSelectionDragging !== true) {
+      this.isSelectionDragging = true;
+    }
+  }
+
+  /** 拖拽更新焦点；手柄拖拽固定另一端为锚点 */
+  private updateDrag(screenX: number, screenY: number): void {
+    const selection = this.selection;
+    if (!selection) {
+      return;
+    }
+    const position = this.hitTestScreen(screenX, screenY, SELECTION_TOUCH_LIFT);
+    if (!position) {
+      return;
+    }
+    let anchor = selection.anchor;
+    if (this.dragMode === 1) {
+      anchor = spanEndPosition(selection);
+    } else if (this.dragMode === 2) {
+      anchor = spanStartPosition(selection);
+    }
+    this.setSelection(makeTextSelection(anchor, position));
+  }
+
+  /** 结束拖拽并重定位气泡 */
+  private endDrag(): void {
+    this.dragMode = 0;
+    this.stopEdgeScroll();
+    if (this.isSelectionDragging) {
+      this.isSelectionDragging = false;
+    }
+    if (this.hasSelection()) {
+      this.scheduleBubble();
+    } else {
+      this.bubbleShown = false;
+    }
+    this.redraw();
+  }
+
+  /** 长按选词：命中文字后进入拖选态 */
+  private handleLongPress(event: GestureEvent): void {
+    if (this.isPinching) {
+      return;
+    }
+    const fingerList = event.fingerList;
+    if (!fingerList || fingerList.length === 0) {
+      return;
+    }
+    const screenX = fingerList[0].localX;
+    const screenY = fingerList[0].localY;
+    this.lastTouchX = screenX;
+    this.lastTouchY = screenY;
+    const position = this.hitTestScreen(screenX, screenY, 0);
+    if (!position) {
+      return;
+    }
+    const layout = this.textLayout;
+    if (!layout) {
+      return;
+    }
+    const range = layout.wordRange(position);
+    if (!range) {
+      return;
+    }
+    this.stopFling();
+    this.stopZoomTween();
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.bubbleShown = false;
+    this.dragMode = 3;
+    if (this.isSelectionDragging !== true) {
+      this.isSelectionDragging = true;
+    }
+    this.setSelection(range);
+  }
+
+  /** 单击：存在选区时清除并消费本次点击 */
+  private handleSingleTap(): void {
+    if (this.hasSelection()) {
+      this.clearSelection();
+    }
+  }
+
+  // MARK: - 边缘自动平移
+
+  /** 触点进入四边热区时启动定时平移，步长随深入程度线性递增 */
+  private updateEdgeScroll(screenX: number, screenY: number): void {
+    let dx = 0;
+    let dy = 0;
+    if (screenY < SELECTION_EDGE_SCROLL_ZONE) {
+      dy = -1;
+    } else if (screenY > this.canvasHeight - SELECTION_EDGE_SCROLL_ZONE) {
+      dy = 1;
+    }
+    if (screenX < SELECTION_EDGE_SCROLL_ZONE) {
+      dx = -1;
+    } else if (screenX > this.canvasWidth - SELECTION_EDGE_SCROLL_ZONE) {
+      dx = 1;
+    }
+    if (dx === 0 && dy === 0) {
+      this.stopEdgeScroll();
+      return;
+    }
+    if (this.edgeScrollTimer !== -1 && this.edgeScrollDirectionX === dx && this.edgeScrollDirectionY === dy) {
+      return;
+    }
+    this.stopEdgeScroll();
+    this.edgeScrollDirectionX = dx;
+    this.edgeScrollDirectionY = dy;
+    this.edgeScrollTimer = setInterval(() => {
+      this.stepEdgeScroll();
+    }, SELECTION_EDGE_SCROLL_INTERVAL);
+  }
+
+  /** 单步边缘平移：按到边缘的距离决定步长，平移后以最新触点重算焦点 */
+  private stepEdgeScroll(): void {
+    if (this.dragMode === 0 || (this.edgeScrollDirectionX === 0 && this.edgeScrollDirectionY === 0)) {
+      this.stopEdgeScroll();
+      return;
+    }
+    const zone = SELECTION_EDGE_SCROLL_ZONE;
+    let depthX = 0;
+    let depthY = 0;
+    if (this.edgeScrollDirectionX < 0) {
+      depthX = Math.max(0, zone - this.lastTouchX);
+    } else if (this.edgeScrollDirectionX > 0) {
+      depthX = Math.max(0, this.lastTouchX - (this.canvasWidth - zone));
+    }
+    if (this.edgeScrollDirectionY < 0) {
+      depthY = Math.max(0, zone - this.lastTouchY);
+    } else if (this.edgeScrollDirectionY > 0) {
+      depthY = Math.max(0, this.lastTouchY - (this.canvasHeight - zone));
+    }
+    if (depthX <= 0 && depthY <= 0) {
+      this.stopEdgeScroll();
+      return;
+    }
+    const stepX = this.edgeScrollDirectionX === 0
+      ? 0
+      : Math.max(1, SELECTION_EDGE_SCROLL_MAX_STEP * Math.min(1, depthX / zone));
+    const stepY = this.edgeScrollDirectionY === 0
+      ? 0
+      : Math.max(1, SELECTION_EDGE_SCROLL_MAX_STEP * Math.min(1, depthY / zone));
+    this.offsetX = this.offsetX + stepX * this.edgeScrollDirectionX;
+    this.offsetY = this.offsetY + stepY * this.edgeScrollDirectionY;
+    this.clampOffsets();
+    this.updateCurrentPage();
+    this.updateDrag(this.lastTouchX, this.lastTouchY);
+    this.redraw();
+  }
+
+  private stopEdgeScroll(): void {
+    if (this.edgeScrollTimer !== -1) {
+      clearInterval(this.edgeScrollTimer);
+      this.edgeScrollTimer = -1;
+    }
+    this.edgeScrollDirectionX = 0;
+    this.edgeScrollDirectionY = 0;
+  }
+
+  // MARK: - 浮动气泡
+
+  /** 手势停稳后延迟一拍再定位气泡 */
+  private scheduleBubble(): void {
+    this.cancelBubbleTimer();
+    this.bubbleTimer = setTimeout(() => {
+      this.bubbleTimer = -1;
+      this.repositionBubble();
+    }, 32);
+  }
+
+  private cancelBubbleTimer(): void {
+    if (this.bubbleTimer !== -1) {
+      clearTimeout(this.bubbleTimer);
+      this.bubbleTimer = -1;
+    }
+  }
+
+  /** 依据选区整体屏幕包围框定位气泡 */
+  private repositionBubble(): void {
+    const selection = this.selection;
+    if (!selection || isSelectionEmpty(selection)) {
+      this.bubbleShown = false;
+      return;
+    }
+    const bounds = this.selectionScreenBounds(selection);
+    if (!bounds) {
+      this.bubbleShown = false;
+      return;
+    }
+    this.bubbleAnchorX = (bounds.left + bounds.right) / 2;
+    this.bubbleAnchorY = bounds.top;
+    this.bubbleBottomY = bounds.bottom;
+    this.bubbleShowSelectAll = !this.isWholeDocumentSelected(selection);
+    this.bubbleShown = true;
+  }
+
+  /** 当前视口覆盖的页索引闭区间；页面布局尚未就绪时退化为首页 */
+  private visiblePageRange(): number[] {
+    const total = this.pageLayouts.length;
+    if (total === 0) {
+      return [0, -1];
+    }
+    const scale = this.getScale();
+    if (scale <= 0) {
+      return [0, 0];
+    }
+    const visibleTop = (this.offsetY - this.getTop()) / scale;
+    const visibleBottom = visibleTop + this.canvasHeight / scale;
+    const range = resolvePptxVisibleRange(this.pageLayouts, visibleTop, visibleBottom);
+    const first = Math.max(0, Math.min(total - 1, range.start));
+    const last = Math.max(first, Math.min(total - 1, range.end));
+    return [first, last];
+  }
+
+  /** 选区在屏幕坐标系下的整体包围框（仅统计可见页，避免全选后遍历整本幻灯片做排版） */
+  private selectionScreenBounds(selection: TextSelection): TextRect | null {
+    const start = spanStartPosition(selection);
+    const end = spanEndPosition(selection);
+    const visible = this.visiblePageRange();
+    let left = 0;
+    let top = 0;
+    let right = 0;
+    let bottom = 0;
+    let found = false;
+    for (let pageIdx = visible[0]; pageIdx <= visible[1]; pageIdx++) {
+      const range = this.pageBlockRange(pageIdx);
+      if (range[0] < 0 || range[1] < start.blockIndex || range[0] > end.blockIndex) {
+        continue;
+      }
+      const pageLayout = this.ensurePageLayout(pageIdx);
+      if (!pageLayout) {
+        continue;
+      }
+      const localRects = pageLayout.selectionRects(selection);
+      if (localRects.length === 0) {
+        continue;
+      }
+      const pageInfo = this.pageLayouts[pageIdx];
+      const slideLeft = (this.contentWidth - pageInfo.width) / 2;
+      for (const highlight of localRects) {
+        const docRect = highlight.docBounds;
+        const p1 = this.slideToScreen(slideLeft + docRect.left, pageInfo.y + docRect.top);
+        const p2 = this.slideToScreen(slideLeft + docRect.right, pageInfo.y + docRect.bottom);
+        const x1 = Math.min(p1.x, p2.x);
+        const x2 = Math.max(p1.x, p2.x);
+        const y1 = Math.min(p1.y, p2.y);
+        const y2 = Math.max(p1.y, p2.y);
+        if (!found) {
+          left = x1;
+          top = y1;
+          right = x2;
+          bottom = y2;
+          found = true;
+        } else {
+          left = Math.min(left, x1);
+          top = Math.min(top, y1);
+          right = Math.max(right, x2);
+          bottom = Math.max(bottom, y2);
+        }
+      }
+    }
+    if (!found) {
+      return null;
+    }
+    return makeTextRect(left, top, right, bottom);
+  }
+
+  /** 选区是否已覆盖全文 */
+  private isWholeDocumentSelected(selection: TextSelection): boolean {
+    const layout = this.textLayout;
+    if (!layout) {
+      return false;
+    }
+    const all = layout.allTextRange();
+    if (!all) {
+      return false;
+    }
+    const allStart = spanStartPosition(all);
+    const allEnd = spanEndPosition(all);
+    const start = spanStartPosition(selection);
+    const end = spanEndPosition(selection);
+    return start.blockIndex === allStart.blockIndex && start.charIndex <= allStart.charIndex &&
+      end.blockIndex === allEnd.blockIndex && end.charIndex >= allEnd.charIndex;
+  }
+
+  /** 气泡「复制」：写入剪贴板后清除选区 */
+  private onBubbleCopy(): void {
+    if (this.copySelection()) {
+      this.clearSelection();
+    } else {
+      this.bubbleShown = false;
+    }
+  }
+
+  /** 气泡「全选」 */
+  private onBubbleSelectAll(): void {
+    if (this.selectAll()) {
+      this.scheduleBubble();
     }
   }
 
@@ -2295,6 +4581,14 @@ struct PptxSlidesView {
     this.isReady = false;
     this.stopFling();
     this.stopZoomTween();
+    // 文档销毁：取消边缘平移、气泡定时器并清空选区与索引缓存
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.selection = null;
+    this.startHandleAnchor = null;
+    this.endHandleAnchor = null;
+    this.measuredPageLayouts.clear();
+    this.textLayout = null;
     if (this.vsync) {
       try {
         this.vsync.off('frame');
@@ -2733,12 +5027,51 @@ struct PptxSlidesView {
         }
       }
 
+      // 5. 绘制当前页的选区高亮（页内容坐标，与元素绘制同一变换链）
+      const selRects = this.pageSelectionRects(i);
+      if (selRects.length > 0) {
+        CanvasElementDrawer.drawSelectionHighlights(ctx, selRects);
+      }
+
       ctx.restore();
     }
 
     ctx.restore();
 
+    // 6. 屏幕坐标系绘制起止手柄（固定物理尺寸，不随缩放变形）
+    if (this.selection !== null) {
+      this.refreshSelectionOverlay();
+      this.drawSelectionHandles();
+    }
+
     this.requestVisibleImages(neededImageParts);
+  }
+
+  /**
+   * 某一页在页内容坐标系下的选区高亮矩形。
+   * 行度量以「页左上角为原点」表达，因此可直接在 `translate(slideLeft, layout.y)` 之后绘制。
+   */
+  private pageSelectionRects(pageIdx: number): TextRect[] {
+    const selection = this.selection;
+    if (!selection || isSelectionEmpty(selection)) {
+      return [];
+    }
+    const start = spanStartPosition(selection);
+    const end = spanEndPosition(selection);
+    const range = this.pageBlockRange(pageIdx);
+    if (range[0] < 0 || range[1] < start.blockIndex || range[0] > end.blockIndex) {
+      return [];
+    }
+    const pageLayout = this.ensurePageLayout(pageIdx);
+    if (!pageLayout) {
+      return [];
+    }
+    const result: TextRect[] = [];
+    const highlights = pageLayout.selectionRects(selection);
+    for (const highlight of highlights) {
+      result.push(highlight.docBounds);
+    }
+    return result;
   }
 
   private currentSlideAccessibilityLabel(): string {
@@ -2776,6 +5109,8 @@ struct PptxSlidesView {
           if (event.type === TouchType.Down) {
             this.stopFling();
           }
+          // 手柄优先拦截与拖选跟随
+          this.handlePptxTouch(event);
         })
         .gesture(
           GestureGroup(
@@ -2791,6 +5126,26 @@ struct PptxSlidesView {
                   : (this.canvasHeight / 2);
                 const targetZoom = this.zoom > 1.1 ? 1.0 : 2.0;
                 this.startZoomTween(targetZoom, focusX, focusY, RenderUtils.ZOOM_ANIMATION_MS);
+              }),
+            // 单击：存在选区时清除选区并消费本次点击
+            TapGesture({ count: 1 })
+              .onAction((_event: GestureEvent) => {
+                this.handleSingleTap();
+              }),
+            // 长按 400ms 选词，之后不抬手即可滑动扩选（捏合过程中跳过）
+            LongPressGesture({ duration: SELECTION_LONG_PRESS_MS, repeat: false })
+              .onAction((event: GestureEvent) => {
+                this.handleLongPress(event);
+              })
+              .onActionEnd(() => {
+                if (this.dragMode === 3) {
+                  this.endDrag();
+                }
+              })
+              .onActionCancel(() => {
+                if (this.dragMode === 3) {
+                  this.endDrag();
+                }
               }),
             PinchGesture({ fingers: 2 })
               .onActionStart(() => {
@@ -2827,14 +5182,14 @@ struct PptxSlidesView {
               }),
             PanGesture()
               .onActionStart(() => {
-                if (this.isPinching) return;
+                if (this.isPinching || this.isSelectionDragging) return;
                 this.stopFling();
                 this.stopZoomTween();
                 this.panStartX = this.offsetX;
                 this.panStartY = this.offsetY;
               })
               .onActionUpdate((event: GestureEvent) => {
-                if (this.isPinching) return;
+                if (this.isPinching || this.isSelectionDragging) return;
                 this.stopFling();
                 this.offsetX = this.panStartX - event.offsetX;
                 this.offsetY = this.panStartY - event.offsetY;
@@ -2843,11 +5198,15 @@ struct PptxSlidesView {
                 this.redraw();
               })
               .onActionEnd((event: GestureEvent) => {
-                if (this.isPinching) return;
+                if (this.isPinching || this.isSelectionDragging) return;
                 const vx = event.velocityX ?? 0;
                 const vy = event.velocityY ?? 0;
                 if (Math.hypot(vx, vy) > 80) {
                   this.startFling(-vx, -vy);
+                }
+                // 滚动停稳后重定位选区手柄与气泡
+                if (this.hasSelection()) {
+                  this.scheduleBubble();
                 }
               })
           )
@@ -2864,6 +5223,24 @@ struct PptxSlidesView {
           .padding({ left: 12, right: 12, top: 4, bottom: 4 })
           .margin({ bottom: 20 })
           .hitTestBehavior(HitTestMode.None)
+      }
+
+      // 浮动操作气泡：仅在停稳后出现
+      if (this.bubbleShown) {
+        SelectionMenuBubble({
+          anchorX: this.bubbleAnchorX,
+          anchorY: this.bubbleAnchorY,
+          anchorBottomY: this.bubbleBottomY,
+          viewportWidth: this.canvasWidth,
+          viewportHeight: this.canvasHeight,
+          showSelectAll: this.bubbleShowSelectAll,
+          onCopy: (): void => {
+            this.onBubbleCopy();
+          },
+          onSelectAll: (): void => {
+            this.onBubbleSelectAll();
+          }
+        })
       }
     }
     .width('100%')

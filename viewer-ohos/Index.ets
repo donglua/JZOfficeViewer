@@ -6,6 +6,7 @@ export {
   OfficePreviewController,
   OfficePreviewInfo,
   OfficePreviewActions,
+  SelectionControlHooks,
   SearchListener
 } from './src/main/ets/render/OfficePreviewView';
 export { OfficeSearchBar } from './src/main/ets/render/OfficeSearchBar';
@@ -14,3 +15,25 @@ export { renderOfficeThumbnail } from './src/main/ets/render/OfficeThumbnail';
 export { SpreadsheetView } from './src/main/ets/render/SpreadsheetView';
 export { CanvasElementDrawer, OfficeCanvasContext, OfficeRect } from './src/main/ets/render/CanvasElementDrawer';
 export { RenderUtils } from './src/main/ets/render/RenderUtils';
+// 文本选区模型与浮动气泡：对外暴露与 Android TextSelectionModel 对齐的值类型与纯逻辑工具
+export {
+  TextPosition,
+  TextSelection,
+  TextRect,
+  HandlePoint,
+  SelectionHandles,
+  BlockHighlightRect,
+  TextLineMetrics,
+  TextBlockLayout,
+  DocumentTextLayout,
+  compareTextPositions,
+  isSelectionEmpty,
+  selectionStart,
+  selectionEnd,
+  clampToCodePointBoundary,
+  transformTextRect,
+  makeTextPosition,
+  makeTextRect,
+  makeTextSelection
+} from './src/main/ets/render/TextSelectionModel';
+export { SelectionMenuBubble, copyTextToPasteboard } from './src/main/ets/render/SelectionMenuBubble';
