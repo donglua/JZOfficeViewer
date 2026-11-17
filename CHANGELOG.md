@@ -1,5 +1,16 @@
 # 更新日志
 
+## 未发布
+
+### 排版与特性
+
+- **XLSX 冻结窗格（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - **核心解析（`core`）**：`Sheet` 新增可选字段 `frozenRows` / `frozenColumns`（`schemaVersion` 保持 9，值为 0 时不参与序列化，旧文档 JSON 结构不变）；解析 `<sheetViews>/<sheetView>/<pane>` 的 `state="frozen"` 与 `state="frozenSplit"`，支持仅冻结行、仅冻结列与行列交叉冻结，兼容 `"2"` 与 `"2.0"` 两种整数写法，冻结值按工作表行列维度安全钳位；非冻结的自由拆分（`state="split"` 或空 state 带非零拆分）只发告警不生效，非整数拆分向下取整并告警，非法数值返回 `Error::Invalid`。
+  - **三端渲染**：Android、HarmonyOS NEXT 与 macOS 均以单画布四象限裁剪绘制实现冻结区与滚动区共存，行列标头分段锁定，冻结交界处绘制 1px `#9aa5b1` 分割线；跨冻结边界的合并单元格在各象限分别平移裁剪绘制。
+  - **视口占比保护**：按 X/Y 轴独立判断冻结区是否超过可用正文区的 75%，高倍缩放或小窗口下仅取消超限的那个轴，避免正文被冻结区挤满。
+  - **检索高亮与跳转避让**：命中高亮按象限裁剪，滚动区高亮不会覆盖冻结区；跳转命中冻结行/列时该轴保持当前滚动位置，命中滚动区时才对齐到可滚动视口中心。
+  - **macOS 视口修正**：`.xlsx` 分支改为传入真实滚动视口 `docVisible`，并在 `NSScrollView` 滚动时触发重绘，修正长表格滚动时连外围行列标头一起滚走的问题。
+
 ## 0.14.0
 
 发布页面：[v0.14.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.14.0)。
