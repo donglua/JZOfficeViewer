@@ -753,6 +753,7 @@ public final class OfficePreviewView extends View {
         if (Math.abs(target - from) < 0.001f) { setZoom(target, focusX, focusY); return; }
         cancelZoomAnimation();
         scroller.forceFinished(true);
+        dismissSelectionMenu();
         zoom = target;
         rawZoom = target;
         zoomOverflow = from - target;
@@ -1242,6 +1243,12 @@ public final class OfficePreviewView extends View {
         offsetX += stepX;
         offsetY += stepY;
         clampOffsets();
+        if (document != null && document.kind == OfficeDocument.Kind.PPTX) {
+            float vTop = screenToDocY(0f);
+            float vBot = screenToDocY(getHeight());
+            renderer.preparePages(vTop, vBot);
+            ensureVisiblePagesTextLayout(vTop, vBot);
+        }
         applySelectionFocus(dragTouchX, dragTouchY);
         postInvalidateOnAnimation();
         autoScrollScheduled = true;
