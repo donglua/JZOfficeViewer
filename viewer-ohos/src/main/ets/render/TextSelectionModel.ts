@@ -655,8 +655,8 @@ export class DocumentTextLayout {
 
   /** 选区起止手柄几何（同时给出文档全局与块局部坐标） */
   handleGeometry(selection: TextSelection): SelectionHandles | null {
-    const start = this.resolveHandlePoint(resolveSelectionStart(selection));
-    const end = this.resolveHandlePoint(resolveSelectionEnd(selection));
+    const start = this.resolveHandlePoint(resolveSelectionStart(selection), true);
+    const end = this.resolveHandlePoint(resolveSelectionEnd(selection), false);
     if (start === null || end === null) {
       return null;
     }
@@ -833,7 +833,7 @@ export class DocumentTextLayout {
   }
 
   /** 计算单个位置的手柄几何 */
-  private resolveHandlePoint(position: TextPosition): HandlePoint | null {
+  private resolveHandlePoint(position: TextPosition, preferLaterLine: boolean): HandlePoint | null {
     const block = this.blockAt(position.blockIndex);
     if (block === null || block.lines.length === 0) {
       return null;
@@ -842,7 +842,9 @@ export class DocumentTextLayout {
     for (const candidate of block.lines) {
       if (position.charIndex >= candidate.charStart && position.charIndex <= candidate.charEnd) {
         line = candidate;
-        break;
+        if (!preferLaterLine) {
+          break;
+        }
       }
     }
     if (line === null) {
@@ -866,12 +868,12 @@ export class DocumentTextLayout {
     const bottomPoint = applyAffineToPoint(block.transform, localX, line.bottom);
     const handle: HandlePoint = {
       docX: topPoint.x,
-      docTopY: topPoint.y,
-      docBottomY: bottomPoint.y,
+      docTopY: Math.min(topPoint.y, bottomPoint.y),
+      docBottomY: Math.max(topPoint.y, bottomPoint.y),
       blockIndex: block.blockIndex,
       localX: localX,
-      localTopY: line.top,
-      localBottomY: line.bottom
+      localTopY: Math.min(line.top, line.bottom),
+      localBottomY: Math.max(line.top, line.bottom)
     };
     return handle;
   }

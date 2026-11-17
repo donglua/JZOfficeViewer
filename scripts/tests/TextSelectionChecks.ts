@@ -82,4 +82,61 @@ const emojiLayout = new DocumentTextLayout([makeBlock(0, 0, 0, 'A\uD83D\uDE00B',
 const emojiHit = emojiLayout.hitTest(21, 10);
 check(emojiHit !== null && (emojiHit.charIndex === 1 || emojiHit.charIndex === 3), 'Surrogate pair protected');
 
+// 9. 多行边界手柄落点：charIndex=5 是 line0 末尾也是 line1 起点；start 优先次行、end 优先前行
+const line0 = new ArrayLineMetrics(0, 0, 50, 20, 0, 0, 5, 0, [0, 10, 20, 30, 40, 50]);
+const line1 = new ArrayLineMetrics(0, 20, 50, 40, 0, 5, 10, 0, [0, 10, 20, 30, 40, 50]);
+const multilineBlock = new TextBlockLayout(
+  0,
+  0,
+  makeRect(0, 0, 50, 40),
+  [1, 0, 0, 1, 0, 0],
+  'HelloWorld',
+  [line0, line1]
+);
+const multilineLayout = new DocumentTextLayout([multilineBlock]);
+const firstLineSel: TextSelection = {
+  anchor: { blockIndex: 0, charIndex: 0 },
+  focus: { blockIndex: 0, charIndex: 5 }
+};
+const firstLineHandles = multilineLayout.handleGeometry(firstLineSel);
+check(
+  firstLineHandles !== null
+    && Math.abs(firstLineHandles.end.localX - 50) < 0.1
+    && Math.abs(firstLineHandles.end.localTopY - 0) < 0.1,
+  'End handle stays on earlier line end'
+);
+const secondLineSel: TextSelection = {
+  anchor: { blockIndex: 0, charIndex: 5 },
+  focus: { blockIndex: 0, charIndex: 10 }
+};
+const secondLineHandles = multilineLayout.handleGeometry(secondLineSel);
+check(
+  secondLineHandles !== null
+    && Math.abs(secondLineHandles.start.localX - 0) < 0.1
+    && Math.abs(secondLineHandles.start.localTopY - 20) < 0.1,
+  'Start handle advances to later line start'
+);
+
+// 10. 垂直翻转变换下手柄 docTopY <= docBottomY 归一化
+const flippedLine = new ArrayLineMetrics(0, 0, 40, 20, 0, 0, 4, 0, [0, 10, 20, 30, 40]);
+const flippedBlock = new TextBlockLayout(
+  0,
+  0,
+  makeRect(0, 80, 40, 100),
+  [1, 0, 0, -1, 0, 100],
+  'Flip',
+  [flippedLine]
+);
+const flippedLayout = new DocumentTextLayout([flippedBlock]);
+const flippedHandles = flippedLayout.handleGeometry({
+  anchor: { blockIndex: 0, charIndex: 0 },
+  focus: { blockIndex: 0, charIndex: 4 }
+});
+check(
+  flippedHandles !== null
+    && Math.abs(flippedHandles.start.docTopY - 80) < 0.1
+    && Math.abs(flippedHandles.start.docBottomY - 100) < 0.1,
+  'Flipped transform handle normalizes docTopY <= docBottomY'
+);
+
 console.log(`OHOS TextSelectionChecks passed: ${checks}`);
