@@ -22,6 +22,7 @@ import {
 } from './PptxViewport';
 import { SelectionMenuBubble, copyTextToPasteboard } from './SelectionMenuBubble';
 import {
+  BlockHighlightRect,
   DocumentTextLayout,
   TextBlockLayout,
   TextLineMetrics,
@@ -3925,7 +3926,7 @@ struct PptxSlidesView {
     for (const element of layout.page.elements ?? []) {
       const rawBlocks = CanvasElementDrawer.buildElementTextBlocks(this.ctx, element, blockIndex, pageIdx);
       for (const block of rawBlocks) {
-        blocks.push(makeContainerBlock(block.blockIndex, pageIdx, block.fullText, block.lines));
+        blocks.push(block);
         blockIndex++;
       }
     }
@@ -5027,10 +5028,16 @@ struct PptxSlidesView {
         }
       }
 
-      // 5. 绘制当前页的选区高亮（页内容坐标，与元素绘制同一变换链）
-      const selRects = this.pageSelectionRects(i);
-      if (selRects.length > 0) {
-        CanvasElementDrawer.drawSelectionHighlights(ctx, selRects);
+      // 5. 绘制当前页的选区高亮（页内容坐标，经元素仿射变换映射至局部坐标绘制，保留旋转/位移）
+      const selHighlights = this.pageSelectionHighlights(i);
+      for (const highlight of selHighlights) {
+        const m = highlight.transform;
+        ctx.save();
+        if (m.length >= 6) {
+          ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
+        }
+        CanvasElementDrawer.drawSelectionHighlights(ctx, [highlight.localRect]);
+        ctx.restore();
       }
 
       ctx.restore();
@@ -5048,10 +5055,9 @@ struct PptxSlidesView {
   }
 
   /**
-   * 某一页在页内容坐标系下的选区高亮矩形。
-   * 行度量以「页左上角为原点」表达，因此可直接在 `translate(slideLeft, layout.y)` 之后绘制。
+   * 某一页各选中块的高亮矩形及对应元素仿射变换（相对于幻灯片内容坐标原点）。
    */
-  private pageSelectionRects(pageIdx: number): TextRect[] {
+  private pageSelectionHighlights(pageIdx: number): BlockHighlightRect[] {
     const selection = this.selection;
     if (!selection || isSelectionEmpty(selection)) {
       return [];
@@ -5066,12 +5072,7 @@ struct PptxSlidesView {
     if (!pageLayout) {
       return [];
     }
-    const result: TextRect[] = [];
-    const highlights = pageLayout.selectionRects(selection);
-    for (const highlight of highlights) {
-      result.push(highlight.docBounds);
-    }
-    return result;
+    return pageLayout.selectionRects(selection);
   }
 
   private currentSlideAccessibilityLabel(): string {
