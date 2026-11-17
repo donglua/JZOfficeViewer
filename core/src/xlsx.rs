@@ -118,6 +118,8 @@ pub(crate) fn parse(package: &mut Package, part: &str, scope: crate::Scope) -> R
                 column_widths: vec![48.0],
                 cells: Vec::new(),
                 merges: Vec::new(),
+                frozen_rows: 0,
+                frozen_columns: 0,
                 geometry: Some(crate::spreadsheet::SheetGeometry::compute(
                     &crate::spreadsheet::Sheet {
                         name: name.to_owned(),
@@ -125,6 +127,8 @@ pub(crate) fn parse(package: &mut Package, part: &str, scope: crate::Scope) -> R
                         column_widths: vec![48.0],
                         cells: Vec::new(),
                         merges: Vec::new(),
+                        frozen_rows: 0,
+                        frozen_columns: 0,
                         geometry: None,
                     },
                 )),

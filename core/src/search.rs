@@ -628,6 +628,8 @@ mod tests {
                 numeric: false,
             }],
             merges: Vec::new(),
+            frozen_rows: 0,
+            frozen_columns: 0,
             geometry: None,
         });
 
@@ -650,6 +652,8 @@ mod tests {
                 numeric: false,
             }],
             merges: Vec::new(),
+            frozen_rows: 0,
+            frozen_columns: 0,
             geometry: None,
         });
         let index = Arc::new(SearchIndex::from_document(&doc));
@@ -709,6 +713,8 @@ mod tests {
                 end_row: 0,
                 end_column: 1,
             }],
+            frozen_rows: 0,
+            frozen_columns: 0,
             geometry: None,
         });
 

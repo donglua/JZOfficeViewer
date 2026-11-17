@@ -25,6 +25,8 @@ pub(super) fn parse(
         column_widths: vec![column_width],
         cells: Vec::new(),
         merges: Vec::new(),
+        frozen_rows: 0,
+        frozen_columns: 0,
         geometry: None,
     };
     let mut column_styles = [0_u32; 256];
@@ -124,6 +126,9 @@ pub(super) fn parse(
             sheet.merges.push(range);
         }
     }
+    // sheetViews 必须放在 sheetData / mergeCells 之后解析：只有此时 row_heights 与 column_widths
+    // 的最终维度才确定，冻结行列数才能钳位到工作表实际范围。
+    freeze::apply(root, &mut sheet, document)?;
     for feature in [
         "drawing",
         "legacyDrawing",
@@ -172,4 +177,99 @@ fn width(value: &str, fallback: f32) -> Result<f32> {
         return Ok(0.0);
     }
     Ok(((256.0 * width + (128.0_f32 / 7.0).floor()) / 256.0 * 7.0).floor() * 0.75)
+}
+
+/// `<sheetViews>/<sheetView>/<pane>` 冻结窗格解析。
+///
+/// 仅支持 OOXML 的 `state="frozen"` / `state="frozenSplit"` 按行列冻结；自由拆分（`state="split"`）
+/// 不做几何模拟，只记录 warning。所有解析结果都会钳位到工作表已确定的行列维度。
+mod freeze {
+    use super::Sheet;
+    use crate::model::Document;
+    use crate::xml::Node;
+    use crate::{Error, Result};
+
+    pub(super) fn apply(root: &Node, sheet: &mut Sheet, document: &mut Document) -> Result<()> {
+        let Some(views) = root.child("sheetViews") else {
+            return Ok(());
+        };
+        let Some(view) = target(views) else {
+            return Ok(());
+        };
+        let Some(pane) = view.child("pane") else {
+            return Ok(());
+        };
+        // 所选 sheetView 自身携带非空且非 A1 的 topLeftCell，说明冻结配置是在滚动后保存的：
+        // 冻结的仍是文档首行/首列，只是保存时的滚动位置不同，平台层按冻结行列数处理即可。
+        // `<pane>` 自身的 topLeftCell 只是拆分后的活动单元格，不参与判定。
+        let top_left = view.attr("topLeftCell");
+        if !top_left.is_empty() && !top_left.eq_ignore_ascii_case("A1") {
+            document.warn(
+                "XLSX frozen panes are applied from the leading rows and columns even when the sheet view was scrolled away from A1",
+            );
+        }
+        let x_split = pane.attr("xSplit");
+        let y_split = pane.attr("ySplit");
+        // 数值校验对任何 pane 都生效：负值、非数字与 NaN/inf 都是损坏的输入，不因状态不同而放宽
+        let rows = count(y_split)?;
+        let columns = count(x_split)?;
+        match pane.attr("state") {
+            "frozen" | "frozenSplit" => {
+                if fractional(y_split) || fractional(x_split) {
+                    document.warn(
+                        "Fractional XLSX frozen pane splits are truncated to whole rows or columns",
+                    );
+                }
+                // 钳位到工作表已确定的行列维度，避免平台层按越界索引取偏移
+                sheet.frozen_rows =
+                    rows.min(u32::try_from(sheet.row_heights.len()).unwrap_or(u32::MAX));
+                sheet.frozen_columns =
+                    columns.min(u32::try_from(sheet.column_widths.len()).unwrap_or(u32::MAX));
+            }
+            "split" => document.warn("Non-frozen XLSX split panes are not supported"),
+            // state 缺省但给出了拆分值时，Excel 与 OOXML 都按自由拆分处理，同样不支持。
+            "" if rows != 0 || columns != 0 => {
+                document.warn("Non-frozen XLSX split panes are not supported");
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+
+    /// 选取目标 sheetView：优先 `workbookViewId="0"` 或未声明该属性的视图，全部非 0 时回退第一个
+    fn target(views: &Node) -> Option<&Node> {
+        let mut first = None;
+        for view in views.named("sheetView") {
+            let id = view.attr("workbookViewId");
+            if id.is_empty() || id == "0" {
+                return Some(view);
+            }
+            if first.is_none() {
+                first = Some(view);
+            }
+        }
+        first
+    }
+
+    /// 解析冻结分量：属性缺失或空串按 0 处理，其余必须是有限的非负数（兼容 `"2"` 与 `"2.0"`）
+    fn count(value: &str) -> Result<u32> {
+        if value.is_empty() {
+            return Ok(0);
+        }
+        let number = value
+            .parse::<f64>()
+            .map_err(|_| Error::Invalid("Invalid XLSX frozen pane split"))?;
+        if !number.is_finite() || number < 0.0 {
+            return Err(Error::Invalid("Invalid XLSX frozen pane split"));
+        }
+        // 浮点转整数的 `as` 转换在 Rust 中是饱和语义，超出 u32 的极端值落到上限后再由维度钳位收敛
+        Ok(number as u32)
+    }
+
+    /// 冻结态下是否存在非零小数部分（如 `"1.5"`），用于发出截断告警
+    fn fractional(value: &str) -> bool {
+        value
+            .parse::<f64>()
+            .is_ok_and(|number| number.is_finite() && number.fract() != 0.0)
+    }
 }

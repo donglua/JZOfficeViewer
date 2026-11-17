@@ -9,6 +9,12 @@ pub struct Sheet {
     pub column_widths: Vec<f32>,
     pub cells: Vec<Cell>,
     pub merges: Vec<CellRange>,
+    /// 从工作表首行开始锁定的行数，0 表示不冻结（schemaVersion 9 新增可选字段）
+    #[serde(default, skip_serializing_if = "crate::model::is_zero_u32")]
+    pub frozen_rows: u32,
+    /// 从工作表首列开始锁定的列数，0 表示不冻结
+    #[serde(default, skip_serializing_if = "crate::model::is_zero_u32")]
+    pub frozen_columns: u32,
     /// 预计算的几何布局数据，平台层直接使用，无需重复计算（schemaVersion 9 新增可选字段）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometry: Option<SheetGeometry>,
