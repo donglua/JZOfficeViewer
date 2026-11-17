@@ -1,5 +1,28 @@
 # 更新日志
 
+## 0.15.0
+
+发布页面：[v0.15.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.15.0)。
+
+本版本主要新增 XLSX 冻结窗格全端支持（`core` / Android / HarmonyOS NEXT / macOS）与 DOCX / PPTX 正文划词选区及复制能力（Android / HarmonyOS NEXT），并修复 DOCX 行内图水平对齐、文本框自适应及选区交互手势等细节问题。
+
+### 排版与特性
+
+- **XLSX 冻结窗格（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - **核心解析（`core`）**：`Sheet` 新增可选字段 `frozenRows` / `frozenColumns`（`schemaVersion` 保持 9），解析 `<sheetViews>/<sheetView>/<pane>` 的 `state="frozen"` 与 `state="frozenSplit"`，支持仅冻结行、仅冻结列与行列交叉冻结并按维度钳位。
+  - **三端渲染与保护**：以单画布四象限裁剪绘制实现冻结区与滚动区共存，行列标头分段锁定，冻结交界处绘制 1px `#9aa5b1` 分割线；按 X/Y 轴独立判断 75% 视口占比保护，检索高亮按象限裁剪，跳转命中冻结行/列时保持该轴滚动位置。
+- **DOCX / PPTX 正文划词选区与复制（`viewer` / `viewer-ohos`）**：
+  - **纯逻辑选区模型（`TextSelectionModel.ts`）**：纯 TypeScript 实现（零 ArkUI / `@kit.*` 依赖），支持块索引 + UTF-16 码元偏移定位、反向拖选、代理对边界夹紧、跨段落与跨块 `\n` 拼接、命中测试、分词选词、选区高亮矩形与手柄几何计算。
+  - **排版几何衔接（HarmonyOS）**：`CanvasElementDrawer` 新增 `buildParagraphsBlockLines` / `buildElementTextBlocks` / `extractElementFullText` / `CanvasTextLineMetrics`，行度量与检索高亮共用同一套坐标规则；普通文本块统一为 Canvas 绘制，与绕排图文块间距一致。
+  - **触屏交互与编程 API**：长按选词并支持滑动扩选，松手展示水滴手柄与浮动气泡（「复制」/「全选」），支持手柄拖拽微调与四边自动滚动；`OfficePreviewController` / `OfficePreviewActions` 提供 `selectAll`、`clearSelection`、`hasSelection`、`getSelectedText`、`copySelection`。
+
+### 细节修复与交互优化
+
+- **DOCX 行内图水平对齐与自适应文本框（`core` / `viewer-ohos`）**：
+  - 保留行内图片所在段落的 `jc` 水平对齐属性，HarmonyOS NEXT 端正文及缩略图渲染按 `horizontalAlign` 正确居中或右对齐绘制，并修复透明不换行文本框的 `autofit` 尺寸测量。
+- **鸿蒙端选区交互与排版细节（`viewer-ohos`）**：
+  - 对齐行边界手柄吸附偏好与反向选区矩形归一化，保留 PPTX 元素变换到选区高亮中，对齐 DOCX 表格高亮、空段落高度及延迟索引构建，并消除长按选词/缩放与平移单击手势的冲突。
+
 ## 0.14.0
 
 发布页面：[v0.14.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.14.0)。

@@ -1,6 +1,10 @@
 # 更新日志
 
-## 未发布
+## 0.15.0
+
+发布页面：[v0.15.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.15.0)。
+
+本版本主要新增 XLSX 冻结窗格全端支持（`core` / Android / HarmonyOS NEXT / macOS）与 DOCX / PPTX 正文划词选区及复制能力（Android / HarmonyOS NEXT），并修复 DOCX 行内图水平对齐、文本框自适应及选区交互手势等细节问题。
 
 ### 排版与特性
 
@@ -20,6 +24,15 @@
   - **编程控制 API（双端对齐）**：Android `OfficePreviewView` 与 HarmonyOS `OfficePreviewController` / `OfficePreviewActions` 均提供 `selectAll`、`clearSelection`、`hasSelection`、`getSelectedText`、`copySelection`；剪贴板分别经 `ClipboardManager` 与 `pasteboard.setDataSync` 同步写入。打开新文档、清空与组件销毁时同步取消自动滚动、隐藏气泡并清空选区。
   - **支持范围**：本期覆盖 DOCX 与 PPTX 的正文段落、文本框、浮动绕排文本与内嵌表格单元格；XLSX 暂不参与自由划词（`selectAll` 返回 `false`）。
   - **测试**：新增纯 JVM `scripts/tests/TextSelectionChecks.java`（`javac --release 11 -Xlint:all -Werror`，已接入 CI）与 Node.js `scripts/tests/TextSelectionChecks.ts`，并扩展 `OhosGestureChecks.ts` 覆盖长按与双击阈值回归；Android 端新增设备 `selection` 专项 suite。
+
+### 细节修复与交互优化
+
+- **DOCX 行内图水平对齐与自适应文本框（`core` / `viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - 保留行内 `<wp:inline>` 图片所在段落的 `jc` 水平对齐属性（`left` / `center` / `right`），并在 Android、HarmonyOS NEXT 与 macOS 三端正文及缩略图渲染中按 `horizontalAlign` 正确居中或右对齐绘制。
+  - 修复部分无边框透明不换行文本框的 `autofit` 尺寸测量，避免文字被误换行或截断；macOS 端同步居中画布上的文档与行内图形。
+- **选区交互与排版细节（`viewer` / `viewer-ohos`）**：
+  - Android 端修复 `StaticLineMetrics` 非尾行边界保留、双击缩放时收起选区浮动气泡以及 PPTX 滚动进视口页面的选区布局懒补全。
+  - HarmonyOS NEXT 端对齐行边界手柄吸附偏好与反向选区矩形归一化，保留 PPTX 组合/元素变换到选区高亮中，对齐 DOCX 表格高亮、空段落高度及延迟索引构建，并消除长按选词/缩放与平移单击手势的冲突。
 
 ## 0.14.0
 
