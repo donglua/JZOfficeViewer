@@ -1,7 +1,20 @@
 import { displaySync } from '@kit.ArkGraphics2D';
 import * as model from '../core/OfficeModel';
 import { RenderUtils } from './RenderUtils';
-import { OfficeRect } from './CanvasElementDrawer';
+import {
+  EffectiveFrozen,
+  FREEZE_LINE_COLOR,
+  FreezeDocRect,
+  FreezeQuadrant,
+  MatchQuadrantRect,
+  ScrollTarget,
+  mapMatchRectToQuadrants,
+  normalizeFrozen,
+  resolveEffectiveFrozen,
+  resolveFreezeQuadrants,
+  resolveQuadrantMergeBounds,
+  resolveScrollToTarget
+} from './SheetFreeze';
 
 const HEADER_WIDTH = 42;
 const HEADER_HEIGHT = 22;
@@ -375,69 +388,73 @@ export struct SpreadsheetView {
     const layout = this.ensureSheetLayout(sheet);
     const r = match.row !== undefined && match.row >= 0 ? match.row : 0;
     const c = match.column !== undefined && match.column >= 0 ? match.column : 0;
-    let unscaledX = 0;
-    let unscaledY = 0;
-    let unscaledW = 40;
-    let unscaledH = 20;
-
-    let foundMerge = false;
-    for (const m of layout.merges) {
-      if (m.anchor && m.anchor.row === r && m.anchor.column === c) {
-        unscaledX = m.left;
-        unscaledY = m.top;
-        unscaledW = m.right - m.left;
-        unscaledH = m.bottom - m.top;
-        foundMerge = true;
-        break;
-      }
-    }
-    if (!foundMerge && r < layout.rows.offsets.length - 1 && c < layout.columns.offsets.length - 1) {
-      unscaledX = layout.columns.offsets[c];
-      unscaledY = layout.rows.offsets[r];
-      unscaledW = layout.columns.offsets[c + 1] - unscaledX;
-      unscaledH = layout.rows.offsets[r + 1] - unscaledY;
-    }
-
     const s = this.scaleVal;
-    const targetOx = (this.canvasWidth - HEADER_WIDTH) / 2 - (unscaledX * s + (unscaledW * s) / 2);
-    const targetOy = (this.canvasHeight - HEADER_HEIGHT) / 2 - (unscaledY * s + (unscaledH * s) / 2);
 
-    this.offsetX = targetOx;
-    this.offsetY = targetOy;
+    // 命中矩形取合并区域或单元格区域（文档坐标）
+    const hitRect = this.resolveCellDocRect(r, c, layout);
+    if (!hitRect) return;
+
+    // 跳转前先按当前视口算出本帧生效冻结数与合法滚动范围
+    const frozen = this.resolveFrameFrozen(sheet, layout, s, this.canvasWidth, this.canvasHeight);
+    const totalGridWidth = layout.totalWidth * s;
+    const totalGridHeight = layout.totalHeight * s;
+    const maxScrollX = Math.max(0, totalGridWidth - (this.canvasWidth - HEADER_WIDTH));
+    const maxScrollY = Math.max(0, totalGridHeight - (this.canvasHeight - HEADER_HEIGHT));
+    const frozenScreenW = frozen.effFrozenCols > 0 ? (layout.columns.offsets[frozen.effFrozenCols] ?? 0) * s : 0;
+    const frozenScreenH = frozen.effFrozenRows > 0 ? (layout.rows.offsets[frozen.effFrozenRows] ?? 0) * s : 0;
+
+    // 冻结侧保持当前偏移，滚动侧居中到可滚动视口中心并钳位
+    const target: ScrollTarget = resolveScrollToTarget({
+      row: r,
+      column: c,
+      rect: hitRect,
+      effFrozenRows: frozen.effFrozenRows,
+      effFrozenCols: frozen.effFrozenCols,
+      frozenDataW: frozenScreenW,
+      frozenDataH: frozenScreenH,
+      headerW: HEADER_WIDTH,
+      headerH: HEADER_HEIGHT,
+      viewWidth: this.canvasWidth,
+      viewHeight: this.canvasHeight,
+      scale: s,
+      currentOffsetX: this.offsetX,
+      currentOffsetY: this.offsetY,
+      maxScrollX: maxScrollX,
+      maxScrollY: maxScrollY
+    });
+
+    this.offsetX = target.offsetX;
+    this.offsetY = target.offsetY;
     this.clampOffsets();
     this.redraw();
   }
 
-  private computeMatchRect(
-    match: model.SearchMatch,
-    layout: SheetLayoutData,
-    s: number,
-    ox: number,
-    oy: number
-  ): OfficeRect | null {
-    const r = match.row !== undefined && match.row >= 0 ? match.row : 0;
-    const c = match.column !== undefined && match.column >= 0 ? match.column : 0;
-
+  /** 解析单元格或合并区域的文档矩形；行列超出表维度时返回 null */
+  private resolveCellDocRect(row: number, column: number, layout: SheetLayoutData): FreezeDocRect | null {
     if (layout.merges && layout.merges.length > 0) {
       for (const m of layout.merges) {
-        if (m.anchor && m.anchor.row === r && m.anchor.column === c) {
-          const left = HEADER_WIDTH + ox + m.left * s;
-          const top = HEADER_HEIGHT + oy + m.top * s;
-          const right = HEADER_WIDTH + ox + m.right * s;
-          const bottom = HEADER_HEIGHT + oy + m.bottom * s;
-          return { x: left, y: top, width: Math.max(2, right - left), height: Math.max(2, bottom - top) };
+        if (m.anchor && m.anchor.row === row && m.anchor.column === column) {
+          return { left: m.left, top: m.top, right: m.right, bottom: m.bottom };
         }
       }
     }
-
-    if (r >= layout.rows.offsets.length - 1 || c >= layout.columns.offsets.length - 1) {
+    if (row < 0 || column < 0 ||
+        row >= layout.rows.offsets.length - 1 || column >= layout.columns.offsets.length - 1) {
       return null;
     }
-    const left = HEADER_WIDTH + ox + layout.columns.offsets[c] * s;
-    const top = HEADER_HEIGHT + oy + layout.rows.offsets[r] * s;
-    const right = HEADER_WIDTH + ox + layout.columns.offsets[c + 1] * s;
-    const bottom = HEADER_HEIGHT + oy + layout.rows.offsets[r + 1] * s;
-    return { x: left, y: top, width: Math.max(2, right - left), height: Math.max(2, bottom - top) };
+    return {
+      left: layout.columns.offsets[column],
+      top: layout.rows.offsets[row],
+      right: layout.columns.offsets[column + 1],
+      bottom: layout.rows.offsets[row + 1]
+    };
+  }
+
+  /** 检索命中的文档矩形（供高亮切片使用） */
+  private resolveMatchDocRect(match: model.SearchMatch, layout: SheetLayoutData): FreezeDocRect | null {
+    const r = match.row !== undefined && match.row >= 0 ? match.row : 0;
+    const c = match.column !== undefined && match.column >= 0 ? match.column : 0;
+    return this.resolveCellDocRect(r, c, layout);
   }
 
   private switchSheet(idx: number): void {
@@ -611,6 +628,41 @@ export struct SpreadsheetView {
     return Math.min(RenderUtils.ZOOM_MAX, Math.max(MIN_SCALE, value));
   }
 
+  /** 归一化当前工作表的冻结行列数：缺省/非法值按 0 处理，小数取整并钳位到表维度 */
+  private resolveSheetFrozen(sheet: model.Sheet): EffectiveFrozen {
+    const rowCount = sheet.rowHeights ? sheet.rowHeights.length : 0;
+    const colCount = sheet.columnWidths ? sheet.columnWidths.length : 0;
+    return {
+      effFrozenRows: normalizeFrozen(sheet.frozenRows, rowCount),
+      effFrozenCols: normalizeFrozen(sheet.frozenColumns, colCount)
+    };
+  }
+
+  /**
+   * 计算本帧生效的冻结行列数（含视口占比保护）。
+   * 冻结区尺寸用屏幕 vp：前 N 行的文档高度前缀和乘以缩放，与设计文档 §3.2.2 一致。
+   */
+  private resolveFrameFrozen(sheet: model.Sheet, layout: SheetLayoutData, s: number,
+    canvasW: number, canvasH: number): EffectiveFrozen {
+    const frozen = this.resolveSheetFrozen(sheet);
+    const rowCount = sheet.rowHeights ? sheet.rowHeights.length : 0;
+    const colCount = sheet.columnWidths ? sheet.columnWidths.length : 0;
+    const frozenDataH = frozen.effFrozenRows > 0
+      ? (layout.rows.offsets[frozen.effFrozenRows] ?? 0) * s : 0;
+    const frozenDataW = frozen.effFrozenCols > 0
+      ? (layout.columns.offsets[frozen.effFrozenCols] ?? 0) * s : 0;
+    return resolveEffectiveFrozen({
+      frozenRows: frozen.effFrozenRows,
+      frozenColumns: frozen.effFrozenCols,
+      rowCount: rowCount,
+      colCount: colCount,
+      availBodyW: Math.max(0, canvasW - HEADER_WIDTH),
+      availBodyH: Math.max(0, canvasH - HEADER_HEIGHT),
+      frozenDataW: frozenDataW,
+      frozenDataH: frozenDataH
+    });
+  }
+
   /** 以焦点为锚点套用一次缩放，供捏合与补间共用；逻辑值由调用方决定是否越界 */
   private applyScaleAt(newScale: number, focusX: number, focusY: number): void {
     const oldScale = this.scaleVal;
@@ -746,195 +798,45 @@ export struct SpreadsheetView {
       const bodyRight = Math.min(canvasW, HEADER_WIDTH + ox + totalGridWidth);
       const bodyBottom = Math.min(canvasH, HEADER_HEIGHT + oy + totalGridHeight);
 
-      // 计算无缩放坐标系下的可见视口范围
-      const unscaledScrollX = -ox / s;
-      const unscaledScrollY = -oy / s;
+      // 计算无缩放坐标系下的可见视口范围（正文区与表头各自裁剪时复用）
       const unscaledBodyRight = (bodyRight - HEADER_WIDTH - ox) / s;
       const unscaledBodyBottom = (bodyBottom - HEADER_HEIGHT - oy) / s;
+      // 列头从滚动可见的首列开始遍历；行头在冻结分段内单独二分
+      const firstColIdx = columns.first(-ox / s);
 
-      const firstRowIdx = rows.first(unscaledScrollY);
-      const firstColIdx = columns.first(unscaledScrollX);
+      // 1. 表格主体区域：按冻结象限分别裁剪绘制（无冻结时退化为单一滚动区，与改造前完全一致）
+      const frozen = this.resolveFrameFrozen(sheet, layout, s, canvasW, canvasH);
+      const frozenRowsCount = frozen.effFrozenRows;
+      const frozenColsCount = frozen.effFrozenCols;
+      const frozenScreenW = frozenColsCount > 0 ? (columns.offsets[frozenColsCount] ?? 0) * s : 0;
+      const frozenScreenH = frozenRowsCount > 0 ? (rows.offsets[frozenRowsCount] ?? 0) * s : 0;
+      const quadrants = resolveFreezeQuadrants({
+        headerW: HEADER_WIDTH,
+        headerH: HEADER_HEIGHT,
+        offsetX: ox,
+        offsetY: oy,
+        frozenDataW: frozenScreenW,
+        frozenDataH: frozenScreenH,
+        bodyRight: bodyRight,
+        bodyBottom: bodyBottom,
+        rowCount: sheet.rowHeights.length,
+        colCount: sheet.columnWidths.length,
+        effFrozenRows: frozenRowsCount,
+        effFrozenCols: frozenColsCount
+      });
 
-      // 1. 表格主体区域
-      if (bodyRight > HEADER_WIDTH && bodyBottom > HEADER_HEIGHT) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(
-          HEADER_WIDTH,
-          HEADER_HEIGHT,
-          bodyRight - HEADER_WIDTH,
-          bodyBottom - HEADER_HEIGHT
-        );
-        ctx.clip();
-
-        // 1.1 白色底板
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(HEADER_WIDTH, HEADER_HEIGHT, bodyRight - HEADER_WIDTH, bodyBottom - HEADER_HEIGHT);
-
-        // 1.2 绘制普通非合并单元格填充与文本（仅二分遍历视口内部可见单元格）
-        if (firstColIdx < columns.visible.length && firstRowIdx < rows.visible.length) {
-          const firstCol = columns.visible[firstColIdx];
-
-          for (let r = firstRowIdx; r < rows.visible.length; r++) {
-            const row = rows.visible[r];
-            if (rows.offsets[row] >= unscaledBodyBottom) break;
-            const rowTop = HEADER_HEIGHT + oy + rows.offsets[row] * s;
-            const rowH = (rows.offsets[row + 1] - rows.offsets[row]) * s;
-
-            const cellStart = layout.firstCell(row, firstCol);
-            const cellEnd = layout.rowStarts[row + 1];
-
-            for (let i = cellStart; i < cellEnd; i++) {
-              const cell = sheet.cells[i];
-              if (columns.offsets[cell.column] >= unscaledBodyRight) break;
-              if (layout.mergedCells[i] === 1 || sheet.columnWidths[cell.column] === 0) continue;
-
-              const colLeft = HEADER_WIDTH + ox + columns.offsets[cell.column] * s;
-              const colW = (columns.offsets[cell.column + 1] - columns.offsets[cell.column]) * s;
-
-              this.drawSingleCell(ctx, cell, colLeft, rowTop, colW, rowH, s);
-            }
-          }
-        }
-
-        // 1.3 绘制整表网格线（仅绘制视口可见区域内的线条）
-        ctx.strokeStyle = GRID_COLOR;
-        ctx.lineWidth = 0.5;
-        ctx.beginPath();
-        for (let r = firstRowIdx; r < rows.visible.length; r++) {
-          const row = rows.visible[r];
-          if (rows.offsets[row] >= unscaledBodyBottom) break;
-          const y = HEADER_HEIGHT + oy + rows.offsets[row + 1] * s;
-          if (y < HEADER_HEIGHT) continue;
-          ctx.moveTo(HEADER_WIDTH, y);
-          ctx.lineTo(bodyRight, y);
-        }
-        for (let c = firstColIdx; c < columns.visible.length; c++) {
-          const col = columns.visible[c];
-          if (columns.offsets[col] >= unscaledBodyRight) break;
-          const x = HEADER_WIDTH + ox + columns.offsets[col + 1] * s;
-          if (x < HEADER_WIDTH) continue;
-          ctx.moveTo(x, HEADER_HEIGHT);
-          ctx.lineTo(x, bodyBottom);
-        }
-        ctx.stroke();
-
-        // 1.4 绘制可见的合并单元格（覆盖内部网格线并绘制锚点文本，使用行分桶与代际去重）
-        const visibleMerges: SheetMergeItem[] = [];
-        layout.currentGen++;
-        if (layout.currentGen >= 0x7FFFFFFF) {
-          layout.currentGen = 1;
-          layout.mergeSeenGen.fill(0);
-        }
-        const currentGen = layout.currentGen;
-
-        const startRow = firstRowIdx < rows.visible.length ? rows.visible[firstRowIdx] : 0;
-        let endRow = startRow;
-        const lastVisIdx = rows.first(unscaledBodyBottom);
-        if (lastVisIdx < rows.visible.length) {
-          endRow = rows.visible[lastVisIdx];
-        } else if (rows.visible.length > 0) {
-          endRow = rows.visible[rows.visible.length - 1];
-        }
-        const startB = Math.max(0, Math.min(layout.mergeBuckets.length - 1, Math.floor(startRow / SheetLayoutData.BUCKET_ROW_SIZE)));
-        const endB = Math.max(startB, Math.min(layout.mergeBuckets.length - 1, Math.floor(endRow / SheetLayoutData.BUCKET_ROW_SIZE)));
-
-        for (let b = startB; b <= endB; b++) {
-          const bucket = layout.mergeBuckets[b];
-          for (let k = 0; k < bucket.length; k++) {
-            const mIdx = bucket[k];
-            if (layout.mergeSeenGen[mIdx] === currentGen) {
-              continue;
-            }
-            layout.mergeSeenGen[mIdx] = currentGen;
-            const m = layout.merges[mIdx];
-            if (m.right <= unscaledScrollX || m.left >= unscaledBodyRight ||
-                m.bottom <= unscaledScrollY || m.top >= unscaledBodyBottom) {
-              continue;
-            }
-            visibleMerges.push(m);
-            const left = HEADER_WIDTH + ox + m.left * s;
-            const top = HEADER_HEIGHT + oy + m.top * s;
-            const right = HEADER_WIDTH + ox + m.right * s;
-            const bottom = HEADER_HEIGHT + oy + m.bottom * s;
-            const mergeW = right - left;
-            const mergeH = bottom - top;
-            if (mergeW <= 0 || mergeH <= 0) continue;
-
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(left, top, mergeW, mergeH);
-            if (m.anchor) {
-              this.drawSingleCell(ctx, m.anchor, left, top, mergeW, mergeH, s);
-            }
-            ctx.strokeStyle = GRID_COLOR;
-            ctx.lineWidth = 0.5;
-            ctx.strokeRect(left, top, mergeW, mergeH);
-          }
-        }
-
-        // 1.5 绘制可见单元格边框 (style.borders)
-        if (firstColIdx < columns.visible.length && firstRowIdx < rows.visible.length) {
-          const firstCol = columns.visible[firstColIdx];
-          for (let r = firstRowIdx; r < rows.visible.length; r++) {
-            const row = rows.visible[r];
-            if (rows.offsets[row] >= unscaledBodyBottom) break;
-            const rowTop = HEADER_HEIGHT + oy + rows.offsets[row] * s;
-            const rowBottom = HEADER_HEIGHT + oy + rows.offsets[row + 1] * s;
-
-            const cellStart = layout.firstCell(row, firstCol);
-            const cellEnd = layout.rowStarts[row + 1];
-
-            for (let i = cellStart; i < cellEnd; i++) {
-              const cell = sheet.cells[i];
-              if (columns.offsets[cell.column] >= unscaledBodyRight) break;
-              if (layout.mergedCells[i] === 1 || sheet.columnWidths[cell.column] === 0) continue;
-
-              const style = this.document?.cellStyles?.[cell.style];
-              if (!style || !style.borders) continue;
-
-              const colLeft = HEADER_WIDTH + ox + columns.offsets[cell.column] * s;
-              const colRight = HEADER_WIDTH + ox + columns.offsets[cell.column + 1] * s;
-              this.drawCellBorders(ctx, colLeft, rowTop, colRight, rowBottom, style);
-            }
-          }
-        }
-        for (const m of visibleMerges) {
-          if (!m.anchor) continue;
-          const style = this.document?.cellStyles?.[m.anchor.style];
-          if (!style || !style.borders) continue;
-          const left = HEADER_WIDTH + ox + m.left * s;
-          const top = HEADER_HEIGHT + oy + m.top * s;
-          const right = HEADER_WIDTH + ox + m.right * s;
-          const bottom = HEADER_HEIGHT + oy + m.bottom * s;
-          this.drawCellBorders(ctx, left, top, right, bottom, style);
-        }
-
-        // 1.6 绘制全文检索高亮 (普通淡黄，当前亮橙色+边框)
-        if (this.searchMatches && this.searchMatches.length > 0) {
-          for (let mIdx = 0; mIdx < this.searchMatches.length; mIdx++) {
-            const match = this.searchMatches[mIdx];
-            if (match.pageIndex !== this.currentSheetIndex) continue;
-            const isCurrent = (mIdx === this.currentMatchIndex);
-            const rect = this.computeMatchRect(match, layout, s, ox, oy);
-            if (!rect) continue;
-
-            if (isCurrent) {
-              ctx.fillStyle = 'rgba(255, 160, 0, 0.75)';
-              ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-              ctx.strokeStyle = '#e65100';
-              ctx.lineWidth = 1.5;
-              ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-            } else {
-              ctx.fillStyle = 'rgba(255, 235, 59, 0.45)';
-              ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-            }
-          }
-        }
-
-        ctx.restore();
+      for (const quadrant of quadrants) {
+        this.drawQuadrant(ctx, sheet, layout, quadrant, s);
       }
 
-      // 2. 顶部列头 (A, B, C...)
+      // 1.6 绘制全文检索高亮：按象限切片裁剪，滚动区高亮绝不覆盖冻结区
+      if (this.searchMatches && this.searchMatches.length > 0) {
+        this.drawSearchHighlights(ctx, layout, s, ox, oy, frozenScreenW, frozenScreenH, bodyRight, bodyBottom);
+      }
+
+      // 2. 顶部列头 (A, B, C...)：先画滚动列标头，再在冻结列区间内锁定 X 绘制冻结列标头
+      const frozenRight = HEADER_WIDTH + frozenScreenW;
+      const frozenBottom = HEADER_HEIGHT + frozenScreenH;
       ctx.save();
       ctx.beginPath();
       ctx.rect(HEADER_WIDTH, 0, canvasW - HEADER_WIDTH, HEADER_HEIGHT);
@@ -948,19 +850,44 @@ export struct SpreadsheetView {
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
 
+      // 2.1 可滚动列标头：裁剪在 [frozenRight .. bodyRight] 内
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(frozenRight, 0, Math.max(0, bodyRight - frozenRight), HEADER_HEIGHT);
+      ctx.clip();
       for (let c = firstColIdx; c < columns.visible.length; c++) {
         const col = columns.visible[c];
+        if (col < frozenColsCount) continue;
         if (columns.offsets[col] >= unscaledBodyRight) break;
         const left = HEADER_WIDTH + ox + columns.offsets[col] * s;
         const colW = (columns.offsets[col + 1] - columns.offsets[col]) * s;
-        if (left + colW < HEADER_WIDTH) continue;
+        if (left + colW < frozenRight) continue;
 
         ctx.strokeRect(left, 0, colW, HEADER_HEIGHT);
         ctx.fillText(this.indexToColumnLetter(col), left + colW / 2, HEADER_HEIGHT / 2);
       }
       ctx.restore();
 
-      // 3. 左侧行头 (1, 2, 3...)
+      // 2.2 冻结列标头：锁定 X，裁剪在 [HEADER_WIDTH .. frozenRight] 内
+      if (frozenColsCount > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(HEADER_WIDTH, 0, frozenScreenW, HEADER_HEIGHT);
+        ctx.clip();
+        for (let col = 0; col < frozenColsCount; col++) {
+          const left = HEADER_WIDTH + columns.offsets[col] * s;
+          const colW = (columns.offsets[col + 1] - columns.offsets[col]) * s;
+          if (colW <= 0) continue;
+          ctx.strokeRect(left, 0, colW, HEADER_HEIGHT);
+          ctx.fillText(this.indexToColumnLetter(col), left + colW / 2, HEADER_HEIGHT / 2);
+        }
+        ctx.restore();
+      }
+      ctx.restore();
+
+      // 3. 左侧行头 (1, 2, 3...)：先画滚动行标头，再在冻结行区间内锁定 Y 绘制冻结行标头
+      // 可滚动行标头的起始行取冻结边界（无冻结时即视口顶行），不能取正文底边
+      const unscaledScrollTop = (frozenBottom - HEADER_HEIGHT - oy) / s;
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, HEADER_HEIGHT, HEADER_WIDTH, canvasH - HEADER_HEIGHT);
@@ -974,15 +901,39 @@ export struct SpreadsheetView {
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'right';
 
-      for (let r = firstRowIdx; r < rows.visible.length; r++) {
+      // 3.1 可滚动行标头：裁剪在 [frozenBottom .. bodyBottom] 内
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, frozenBottom, HEADER_WIDTH, Math.max(0, bodyBottom - frozenBottom));
+      ctx.clip();
+      const firstScrollRowIdx = rows.first(unscaledScrollTop);
+      for (let r = firstScrollRowIdx; r < rows.visible.length; r++) {
         const row = rows.visible[r];
+        if (row < frozenRowsCount) continue;
         if (rows.offsets[row] >= unscaledBodyBottom) break;
         const top = HEADER_HEIGHT + oy + rows.offsets[row] * s;
         const rowH = (rows.offsets[row + 1] - rows.offsets[row]) * s;
-        if (top + rowH < HEADER_HEIGHT) continue;
+        if (top + rowH < frozenBottom) continue;
 
         ctx.strokeRect(0, top, HEADER_WIDTH, rowH);
         ctx.fillText(`${row + 1}`, HEADER_WIDTH - 6, top + rowH / 2);
+      }
+      ctx.restore();
+
+      // 3.2 冻结行标头：锁定 Y，裁剪在 [HEADER_HEIGHT .. frozenBottom] 内
+      if (frozenRowsCount > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, HEADER_HEIGHT, HEADER_WIDTH, frozenScreenH);
+        ctx.clip();
+        for (let row = 0; row < frozenRowsCount; row++) {
+          const top = HEADER_HEIGHT + rows.offsets[row] * s;
+          const rowH = (rows.offsets[row + 1] - rows.offsets[row]) * s;
+          if (rowH <= 0) continue;
+          ctx.strokeRect(0, top, HEADER_WIDTH, rowH);
+          ctx.fillText(`${row + 1}`, HEADER_WIDTH - 6, top + rowH / 2);
+        }
+        ctx.restore();
       }
       ctx.restore();
 
@@ -997,9 +948,273 @@ export struct SpreadsheetView {
       ctx.moveTo(0, HEADER_HEIGHT);
       ctx.lineTo(canvasW, HEADER_HEIGHT);
       ctx.stroke();
+
+      // 5. 冻结分割线：颜色区别于普通网格线与表头分隔线，压在顶层保证清晰可见
+      ctx.strokeStyle = FREEZE_LINE_COLOR;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (frozenColsCount > 0) {
+        const lineX = Math.min(frozenRight, bodyRight);
+        ctx.moveTo(lineX, 0);
+        ctx.lineTo(lineX, bodyBottom);
+      }
+      if (frozenRowsCount > 0) {
+        const lineY = Math.min(frozenBottom, bodyBottom);
+        ctx.moveTo(0, lineY);
+        ctx.lineTo(bodyRight, lineY);
+      }
+      ctx.stroke();
     } catch (err) {
       console.error(`SpreadsheetView draw failed: ${err}`);
     }
+  }
+
+  /** 递增合并单元格代际计数，用于跨象限绘制时去重；溢出时重置以避免脏数据 */
+  private nextMergeGen(layout: SheetLayoutData): number {
+    layout.currentGen++;
+    if (layout.currentGen >= 0x7FFFFFFF) {
+      layout.currentGen = 1;
+      layout.mergeSeenGen.fill(0);
+    }
+    return layout.currentGen;
+  }
+
+  /**
+   * 绘制单个冻结象限：独立 save -> clip -> 白底 -> 普通单元格 -> 网格线 -> 相交合并单元格 -> 单元格边框 -> restore。
+   * 象限的行列范围与屏幕偏移由 SheetFreeze 统一给出，锁定轴的偏移恒为 0，因此冻结区不随对应轴滚动。
+   */
+  private drawQuadrant(
+    ctx: CanvasRenderingContext2D,
+    sheet: model.Sheet,
+    layout: SheetLayoutData,
+    quadrant: FreezeQuadrant,
+    s: number
+  ): void {
+    if (quadrant.clip.width <= 0 || quadrant.clip.height <= 0) return;
+    const rows = layout.rows;
+    const columns = layout.columns;
+    const qx = quadrant.offsetX;
+    const qy = quadrant.offsetY;
+    const clipRight = quadrant.clip.x + quadrant.clip.width;
+    const clipBottom = quadrant.clip.y + quadrant.clip.height;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(quadrant.clip.x, quadrant.clip.y, quadrant.clip.width, quadrant.clip.height);
+    ctx.clip();
+
+    // 白色底板
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(quadrant.clip.x, quadrant.clip.y, quadrant.clip.width, quadrant.clip.height);
+
+    // 该象限在无缩放坐标系下的可见范围
+    const unscaledLeft = (quadrant.clip.x - HEADER_WIDTH - qx) / s;
+    const unscaledTop = (quadrant.clip.y - HEADER_HEIGHT - qy) / s;
+    const unscaledRight = (clipRight - HEADER_WIDTH - qx) / s;
+    const unscaledBottom = (clipBottom - HEADER_HEIGHT - qy) / s;
+
+    const firstRowIdx = rows.first(unscaledTop);
+    const firstColIdx = columns.first(unscaledLeft);
+
+    // 普通非合并单元格填充与文本
+    if (firstColIdx < columns.visible.length && firstRowIdx < rows.visible.length) {
+      const firstCol = columns.visible[firstColIdx];
+      for (let r = firstRowIdx; r < rows.visible.length; r++) {
+        const row = rows.visible[r];
+        if (row >= quadrant.rowEnd) break;
+        if (rows.offsets[row] >= unscaledBottom) break;
+        if (row < quadrant.rowStart) continue;
+        const rowTop = HEADER_HEIGHT + qy + rows.offsets[row] * s;
+        const rowH = (rows.offsets[row + 1] - rows.offsets[row]) * s;
+
+        const cellStart = layout.firstCell(row, firstCol);
+        const cellEnd = layout.rowStarts[row + 1];
+        for (let i = cellStart; i < cellEnd; i++) {
+          const cell = sheet.cells[i];
+          if (cell.column >= quadrant.colEnd) break;
+          if (columns.offsets[cell.column] >= unscaledRight) break;
+          if (cell.column < quadrant.colStart) continue;
+          if (layout.mergedCells[i] === 1 || sheet.columnWidths[cell.column] === 0) continue;
+
+          const colLeft = HEADER_WIDTH + qx + columns.offsets[cell.column] * s;
+          const colW = (columns.offsets[cell.column + 1] - columns.offsets[cell.column]) * s;
+          this.drawSingleCell(ctx, cell, colLeft, rowTop, colW, rowH, s);
+        }
+      }
+    }
+
+    // 网格线
+    ctx.strokeStyle = GRID_COLOR;
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    for (let r = firstRowIdx; r < rows.visible.length; r++) {
+      const row = rows.visible[r];
+      if (row >= quadrant.rowEnd) break;
+      if (rows.offsets[row] >= unscaledBottom) break;
+      if (row < quadrant.rowStart) continue;
+      const y = HEADER_HEIGHT + qy + rows.offsets[row + 1] * s;
+      if (y < quadrant.clip.y) continue;
+      ctx.moveTo(quadrant.clip.x, y);
+      ctx.lineTo(clipRight, y);
+    }
+    for (let c = firstColIdx; c < columns.visible.length; c++) {
+      const col = columns.visible[c];
+      if (col >= quadrant.colEnd) break;
+      if (columns.offsets[col] >= unscaledRight) break;
+      if (col < quadrant.colStart) continue;
+      const x = HEADER_WIDTH + qx + columns.offsets[col + 1] * s;
+      if (x < quadrant.clip.x) continue;
+      ctx.moveTo(x, quadrant.clip.y);
+      ctx.lineTo(x, clipBottom);
+    }
+    ctx.stroke();
+
+    // 相交的合并单元格：用分桶索引定位，跨冻结边界的合并可能在多个象限各画一次，由各自 clip 裁掉越界部分
+    // 每个象限单独取一代：跨冻结边界的合并需要在相邻象限各绘制一次，代际只在象限内去重
+    const currentGen = this.nextMergeGen(layout);
+    const visibleMerges: SheetMergeItem[] = [];
+    // 分桶范围取「象限行范围 ∩ 本象限可见行范围」，避免无冻结时退化为遍历全表合并单元格
+    const bucketSize = SheetLayoutData.BUCKET_ROW_SIZE;
+    let visibleStartRow = quadrant.rowStart;
+    if (firstRowIdx < rows.visible.length) {
+      visibleStartRow = Math.max(visibleStartRow, rows.visible[firstRowIdx]);
+    }
+    const lastRowIdx = rows.first(unscaledBottom);
+    let visibleEndRow = quadrant.rowEnd - 1;
+    if (lastRowIdx < rows.visible.length) {
+      visibleEndRow = Math.min(visibleEndRow, rows.visible[lastRowIdx]);
+    } else if (rows.visible.length > 0) {
+      visibleEndRow = Math.min(visibleEndRow, rows.visible[rows.visible.length - 1]);
+    }
+    const startB = Math.max(0, Math.min(layout.mergeBuckets.length - 1,
+      Math.floor(Math.max(0, Math.min(visibleStartRow, visibleEndRow)) / bucketSize)));
+    const endB = Math.max(startB, Math.min(layout.mergeBuckets.length - 1,
+      Math.floor(Math.max(0, visibleEndRow) / bucketSize)));
+    for (let b = startB; b <= endB; b++) {
+      const bucket = layout.mergeBuckets[b];
+      for (let k = 0; k < bucket.length; k++) {
+        const mIdx = bucket[k];
+        if (layout.mergeSeenGen[mIdx] === currentGen) continue;
+        layout.mergeSeenGen[mIdx] = currentGen;
+        const m = layout.merges[mIdx];
+        // 合并区域必须与象限行列范围有交集
+        if (m.endRow < quadrant.rowStart || m.startRow >= quadrant.rowEnd) continue;
+        const rect = resolveQuadrantMergeBounds(m.left, m.top, m.right, m.bottom,
+          quadrant, HEADER_WIDTH, HEADER_HEIGHT, s);
+        if (!rect) continue;
+        visibleMerges.push(m);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+        if (m.anchor) {
+          this.drawSingleCell(ctx, m.anchor, rect.x, rect.y, rect.width, rect.height, s);
+        }
+        ctx.strokeStyle = GRID_COLOR;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+      }
+    }
+
+    // 单元格边框
+    if (firstColIdx < columns.visible.length && firstRowIdx < rows.visible.length) {
+      const firstCol = columns.visible[firstColIdx];
+      for (let r = firstRowIdx; r < rows.visible.length; r++) {
+        const row = rows.visible[r];
+        if (row >= quadrant.rowEnd) break;
+        if (rows.offsets[row] >= unscaledBottom) break;
+        if (row < quadrant.rowStart) continue;
+        const rowTop = HEADER_HEIGHT + qy + rows.offsets[row] * s;
+        const rowBottom = HEADER_HEIGHT + qy + rows.offsets[row + 1] * s;
+
+        const cellStart = layout.firstCell(row, firstCol);
+        const cellEnd = layout.rowStarts[row + 1];
+        for (let i = cellStart; i < cellEnd; i++) {
+          const cell = sheet.cells[i];
+          if (cell.column >= quadrant.colEnd) break;
+          if (columns.offsets[cell.column] >= unscaledRight) break;
+          if (cell.column < quadrant.colStart) continue;
+          if (layout.mergedCells[i] === 1 || sheet.columnWidths[cell.column] === 0) continue;
+
+          const style = this.document?.cellStyles?.[cell.style];
+          if (!style || !style.borders) continue;
+
+          const colLeft = HEADER_WIDTH + qx + columns.offsets[cell.column] * s;
+          const colRight = HEADER_WIDTH + qx + columns.offsets[cell.column + 1] * s;
+          this.drawCellBorders(ctx, colLeft, rowTop, colRight, rowBottom, style);
+        }
+      }
+    }
+    for (const m of visibleMerges) {
+      if (!m.anchor) continue;
+      const style = this.document?.cellStyles?.[m.anchor.style];
+      if (!style || !style.borders) continue;
+      const rect = resolveQuadrantMergeBounds(m.left, m.top, m.right, m.bottom,
+        quadrant, HEADER_WIDTH, HEADER_HEIGHT, s);
+      if (!rect) continue;
+      this.drawCellBorders(ctx, rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, style);
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * 绘制全文检索高亮：每块高亮都在其所属象限的 clip 内绘制，
+   * 因此落在滚动区的部分绝不覆盖冻结区，落在冻结区的部分只随未冻结轴滚动。
+   */
+  private drawSearchHighlights(
+    ctx: CanvasRenderingContext2D,
+    layout: SheetLayoutData,
+    s: number,
+    ox: number,
+    oy: number,
+    frozenScreenW: number,
+    frozenScreenH: number,
+    bodyRight: number,
+    bodyBottom: number
+  ): void {
+    const frozenDocW = s > 0 ? frozenScreenW / s : 0;
+    const frozenDocH = s > 0 ? frozenScreenH / s : 0;
+    for (let mIdx = 0; mIdx < this.searchMatches.length; mIdx++) {
+      const match = this.searchMatches[mIdx];
+      if (match.pageIndex !== this.currentSheetIndex) continue;
+      const rect = this.resolveMatchDocRect(match, layout);
+      if (!rect) continue;
+      const isCurrent = (mIdx === this.currentMatchIndex);
+      const pieces = mapMatchRectToQuadrants({
+        rect: rect,
+        headerW: HEADER_WIDTH,
+        headerH: HEADER_HEIGHT,
+        offsetX: ox,
+        offsetY: oy,
+        scale: s,
+        frozenDocW: frozenDocW,
+        frozenDocH: frozenDocH,
+        bodyRight: bodyRight,
+        bodyBottom: bodyBottom
+      });
+      for (const piece of pieces) {
+        this.drawHighlightPiece(ctx, piece, isCurrent);
+      }
+    }
+  }
+
+  /** 在切片所属象限内绘制单块高亮 */
+  private drawHighlightPiece(ctx: CanvasRenderingContext2D, piece: MatchQuadrantRect, isCurrent: boolean): void {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(piece.clip.x, piece.clip.y, piece.clip.width, piece.clip.height);
+    ctx.clip();
+    if (isCurrent) {
+      ctx.fillStyle = 'rgba(255, 160, 0, 0.75)';
+      ctx.fillRect(piece.rect.x, piece.rect.y, piece.rect.width, piece.rect.height);
+      ctx.strokeStyle = '#e65100';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(piece.rect.x, piece.rect.y, piece.rect.width, piece.rect.height);
+    } else {
+      ctx.fillStyle = 'rgba(255, 235, 59, 0.45)';
+      ctx.fillRect(piece.rect.x, piece.rect.y, piece.rect.width, piece.rect.height);
+    }
+    ctx.restore();
   }
 
   private static readonly MAX_CELL_PREVIEW_LENGTH = 4096;

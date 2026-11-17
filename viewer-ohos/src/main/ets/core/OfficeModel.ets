@@ -147,6 +147,16 @@ export interface Sheet {
   merges: CellRange[];
   /** 预计算的几何布局数据（core 输出，schemaVersion 9 新增可选字段） */
   geometry?: SheetGeometry;
+  /**
+   * 冻结行数：从第 0 行开始锁定的行数，core 输出的 schemaVersion 9 可选字段，缺省表示不冻结。
+   * 消费端需按 `Math.max(0, Math.floor(v ?? 0))` 归一化并钳位到 rowHeights.length。
+   */
+  readonly frozenRows?: number;
+  /**
+   * 冻结列数：从第 0 列开始锁定的列数，core 输出的 schemaVersion 9 可选字段，缺省表示不冻结。
+   * 消费端需按 `Math.max(0, Math.floor(v ?? 0))` 归一化并钳位到 columnWidths.length。
+   */
+  readonly frozenColumns?: number;
 }
 
 export interface SheetGeometry {
