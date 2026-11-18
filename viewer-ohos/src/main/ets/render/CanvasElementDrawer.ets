@@ -401,6 +401,86 @@ export class CanvasElementDrawer {
     return null;
   }
 
+  /**
+   * 解析单元格文字起排的垂直偏移。
+   *
+   * 三处调用方（drawTable、computeElementHighlightRects、buildElementTextBlocks）必须共用本方法，
+   * 保证正文绘制、全文检索高亮与文本选区三套坐标完全一致：
+   * - 0（顶部对齐）恒为 5；
+   * - 1（垂直居中，缺省行为）剩余空间充足时居中，否则回退到 5；
+   * - 2（底部对齐）剩余空间充足时贴近底部并预留 5 的内边距，否则回退到 5。
+   * 查询坐标必须传入合并区域的锚点 (r, c)，与文字实际存放的单元格保持一致。
+   */
+  public static resolveCellVerticalOffset(
+    element: model.Element,
+    r: number,
+    c: number,
+    cellH: number,
+    cellContentH: number
+  ): number {
+    // 缺省（无 cellValigns 或坐标越界）一律按 1 垂直居中，兼容既有表格
+    let valign = 1;
+    const valigns = element.cellValigns;
+    if (valigns !== undefined && r >= 0 && r < valigns.length) {
+      const rowValigns = valigns[r];
+      if (rowValigns !== undefined && c >= 0 && c < rowValigns.length) {
+        valign = rowValigns[c];
+      }
+    }
+
+    // 剩余空间不足时任何对齐方式都退回 5 的基准内边距，避免文字被贴边裁切
+    const remaining = cellH - cellContentH;
+    if (remaining <= 10 || valign === 0) {
+      return 5;
+    }
+    if (valign === 2) {
+      return Math.max(5, remaining - 5);
+    }
+    return Math.max(5, remaining / 2);
+  }
+
+  /**
+   * 按单元格四边独立边框绘制线条。
+   *
+   * borders 顺序为 [top, right, bottom, left]；仅绘制线宽大于 0 且颜色 alpha 不为 0 的边，
+   * 因此边框全为 none 的无框表不会再被默认网格灰框覆盖。
+   */
+  private static drawCellBorderEdges(
+    ctx: OfficeCanvasContext,
+    borders: model.CellBorder[],
+    x1: number,
+    y1: number,
+    cellW: number,
+    cellH: number
+  ): void {
+    const left = x1;
+    const top = y1;
+    const right = x1 + cellW;
+    const bottom = y1 + cellH;
+    const edgeX1: number[] = [left, right, left, left];
+    const edgeY1: number[] = [top, top, bottom, top];
+    const edgeX2: number[] = [right, right, right, left];
+    const edgeY2: number[] = [top, bottom, bottom, bottom];
+
+    const count = Math.min(4, borders.length);
+    for (let i = 0; i < count; i++) {
+      const border = borders[i];
+      if (!border || border.width <= 0) {
+        continue;
+      }
+      const css = RenderUtils.argbToCss(border.color);
+      if (!css) {
+        continue;
+      }
+      ctx.strokeStyle = css;
+      ctx.lineWidth = border.width;
+      ctx.beginPath();
+      ctx.moveTo(edgeX1[i], edgeY1[i]);
+      ctx.lineTo(edgeX2[i], edgeY2[i]);
+      ctx.stroke();
+    }
+  }
+
   public static resolveColumnWidths(
     element: model.Element,
     cols: number,
@@ -581,9 +661,19 @@ export class CanvasElementDrawer {
           ctx.fillRect(x1, y1, cellW, cellH);
         }
 
-        ctx.strokeStyle = strokeCss;
-        ctx.lineWidth = strokeWidth;
-        ctx.strokeRect(x1, y1, cellW, cellH);
+        // 存在单元格级四边边框时按边独立绘制，否则沿用表格级统一网格框
+        let cellBorderEdges: model.CellBorder[] | undefined = undefined;
+        const cellBorders = element.cellBorders;
+        if (cellBorders !== undefined && cellBorders.length > 0) {
+          cellBorderEdges = cellBorders[r]?.[c];
+        }
+        if (cellBorderEdges !== undefined && cellBorderEdges.length > 0) {
+          CanvasElementDrawer.drawCellBorderEdges(ctx, cellBorderEdges, x1, y1, cellW, cellH);
+        } else {
+          ctx.strokeStyle = strokeCss;
+          ctx.lineWidth = strokeWidth;
+          ctx.strokeRect(x1, y1, cellW, cellH);
+        }
 
         const cellParas = c < row.length ? row[c] : [];
         if (cellParas && cellParas.length > 0) {
@@ -610,7 +700,7 @@ export class CanvasElementDrawer {
             cellContentH += Math.max(0, para.after || 0);
           }
 
-          const vOffset = cellH > cellContentH + 10 ? Math.max(5, (cellH - cellContentH) / 2) : 5;
+          const vOffset = CanvasElementDrawer.resolveCellVerticalOffset(element, r, c, cellH, cellContentH);
           let paraY = y1 + vOffset;
 
           for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
@@ -1537,7 +1627,7 @@ export class CanvasElementDrawer {
           }
           cellContentH += Math.max(0, para.after || 0);
         }
-        const vOffset = cellH > cellContentH + 10 ? Math.max(5, (cellH - cellContentH) / 2) : 5;
+        const vOffset = CanvasElementDrawer.resolveCellVerticalOffset(element, anchorR, anchorC, cellH, cellContentH);
         let paraY = cellY + vOffset;
         for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
           const para = cellParas[pIdx];
@@ -1938,7 +2028,8 @@ export class CanvasElementDrawer {
           // drawTable 与 computeElementHighlightRects 使用的单元格可用宽度均为 cellW - 10
           const availW = Math.max(1, cellW - 10);
           const cellContentH = CanvasElementDrawer.measureCellContentHeight(ctx, cellParas, availW);
-          const vOffset = cellH > cellContentH + 10 ? Math.max(5, (cellH - cellContentH) / 2) : 5;
+          // 合并单元格只在锚点建块，垂直对齐查询同样以锚点 (r, c) 为准
+          const vOffset = CanvasElementDrawer.resolveCellVerticalOffset(element, r, c, cellH, cellContentH);
           // 单元格文字在元素局部坐标系中的起排原点，与 drawTable 的 (x1 + 5, y1 + vOffset) 一致
           const cellOriginX = x1 + 5;
           const cellOriginY = y1 + vOffset;

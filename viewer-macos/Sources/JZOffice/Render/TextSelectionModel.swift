@@ -461,7 +461,14 @@ public final class DocumentTextLayout: @unchecked Sendable {
                     }
                 }
                 contentHeight += CGElementDrawer.measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
-                let vOffset: CGFloat = cellH > contentHeight + 10 ? max(5, (cellH - contentHeight) / 2.0) : 5
+                // 合并单元格只在锚点建块，垂直对齐偏移与 CGElementDrawer.drawTable 共用同一方法
+                let vOffset = CGElementDrawer.resolveCellVerticalOffset(
+                    element: element,
+                    row: r,
+                    col: c,
+                    cellHeight: cellH,
+                    contentHeight: contentHeight
+                )
 
                 if let blk = buildParagraphsBlock(element: dummyEl, blockIndex: curIdx) {
                     let cellLocalOrigin = CGPoint(x: x1 + 5, y: y1 + vOffset)

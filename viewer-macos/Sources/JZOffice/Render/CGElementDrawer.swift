@@ -306,6 +306,71 @@ public enum CGElementDrawer {
         return geom.rowTops.last ?? 0
     }
 
+    /// 解析单元格文字起排的垂直偏移。
+    ///
+    /// 正文绘制、全文检索高亮与文本选区三处必须共用本方法，保证三套坐标完全一致：
+    /// - 0（顶部对齐）恒为 5；
+    /// - 1（垂直居中，缺省行为）剩余空间充足时居中，否则回退到 5；
+    /// - 2（底部对齐）剩余空间充足时贴近底部并预留 5 的内边距，否则回退到 5。
+    /// 查询坐标必须传入合并区域的锚点 (row, col)，与文字实际存放的单元格保持一致。
+    public static func resolveCellVerticalOffset(
+        element: OfficeElement,
+        row: Int,
+        col: Int,
+        cellHeight: CGFloat,
+        contentHeight: CGFloat
+    ) -> CGFloat {
+        var valign: UInt8 = 1
+        if row >= 0 && row < element.cellValigns.count {
+            let rowValigns = element.cellValigns[row]
+            if col >= 0 && col < rowValigns.count {
+                valign = rowValigns[col]
+            }
+        }
+
+        // 剩余空间不足时任何对齐方式都退回 5 的基准内边距，避免文字被贴边裁切
+        let remaining = cellHeight - contentHeight
+        if remaining <= 10 || valign == 0 {
+            return 5
+        }
+        if valign == 2 {
+            return max(5, remaining - 5)
+        }
+        return max(5, remaining / 2)
+    }
+
+    /// 按单元格四边独立边框绘制线段。
+    ///
+    /// borders 顺序为 [top, right, bottom, left]；仅绘制线宽大于 0 且颜色 alpha 不为 0 的边，
+    /// 因此边框全为 none 的无框表不会再被默认网格灰框覆盖。
+    private static func drawCellBorderEdges(
+        in ctx: CGContext,
+        borders: [OfficeCellBorder],
+        cellRect: CGRect
+    ) {
+        let left = cellRect.minX
+        let top = cellRect.minY
+        let right = cellRect.maxX
+        let bottom = cellRect.maxY
+        let segments: [(CGPoint, CGPoint)] = [
+            (CGPoint(x: left, y: top), CGPoint(x: right, y: top)),
+            (CGPoint(x: right, y: top), CGPoint(x: right, y: bottom)),
+            (CGPoint(x: left, y: bottom), CGPoint(x: right, y: bottom)),
+            (CGPoint(x: left, y: top), CGPoint(x: left, y: bottom))
+        ]
+
+        for index in 0..<min(4, borders.count) {
+            let border = borders[index]
+            guard border.width > 0, let color = argbToCGColor(border.color) else { continue }
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(border.width)
+            ctx.beginPath()
+            ctx.move(to: segments[index].0)
+            ctx.addLine(to: segments[index].1)
+            ctx.strokePath()
+        }
+    }
+
     private static func drawTable(
         in ctx: CGContext,
         element: OfficeElement,
@@ -353,7 +418,14 @@ public enum CGElementDrawer {
                         ctx.fill(cellRect)
                     }
                 }
-                if let borderColor {
+                // 存在单元格级四边边框时按边独立绘制，否则沿用表格级统一网格框
+                var cellBorderEdges: [OfficeCellBorder]? = nil
+                if r < element.cellBorders.count && c < element.cellBorders[r].count {
+                    cellBorderEdges = element.cellBorders[r][c]
+                }
+                if let edges = cellBorderEdges, !edges.isEmpty {
+                    drawCellBorderEdges(in: ctx, borders: edges, cellRect: cellRect)
+                } else if let borderColor {
                     ctx.setStrokeColor(borderColor)
                     ctx.setLineWidth(borderWidth)
                     ctx.stroke(cellRect)
@@ -376,12 +448,14 @@ public enum CGElementDrawer {
                         contentHeight += line.before + line.height + line.after
                     }
 
-                    let vOffset: CGFloat
-                    if cellRect.height > contentHeight + 10 {
-                        vOffset = max(5, (cellRect.height - contentHeight) / 2.0)
-                    } else {
-                        vOffset = 5
-                    }
+                    // 合并单元格只在锚点绘制文字，(r, c) 本身即锚点坐标
+                    let vOffset = resolveCellVerticalOffset(
+                        element: element,
+                        row: r,
+                        col: c,
+                        cellHeight: cellRect.height,
+                        contentHeight: contentHeight
+                    )
 
                     ctx.saveGState()
                     ctx.clip(to: cellRect)
@@ -1363,7 +1437,14 @@ public enum CGElementDrawer {
                 if !textParas.isEmpty {
                     contentHeight += measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
                 }
-                let vOffset: CGFloat = cellH > contentHeight + 10 ? max(5, (cellH - contentHeight) / 2.0) : 5
+                // 文字存放在合并区域的锚点单元格，垂直对齐查询以 (anchorR, anchorC) 为准
+                let vOffset = resolveCellVerticalOffset(
+                    element: block,
+                    row: anchorR,
+                    col: anchorC,
+                    cellHeight: cellH,
+                    contentHeight: contentHeight
+                )
                 let cellOrigin = CGPoint(x: cellX + 5, y: blockOriginY + rowTops[anchorR] + vOffset)
                 return charHighlightRects(
                     paragraphs: cellParas,
@@ -1467,7 +1548,14 @@ public enum CGElementDrawer {
                 if !textParas.isEmpty {
                     contentHeight += measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
                 }
-                let vOffset: CGFloat = cellH > contentHeight + 10 ? max(5, (cellH - contentHeight) / 2.0) : 5
+                // 文字存放在合并区域的锚点单元格，垂直对齐查询以 (anchorR, anchorC) 为准
+                let vOffset = resolveCellVerticalOffset(
+                    element: el,
+                    row: anchorR,
+                    col: anchorC,
+                    cellHeight: cellH,
+                    contentHeight: contentHeight
+                )
                 let cellOrigin = CGPoint(x: x1 + 5, y: rowTops[anchorR] + vOffset)
                 let localRects = charHighlightRects(
                     paragraphs: cellParas,

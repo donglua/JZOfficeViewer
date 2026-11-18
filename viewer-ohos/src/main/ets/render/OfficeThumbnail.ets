@@ -304,6 +304,8 @@ function buildThumbnailElement(block: model.Element, width: number, height: numb
     rows: block.rows,
     columnWidths: block.columnWidths,
     cellFills: block.cellFills,
+    cellValigns: block.cellValigns,
+    cellBorders: block.cellBorders,
     paths: block.paths,
     fillGradient: block.fillGradient,
     merges: block.merges

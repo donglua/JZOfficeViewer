@@ -1717,6 +1717,306 @@ struct JZOfficeTests {
         #expect(!hasDarkPixelBelow(rectEl, yStart: 17))
     }
 
+    @Test("OfficeElement 解码 cellValigns 与 cellBorders，缺省时回落空数组")
+    func tableCellValignsAndBordersDecoding() throws {
+        // 1. 显式携带垂直对齐与四边边框
+        let json = """
+        {
+            "type": "TABLE",
+            "width": 200,
+            "columnWidths": [100, 100],
+            "cellValigns": [[0, 2], [1, 0]],
+            "cellBorders": [
+                [
+                    [{"color": 4279312947, "width": 1.5}, {"color": 0, "width": 0}, {"color": 4282668390, "width": 0.75}, {"color": 0, "width": 0}],
+                    [{"color": 0, "width": 0}, {"color": 0, "width": 0}, {"color": 4282668390, "width": 0.75}, {"color": 0, "width": 0}]
+                ],
+                [
+                    [{"color": 0, "width": 0}, {"color": 0, "width": 0}, {"color": 4279312947, "width": 1.5}, {"color": 0, "width": 0}],
+                    [{"color": 0, "width": 0}, {"color": 0, "width": 0}, {"color": 4279312947, "width": 1.5}, {"color": 0, "width": 0}]
+                ]
+            ],
+            "rows": [
+                [[{"runs": [{"text": "A1"}]}], [{"runs": [{"text": "B1"}]}]],
+                [[{"runs": [{"text": "A2"}]}], [{"runs": [{"text": "B2"}]}]]
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let element = try JSONDecoder().decode(OfficeElement.self, from: json)
+        #expect(element.cellValigns.count == 2)
+        #expect(element.cellValigns[0] == [0, 2])
+        #expect(element.cellValigns[1] == [1, 0])
+        #expect(element.cellBorders.count == 2)
+        guard element.cellBorders.count == 2,
+              element.cellBorders[0].count == 2,
+              element.cellBorders[0][0].count == 4,
+              element.cellBorders[1].count == 2 else {
+            Issue.record("cellBorders 维度应为 2×2，每个单元格 4 条边")
+            return
+        }
+        // 首行左单元格：top=1.5pt #112233，right 隐藏，bottom=0.75pt #445566，left 隐藏
+        #expect(element.cellBorders[0][0][0].color == 0xFF112233)
+        #expect(abs(element.cellBorders[0][0][0].width - 1.5) < 0.001)
+        #expect(element.cellBorders[0][0][1].width == 0)
+        #expect(element.cellBorders[0][0][2].color == 0xFF445566)
+        #expect(abs(element.cellBorders[0][0][2].width - 0.75) < 0.001)
+        #expect(element.cellBorders[0][0][3].width == 0)
+        // 末行左单元格：仅保留 bottom 粗线
+        #expect(element.cellBorders[1][0][0].width == 0)
+        #expect(element.cellBorders[1][0][2].color == 0xFF112233)
+        #expect(abs(element.cellBorders[1][0][2].width - 1.5) < 0.001)
+
+        // 2. 普通表格（无这两个字段）保持空数组，兼容既有 JSON
+        let plainJSON = """
+        {
+            "type": "TABLE",
+            "width": 200,
+            "rows": [[[{"runs": [{"text": "普通"}]}]]]
+        }
+        """.data(using: .utf8)!
+        let plain = try JSONDecoder().decode(OfficeElement.self, from: plainJSON)
+        #expect(plain.cellValigns.isEmpty)
+        #expect(plain.cellBorders.isEmpty)
+
+        // 3. 成员初始化参数默认值保持既有调用点可用
+        let defaulted = OfficeElement(type: .table)
+        #expect(defaulted.cellValigns.isEmpty)
+        #expect(defaulted.cellBorders.isEmpty)
+    }
+
+    @Test("resolveCellVerticalOffset 返回 Top/Center/Bottom 偏移并缺省按居中")
+    func resolveCellVerticalOffsetRules() throws {
+        let element = OfficeElement(type: .table, cellValigns: [[0, 1, 2]])
+        let cellHeight: CGFloat = 100
+        let contentHeight: CGFloat = 20
+
+        // 剩余 80：顶部恒为 5，居中取半，底部预留 5 的内边距
+        #expect(CGElementDrawer.resolveCellVerticalOffset(
+            element: element, row: 0, col: 0, cellHeight: cellHeight, contentHeight: contentHeight
+        ) == 5)
+        #expect(CGElementDrawer.resolveCellVerticalOffset(
+            element: element, row: 0, col: 1, cellHeight: cellHeight, contentHeight: contentHeight
+        ) == 40)
+        #expect(CGElementDrawer.resolveCellVerticalOffset(
+            element: element, row: 0, col: 2, cellHeight: cellHeight, contentHeight: contentHeight
+        ) == 75)
+
+        // 缺省（无 cellValigns）与列越界均按居中处理，兼容既有表格
+        let legacy = OfficeElement(type: .table)
+        #expect(CGElementDrawer.resolveCellVerticalOffset(
+            element: legacy, row: 0, col: 0, cellHeight: cellHeight, contentHeight: contentHeight
+        ) == 40)
+        #expect(CGElementDrawer.resolveCellVerticalOffset(
+            element: element, row: 0, col: 9, cellHeight: cellHeight, contentHeight: contentHeight
+        ) == 40)
+        #expect(CGElementDrawer.resolveCellVerticalOffset(
+            element: element, row: 9, col: 0, cellHeight: cellHeight, contentHeight: contentHeight
+        ) == 40)
+
+        // 剩余空间不超过 10 时任何对齐方式都退回 5，避免文字贴边
+        for col in 0..<3 {
+            #expect(CGElementDrawer.resolveCellVerticalOffset(
+                element: element, row: 0, col: col, cellHeight: 30, contentHeight: 20
+            ) == 5)
+        }
+    }
+
+    @Test("三线表按 cellBorders 四边绘制且隐藏竖线，缺省时回退统一网格框")
+    func tableCellBorderEdgeDrawing() throws {
+        // 三线表：首行保留粗顶线与表头底线，其余边全部隐藏
+        func tableJSON(_ borders: String, stroke: String = "0", strokeWidth: String = "0") -> Data {
+            """
+            {
+                "type": "TABLE",
+                "width": 200,
+                "stroke": \(stroke),
+                "strokeWidth": \(strokeWidth),
+                "columnWidths": [100, 100],
+                "cellBorders": \(borders),
+                "rows": [
+                    [[{"runs": [{"text": "A"}]}], [{"runs": [{"text": "B"}]}]],
+                    [[{"runs": [{"text": "C"}]}], [{"runs": [{"text": "D"}]}]]
+                ]
+            }
+            """.data(using: .utf8)!
+        }
+        let none = #"{"color": 0, "width": 0}"#
+        let headerBottom = #"{"color": 4282668390, "width": 0.75}"#
+        let thickTop = #"{"color": 4279312947, "width": 1.5}"#
+        let borders = """
+        [
+            [[\(thickTop), \(none), \(headerBottom), \(none)], [\(thickTop), \(none), \(headerBottom), \(none)]],
+            [[\(none), \(none), \(thickTop), \(none)], [\(none), \(none), \(thickTop), \(none)]]
+        ]
+        """
+
+        let triElement = try JSONDecoder().decode(OfficeElement.self, from: tableJSON(borders))
+
+        let w = 220
+        let h = 120
+        func render(_ element: OfficeElement) -> [UInt8] {
+            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+            var bytes = [UInt8](repeating: 255, count: w * h * 4)
+            let ctx = CGContext(
+                data: &bytes,
+                width: w,
+                height: h,
+                bitsPerComponent: 8,
+                bytesPerRow: w * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            ctx.translateBy(x: 0, y: CGFloat(h))
+            ctx.scaleBy(x: 1, y: -1)
+            CGElementDrawer.drawElement(in: ctx, element: element, images: [:])
+            return bytes
+        }
+        func isDark(_ bytes: [UInt8], _ x: Int, _ y: Int) -> Bool {
+            guard x >= 0, x < w, y >= 0, y < h else { return false }
+            let idx = (y * w + x) * 4
+            return bytes[idx] < 240 || bytes[idx + 1] < 240 || bytes[idx + 2] < 240
+        }
+        /// 统计指定矩形区域内被描边覆盖的像素数，用于判断某条边是否存在
+        func darkCount(_ bytes: [UInt8], xRange: Range<Int>, yRange: Range<Int>) -> Int {
+            var count = 0
+            for y in yRange {
+                for x in xRange where isDark(bytes, x, y) {
+                    count += 1
+                }
+            }
+            return count
+        }
+
+        let triBytes = render(triElement)
+        let geom = CGElementDrawer.computeTableGeometry(element: triElement)
+        #expect(geom.cols == 2)
+        #expect(geom.colX == [0, 100, 200])
+        let headerBottomY = Int(geom.rowTops[1].rounded())
+        let tableBottomY = Int(geom.rowTops[2].rounded())
+
+        // 顶部粗线、表头底线与表格底线均存在（描边路径居中于边界，取边界上下各 2 像素）
+        #expect(darkCount(triBytes, xRange: 20..<180, yRange: 0..<3) > 20)
+        #expect(darkCount(triBytes, xRange: 20..<180, yRange: (headerBottomY - 2)..<(headerBottomY + 2)) > 10)
+        #expect(darkCount(triBytes, xRange: 20..<180, yRange: (tableBottomY - 3)..<(tableBottomY + 2)) > 20)
+
+        // 两条竖线全部隐藏：列边界处的纵向条带没有任何描边
+        let row0Interior = 4..<(headerBottomY - 3)
+        let row1Interior = (headerBottomY + 3)..<(tableBottomY - 3)
+        #expect(darkCount(triBytes, xRange: 99..<102, yRange: row0Interior) == 0)
+        #expect(darkCount(triBytes, xRange: 99..<102, yRange: row1Interior) == 0)
+        #expect(darkCount(triBytes, xRange: 0..<3, yRange: row0Interior) == 0)
+        #expect(darkCount(triBytes, xRange: 197..<200, yRange: row0Interior) == 0)
+
+        // 未提供 cellBorders 时沿用统一网格框，内部竖线恢复可见
+        let plainElement = try JSONDecoder().decode(
+            OfficeElement.self,
+            from: tableJSON(#"[]"#, stroke: "4278190080", strokeWidth: "1")
+        )
+        #expect(plainElement.cellBorders.isEmpty)
+        let plainBytes = render(plainElement)
+        #expect(darkCount(plainBytes, xRange: 99..<103, yRange: row0Interior) > 10)
+        #expect(darkCount(plainBytes, xRange: 197..<202, yRange: row0Interior) > 10)
+    }
+
+    @Test("Bottom 对齐的单元格在检索高亮与文本选区中与绘制共用同一垂直偏移")
+    func tableBottomValignHighlightAndSelectionAlignment() throws {
+        // 同一行内用较高单元格抬升行高，使较低的单元格获得足够剩余空间触发居中/底部差异
+        func docJSON(_ valigns: String) -> Data {
+            """
+            {
+              "schemaVersion": 9,
+              "kind": "DOCX",
+              "width": 595,
+              "blocks": [{
+                "type": "TABLE",
+                "width": 300,
+                "columnWidths": [150, 150],
+                "cellValigns": \(valigns),
+                "rows": [[
+                  [
+                    {"image": "word/media/tall.png", "imageWidth": 100, "imageHeight": 60},
+                    {"runs": [{"text": "高格文字", "size": 12, "color": 4278190080}]}
+                  ],
+                  [{"runs": [{"text": "低格文字", "size": 12, "color": 4278190080}]}]
+                ]]
+              }]
+            }
+            """.data(using: .utf8)!
+        }
+
+        let centered = try JSONDecoder().decode(OfficeDocument.self, from: docJSON("[[1, 1]]"))
+        let bottomed = try JSONDecoder().decode(OfficeDocument.self, from: docJSON("[[1, 2]]"))
+        let centeredPlan = CGElementDrawer.layoutDocxBlocks(in: centered)
+        let bottomedPlan = CGElementDrawer.layoutDocxBlocks(in: bottomed)
+        #expect(centeredPlan.placements.count == 1)
+        #expect(bottomedPlan.placements.count == 1)
+
+        // 以实际几何与排版高度复算期望偏移，验证两个消费方确实调用统一方法
+        var tbl = centered.blocks[0]
+        tbl.width = centeredPlan.placements[0].frame.width
+        let geom = CGElementDrawer.computeTableGeometry(element: tbl)
+        #expect(geom.cols == 2)
+        let cellH = geom.rowTops[1] - geom.rowTops[0]
+        let availCellW = max(1, geom.colWidths[1] - 10)
+        let shortParas = tbl.rows[0][1]
+        let shortContentH = CGElementDrawer.measureParagraphsHeight(
+            shortParas,
+            availableWidth: availCellW,
+            wrap: true
+        )
+        // 行高被左侧高单元格抬升，剩余空间必须超过 10 才能区分居中和底部
+        #expect(cellH - shortContentH > 10)
+
+        let centerOffset = CGElementDrawer.resolveCellVerticalOffset(
+            element: tbl, row: 0, col: 1, cellHeight: cellH, contentHeight: shortContentH
+        )
+        var bottomTbl = bottomed.blocks[0]
+        bottomTbl.width = bottomedPlan.placements[0].frame.width
+        let bottomOffset = CGElementDrawer.resolveCellVerticalOffset(
+            element: bottomTbl, row: 0, col: 1, cellHeight: cellH, contentHeight: shortContentH
+        )
+        #expect(centerOffset != 5)
+        #expect(bottomOffset > centerOffset)
+        let delta = bottomOffset - centerOffset
+
+        // 1. 文本选区：底部对齐单元格的块原点整体下移 delta
+        let centerLayout = DocumentTextLayout.build(from: centered)
+        let bottomLayout = DocumentTextLayout.build(from: bottomed)
+        guard let centerBlock = centerLayout.blocks.first(where: { $0.fullText.contains("低格文字") }),
+              let bottomBlock = bottomLayout.blocks.first(where: { $0.fullText.contains("低格文字") }) else {
+            Issue.record("未在表格中构建出低格文字的文本块")
+            return
+        }
+        let centerY = centerBlock.transform.ty - centeredPlan.placements[0].frame.minY
+        let bottomY = bottomBlock.transform.ty - bottomedPlan.placements[0].frame.minY
+        #expect(abs(centerY - centerOffset) < 0.5)
+        #expect(abs(bottomY - bottomOffset) < 0.5)
+        #expect(abs((bottomY - centerY) - delta) < 0.5)
+
+        // 2. 检索高亮：同一字符区间的高亮矩形同步下移 delta
+        let match = OfficeSearchMatch(
+            pageIndex: 0,
+            elementIndex: 0,
+            paragraphIndex: 0,
+            row: 0,
+            column: 1,
+            startChar: 0,
+            endChar: 4,
+            snippet: "低格文字"
+        )
+        let centerRects = CGElementDrawer.computeHighlightRects(for: match, in: centered, docxPlan: centeredPlan)
+        let bottomRects = CGElementDrawer.computeHighlightRects(for: match, in: bottomed, docxPlan: bottomedPlan)
+        guard let centerRect = centerRects.first, let bottomRect = bottomRects.first else {
+            Issue.record("表格单元格检索命中未产生高亮矩形")
+            return
+        }
+        #expect(abs((bottomRect.minY - centerRect.minY) - delta) < 0.5)
+        // 高亮矩形与选区块原点使用同一基准，正文绘制的起排点也因此保持一致
+        #expect(abs((centerRect.minY - centeredPlan.placements[0].frame.minY) - centerY) < 0.5)
+        #expect(abs((bottomRect.minY - bottomedPlan.placements[0].frame.minY) - bottomY) < 0.5)
+    }
+
     private func createTestCGImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         var bytes = [UInt8](repeating: 128, count: width * height * 4)

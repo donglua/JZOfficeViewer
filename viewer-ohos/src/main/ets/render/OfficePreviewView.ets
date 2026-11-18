@@ -2920,6 +2920,8 @@ function cloneElementForCanvas(src: model.Element, width: number, height: number
     rows: src.rows,
     columnWidths: src.columnWidths,
     cellFills: src.cellFills,
+    cellValigns: src.cellValigns,
+    cellBorders: src.cellBorders,
     paths: src.paths,
     fillGradient: src.fillGradient,
     merges: src.merges

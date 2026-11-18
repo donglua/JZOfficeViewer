@@ -70,6 +70,12 @@ export interface Paragraph {
   borderWidth?: number;
 }
 
+/** 单元格单边边框：color 为 ARGB 颜色，width 为线宽（pt，0 表示不绘制） */
+export interface CellBorder {
+  color: number;
+  width: number;
+}
+
 export interface Element {
   type: ElementType;
   x: number;
@@ -96,6 +102,10 @@ export interface Element {
   rows?: Paragraph[][][];
   columnWidths?: number[];
   cellFills?: number[][];
+  /** 单元格垂直对齐矩阵：0 顶部、1 垂直居中、2 底部；缺省为空表示沿用垂直居中 */
+  cellValigns?: number[][];
+  /** 单元格四边边框矩阵，每个元素为 [top, right, bottom, left]；缺省为空表示沿用表格级统一网格框 */
+  cellBorders?: CellBorder[][][];
   paths?: Path[];
   fillGradient?: GradientFill;
   merges?: CellRange[];

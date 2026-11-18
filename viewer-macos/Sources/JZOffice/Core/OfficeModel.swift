@@ -243,6 +243,17 @@ public struct OfficeParagraph: Codable, Sendable {
     }
 }
 
+/// 单元格单边边框：color 为 ARGB 颜色，width 为线宽（pt，0 表示不绘制）
+public struct OfficeCellBorder: Codable, Equatable, Sendable {
+    public var color: UInt32
+    public var width: CGFloat
+
+    public init(color: UInt32 = 0, width: CGFloat = 0) {
+        self.color = color
+        self.width = width
+    }
+}
+
 public struct OfficeElement: Codable, Sendable {
     public let type: OfficeElementType
     public var x: CGFloat
@@ -262,6 +273,10 @@ public struct OfficeElement: Codable, Sendable {
     public var rows: [[[OfficeParagraph]]]
     public var columnWidths: [CGFloat]
     public var cellFills: [[UInt32]]
+    /// 单元格垂直对齐矩阵：0 顶部、1 垂直居中、2 底部；为空表示沿用垂直居中
+    public var cellValigns: [[UInt8]]
+    /// 单元格四边边框矩阵，每个元素为 [top, right, bottom, left]；为空表示沿用表格级统一网格框
+    public var cellBorders: [[[OfficeCellBorder]]]
     public var paths: [OfficePath]
     public var fillGradient: OfficeGradientFill?
     public var merges: [OfficeCellRange]
@@ -276,6 +291,7 @@ public struct OfficeElement: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case type, x, y, width, height, transform, padding, fill, stroke, strokeWidth
         case image, imageBounds, verticalAlignment, textWrap, paragraphs, rows, columnWidths, cellFills, paths, fillGradient, merges
+        case cellValigns, cellBorders
         case wrapMode, horizontalAlign, behindDoc, distTop, distBottom, distLeft, distRight
     }
 
@@ -298,6 +314,8 @@ public struct OfficeElement: Codable, Sendable {
         rows: [[[OfficeParagraph]]] = [],
         columnWidths: [CGFloat] = [],
         cellFills: [[UInt32]] = [],
+        cellValigns: [[UInt8]] = [],
+        cellBorders: [[[OfficeCellBorder]]] = [],
         paths: [OfficePath] = [],
         fillGradient: OfficeGradientFill? = nil,
         merges: [OfficeCellRange] = [],
@@ -327,6 +345,8 @@ public struct OfficeElement: Codable, Sendable {
         self.rows = rows
         self.columnWidths = columnWidths
         self.cellFills = cellFills
+        self.cellValigns = cellValigns
+        self.cellBorders = cellBorders
         self.paths = paths
         self.fillGradient = fillGradient
         self.merges = merges
@@ -359,6 +379,8 @@ public struct OfficeElement: Codable, Sendable {
         self.rows = try c.decodeIfPresent([[[OfficeParagraph]]].self, forKey: .rows) ?? []
         self.columnWidths = try c.decodeIfPresent([CGFloat].self, forKey: .columnWidths) ?? []
         self.cellFills = try c.decodeIfPresent([[UInt32]].self, forKey: .cellFills) ?? []
+        self.cellValigns = try c.decodeIfPresent([[UInt8]].self, forKey: .cellValigns) ?? []
+        self.cellBorders = try c.decodeIfPresent([[[OfficeCellBorder]]].self, forKey: .cellBorders) ?? []
         self.paths = try c.decodeIfPresent([OfficePath].self, forKey: .paths) ?? []
         self.fillGradient = try c.decodeIfPresent(OfficeGradientFill.self, forKey: .fillGradient)
         self.merges = try c.decodeIfPresent([OfficeCellRange].self, forKey: .merges) ?? []
