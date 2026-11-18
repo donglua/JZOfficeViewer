@@ -1,5 +1,28 @@
 # 更新日志
 
+## 未发布
+
+本版本扩展 PPTX（及复用 DrawingML 的 DOCX 图形）的图表与几何图形预览能力，`schemaVersion` 保持 **9** 不变。
+
+### 排版与特性
+
+- **PPTX 图表扩展（`core`）**：
+  - **横向条形图**：识别 `barChart` 且 `barDir="bar"`（`grouping` 为 `clustered` / `standard`），按分类均分槽高、按数值比例从左向右绘制条形，数值全非负时自动把 `0` 纳入数值轴范围。
+  - **饼图与环形图**：新增 `pieChart` 与 `doughnutChart` 支持，扇区以三次贝塞尔拟合圆弧（每段圆心角不超过 90°，控制点切向系数 `4/3·tan(α/4)`）；环形图解析 `<c:holeSize>`（合法 `1..=90`，默认 50，内径比钳位到 `0.1..=0.9`），生成外弧与反向内弧闭合路径；单扇区 100% 时直接绕外圆闭合，不产生中心半径线。
+  - **扇区配色与图例**：优先使用 `<c:dPt>` 声明的填充色，未声明时回退主题强调色；图例按分类名逐项生成色块与文本。
+  - **无坐标轴容错**：饼图与环形图不再要求存在 `catAx` / `valAx`，缺失坐标轴时仍可正常渲染。
+- **预设几何扩展（`core`）**：新增 22 种高频 `prstGeom`（合计 26 种可绘制形状），覆盖 `parallelogram`、`trapezoid`、`pentagon`、`hexagon`、`octagon`、`plus`/`mathPlus`、`snip1Rect`、`round2SameRect`、四向箭头与双向箭头、`chevron`、`homePlate`、`notchedRightArrow`、`star4`/`star5`、`flowChartProcess`/`Decision`/`Data`/`Terminator`/`Document` 与 `wedgeRectCallout`。统一提取 `adj` 调整值读取函数，非法公式仍按既有语义整体省略并告警。
+- **虚线描边与连接线箭头（`core` / Android / HarmonyOS NEXT / macOS）**：
+  - `core` 解析 `<a:prstDash>` 并按线宽换算为 `Element.strokeDash`（`Vec<f32>`，实线时按 `skip_serializing_if` 省略，旧文档 JSON 结构不变），支持 `dot`/`sysDot`、`dash`/`sysDash`、`lgDash`、`dashDot`/`sysDashDot`、`lgDashDot`、`lgDashDotDot`/`sysDashDotDot`。
+  - 连接线 `headEnd` / `tailEnd` 编译为主干与端点箭头子路径（`triangle`/`stealth` 实心三角、`arrow` 开叉双翼线、`diamond`/`oval` 端点），按 `len`/`w` 属性缩放并受线段长度约束，实心箭头自动内缩主干避免刺穿尖端。
+  - 三端分别以 `DashPathEffect`（Android）、`ctx.setLineDash`（HarmonyOS NEXT / macOS）绘制虚线，并在每次描边后立即恢复实线，避免样式泄漏。
+
+### 测试
+
+- 新增 `core/tests/pptx_charts_geometry.rs`（15 项用例）覆盖横向条形图、饼图/环形图扇区与配色、22 种预设几何、虚线换算与箭头端点。
+- 扩展纯 JVM `scripts/tests/DocumentDecoderChecks.java` 校验 `strokeDash` 解码与非法输入拦截（140 → **155** 项断言）。
+- 扩展 macOS `JZOfficeTests.swift` 覆盖 `strokeDash` 解码回退与离屏虚线间断绘制（31 项用例全通过）。
+
 ## 0.15.0
 
 发布页面：[v0.15.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.15.0)。

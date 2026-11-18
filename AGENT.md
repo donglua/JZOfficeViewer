@@ -141,9 +141,9 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 ```
 
 支持的 `<suite_name>` 列表：
-- `compatibility`：XLSX 调色板/tint、PPTX 16 种编号、DOCX 显式字体、三角形/菱形等几何
+- `compatibility`：XLSX 调色板/tint、PPTX 16 种编号、DOCX 显式字体、三角形/菱形/箭头/星形等预设几何
 - `xlsx` / `xlsx-text` / `sheet-layout`：表格渲染、26 万字符超长单元格截断、行列索引与合并区域
-- `pptx` / `pptx-geometry` / `backgrounds`：组合变换、折线图、渐变文字、换行对照、背景图与 Display P3 色差容差（±1）
+- `pptx` / `pptx-geometry` / `backgrounds`：组合变换、折线图/柱状图/横向条形图/饼图/环形图、虚线描边与连接线箭头、渐变文字、换行对照、背景图与 Display P3 色差容差（±1）
 - `images` / `image-cache`：图片按需解码、清晰度升级、LRU 复用与 256 MiB 累计读取限制
 - `layout` / `limits`：DOCX 流式排版、页码回调、异常容器与超限拦截
 - `selection`：DOCX / PPTX 文本选区与复制；覆盖 `selectAll` 无空段占位、高亮像素比对、剪贴板往返、程序化复制保留选区、真实长按选词与拖拽扩选/手柄收窄、单击清除、单指拖拽零退化，以及 XLSX `selectAll()` 返回 `false` 且长按不产生选区
