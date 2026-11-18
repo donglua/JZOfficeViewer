@@ -58,6 +58,11 @@ final class OfficeDocument {
          * 顺序为 [top, right, bottom, left]；为空表示沿用表格级统一网格框。
          */
         final List<List<CellBorder[]>> cellBorders = new ArrayList<>();
+        /**
+         * 虚线描边点线序列，单位 point，按“实线长度、间隔长度”成对循环；
+         * 为 {@code null} 表示实线（core 侧实线元素不输出该字段）。
+         */
+        float[] strokeDash;
         final List<SpreadsheetDocument.CellRange> merges = new ArrayList<>();
         final List<Path> paths = new ArrayList<>();
         GradientFill fillGradient;

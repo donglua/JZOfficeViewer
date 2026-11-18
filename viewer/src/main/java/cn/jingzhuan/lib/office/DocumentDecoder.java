@@ -654,6 +654,15 @@ final class DocumentDecoder {
                 case "fill": e.fill = (int) c.nextLong(); hasFill = true; break;
                 case "stroke": e.stroke = (int) c.nextLong(); hasStroke = true; break;
                 case "strokeWidth": e.strokeWidth = (float) c.nextDouble(); hasStrokeW = true; break;
+                case "strokeDash":
+                    // 可选字段：实线元素不输出该字段；空数组同样回落为实线
+                    if (c.peekNull()) {
+                        c.nextNull();
+                        e.strokeDash = null;
+                    } else {
+                        e.strokeDash = strokeDash(c);
+                    }
+                    break;
                 case "fillGradient":
                     if (c.peekNull()) { c.nextNull(); e.fillGradient = null; }
                     else e.fillGradient = gradient(c);
@@ -818,6 +827,31 @@ final class DocumentDecoder {
             }
         }
         return e;
+    }
+
+    /**
+     * 解码虚线点线序列（单位 point）。
+     *
+     * 校验：长度必须在 {@code [2, 16]} 内，每个元素必须有限、{@code > 0} 且 {@code <= 10000}；
+     * 空数组按实线处理（返回 {@code null}），与 core 侧 {@code skip_serializing_if = "Vec::is_empty"} 语义一致。
+     */
+    private static float[] strokeDash(Cursor c) {
+        c.beginArray();
+        float[] temp = new float[2];
+        int size = 0;
+        while (c.hasNext()) {
+            if (size >= 16) throw new IllegalArgumentException("Invalid strokeDash length");
+            double value = c.nextDouble();
+            if (!Double.isFinite(value) || value <= 0 || value > 10000) {
+                throw new IllegalArgumentException("Invalid strokeDash segment");
+            }
+            if (size == temp.length) temp = Arrays.copyOf(temp, Math.min(16, size * 2));
+            temp[size++] = (float) value;
+        }
+        c.endArray();
+        if (size == 0) return null;
+        if (size < 2) throw new IllegalArgumentException("Invalid strokeDash length");
+        return size == temp.length ? temp : Arrays.copyOf(temp, size);
     }
 
     private static OfficeDocument.Path path(Cursor c) {

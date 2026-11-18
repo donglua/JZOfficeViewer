@@ -3,6 +3,7 @@ package cn.jingzhuan.lib.office;
 import android.graphics.Canvas;
 import android.graphics.Bitmap;
 import android.graphics.Paint;
+import android.graphics.DashPathEffect;
 import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.Path;
@@ -548,7 +549,9 @@ final class OfficeRenderer {
                 }
                 if (sourcePath.stroke && e.stroke != 0) {
                     paint.setShader(null); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(e.strokeWidth); paint.setColor(e.stroke);
+                    applyStrokeDash(e);
                     canvas.drawPath(d.paths.get(i), paint);
+                    resetStrokeDash();
                 }
             }
             paint.setShader(null);
@@ -557,9 +560,11 @@ final class OfficeRenderer {
             if (e.type == OfficeDocument.Type.ELLIPSE) canvas.drawOval(rect, paint);
             else if (e.type != OfficeDocument.Type.LINE) canvas.drawRect(rect, paint);
             paint.setShader(null); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(e.strokeWidth); paint.setColor(e.stroke);
+            applyStrokeDash(e);
             if (e.type == OfficeDocument.Type.ELLIPSE) canvas.drawOval(rect, paint);
             else if (e.type == OfficeDocument.Type.LINE) canvas.drawLine(0, 0, e.width, e.height, paint);
             else if (e.stroke != 0) canvas.drawRect(rect, paint);
+            resetStrokeDash();
         }
         if (e.type == OfficeDocument.Type.TEXT) {
             textBounds.set(rect);
@@ -588,11 +593,13 @@ final class OfficeRenderer {
         if (e.type == OfficeDocument.Type.TABLE) {
             drawTableCellFills(canvas, e, d);
             if (e.cellBorders.isEmpty()) {
-                // 无单元格级四边边框时沿用表格级统一网格框
+                // 无单元格级四边边框时沿用表格级统一网格框（使用 element 级 stroke，可带虚线）
                 paint.setColor(e.stroke != 0 ? e.stroke : 0xffb7bec7);
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setStrokeWidth(e.strokeWidth > 0 ? e.strokeWidth : 0.6f);
+                applyStrokeDash(e);
                 for (RectF cell : d.cells) canvas.drawRect(cell, paint);
+                resetStrokeDash();
             } else {
                 drawTableCellBorders(canvas, e, d);
             }
@@ -723,6 +730,32 @@ final class OfficeRenderer {
         List<OfficeDocument.CellBorder[]> row = element.cellBorders.get(r);
         if (row == null || c < 0 || c >= row.size()) return null;
         return row.get(c);
+    }
+
+    /**
+     * 按元素的 {@code strokeDash} 设置虚线；实线（{@code null} 或非法值）时设置 {@code null} 保持实线。
+     *
+     * {@link DashPathEffect} 要求所有区间为正数，解码器已做校验；此处再兜底一次，
+     * 避免 core 未来放宽约束时抛 {@link IllegalArgumentException} 打断整页绘制。
+     */
+    private void applyStrokeDash(OfficeDocument.Element element) {
+        float[] dash = element.strokeDash;
+        if (dash == null || dash.length < 2) {
+            paint.setPathEffect(null);
+            return;
+        }
+        for (float segment : dash) {
+            if (!(segment > 0) || Float.isInfinite(segment)) {
+                paint.setPathEffect(null);
+                return;
+            }
+        }
+        paint.setPathEffect(new DashPathEffect(dash, 0f));
+    }
+
+    /** 重置虚线，避免 pathEffect 泄漏到同页后续元素或后续绘制阶段 */
+    private void resetStrokeDash() {
+        paint.setPathEffect(null);
     }
 
     /** 取单元格底纹颜色；无 cellFills 或坐标越界时返回 0（透明） */

@@ -18,6 +18,7 @@ public final class DocumentDecoderChecks {
         checkLargeGeometryArrays();
         checkSearchMatchesDecodeAndValidation();
         checkTableCellValignsAndBorders();
+        checkStrokeDashDecoding();
         System.out.println("PASS DocumentDecoderChecks (" + passed + " assertions)");
     }
 
@@ -116,6 +117,73 @@ public final class DocumentDecoderChecks {
                 + "[[{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},"
                 + "{\"color\":0,\"width\":0}]]]}]}",
             "Invalid core display model", "border column count mismatch");
+    }
+
+    /** 虚线描边 strokeDash 的解码、实线回落与非法点线序列拒绝 */
+    private static void checkStrokeDashDecoding() throws Exception {
+        // 元素必备字段齐全的最小 PPTX 元素骨架，strokeDash 通过 head + dash + tail 拼装
+        String head = "{\"schemaVersion\":9,\"kind\":\"PPTX\",\"width\":720,\"warnings\":[],\"blocks\":[],"
+            + "\"cellStyles\":[],\"sheets\":[],"
+            + "\"pages\":[{\"width\":720,\"height\":405,\"background\":4294967295,\"elements\":[{"
+            + "\"type\":\"RECT\",\"x\":0,\"y\":0,\"width\":100,\"height\":50,\"padding\":4,"
+            + "\"transform\":[1,0,0,1,0,0],\"fill\":0,\"stroke\":4278190080,\"strokeWidth\":1,"
+            + "\"verticalAlignment\":\"TOP\",\"textWrap\":true";
+        String tail = "}]}]}";
+        String dash = ",\"strokeDash\":[8.0,6.0]";
+
+        // 1. 正常解码：成对点线序列
+        OfficeDocument.Element dashed = DocumentDecoder.decode(head + dash + tail).pages.get(0).elements.get(0);
+        check(dashed.strokeDash != null && dashed.strokeDash.length == 2, "strokeDash length decoded");
+        check(dashed.strokeDash[0] == 8f && dashed.strokeDash[1] == 6f, "strokeDash values decoded");
+
+        // 2. 正常解码：非成对的奇数长度序列也是合法的点线循环
+        OfficeDocument.Element odd = DocumentDecoder.decode(head + ",\"strokeDash\":[4,2,1]" + tail)
+            .pages.get(0).elements.get(0);
+        check(odd.strokeDash != null && odd.strokeDash.length == 3 && odd.strokeDash[2] == 1f,
+            "odd-length strokeDash decoded");
+
+        // 3. 长度边界：2 与 16 均被接受
+        OfficeDocument.Element shortest = DocumentDecoder.decode(head + ",\"strokeDash\":[1,1]" + tail)
+            .pages.get(0).elements.get(0);
+        check(shortest.strokeDash.length == 2, "two-segment strokeDash accepted");
+        StringBuilder sixteen = new StringBuilder(",\"strokeDash\":[");
+        for (int i = 0; i < 16; i++) sixteen.append(i == 0 ? "" : ",").append(i + 1);
+        sixteen.append(']');
+        OfficeDocument.Element longest = DocumentDecoder.decode(head + sixteen + tail)
+            .pages.get(0).elements.get(0);
+        check(longest.strokeDash.length == 16 && longest.strokeDash[15] == 16f,
+            "sixteen-segment strokeDash accepted");
+
+        // 4. 空数组与缺失字段都表示实线，保持 null
+        OfficeDocument.Element empty = DocumentDecoder.decode(head + ",\"strokeDash\":[]" + tail)
+            .pages.get(0).elements.get(0);
+        check(empty.strokeDash == null, "empty strokeDash falls back to solid line");
+        OfficeDocument.Element nulled = DocumentDecoder.decode(head + ",\"strokeDash\":null" + tail)
+            .pages.get(0).elements.get(0);
+        check(nulled.strokeDash == null, "null strokeDash falls back to solid line");
+        OfficeDocument.Element omitted = DocumentDecoder.decode(head + tail).pages.get(0).elements.get(0);
+        check(omitted.strokeDash == null, "omitted strokeDash is null");
+
+        // 5. 非法长度：少于 2 或多于 16
+        reject(head + ",\"strokeDash\":[8]" + tail, "Invalid core display model", "single-segment strokeDash");
+        StringBuilder seventeen = new StringBuilder(",\"strokeDash\":[");
+        for (int i = 0; i < 17; i++) seventeen.append(i == 0 ? "" : ",").append(i + 1);
+        seventeen.append(']');
+        reject(head + seventeen + tail, "Invalid core display model", "seventeen-segment strokeDash");
+
+        // 6. 非正数元素
+        reject(head + ",\"strokeDash\":[0,6]" + tail, "Invalid core display model", "zero dash segment");
+        reject(head + ",\"strokeDash\":[8,-1]" + tail, "Invalid core display model", "negative dash segment");
+
+        // 7. 超出上界与非有限值（1e999 解析为 Infinity，由 Cursor.nextDouble 拦截）
+        reject(head + ",\"strokeDash\":[10001,6]" + tail, "Invalid core display model", "dash segment above limit");
+        reject(head + ",\"strokeDash\":[1e999,6]" + tail, "Invalid core display model", "infinite dash segment");
+
+        // 8. 上界 10000 本身合法
+        OfficeDocument.Element boundary = DocumentDecoder.decode(head + ",\"strokeDash\":[10000,0.5]" + tail)
+            .pages.get(0).elements.get(0);
+        check(boundary.strokeDash[0] == 10000f && boundary.strokeDash[1] == 0.5f,
+            "dash segment protocol boundary accepted");
     }
 
     private static void checkSearchMatchesDecodeAndValidation() throws Exception {
