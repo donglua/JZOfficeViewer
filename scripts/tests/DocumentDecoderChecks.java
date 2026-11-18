@@ -17,7 +17,105 @@ public final class DocumentDecoderChecks {
         checkSheetGeometryValidation();
         checkLargeGeometryArrays();
         checkSearchMatchesDecodeAndValidation();
+        checkTableCellValignsAndBorders();
         System.out.println("PASS DocumentDecoderChecks (" + passed + " assertions)");
+    }
+
+    /** 段落必备字段的完整形态，供表格单元格文本构造合法 JSON */
+    private static String paragraph(String text) {
+        return "{\"alignment\":0,\"before\":0,\"after\":0,\"indent\":0,\"rightIndent\":0,"
+            + "\"firstLineIndent\":0,\"lineSpacingRule\":\"AUTO\",\"lineSpacing\":1,"
+            + "\"runs\":[{\"text\":\"" + text + "\",\"size\":12,\"bold\":false,"
+            + "\"italic\":false,\"underline\":false,\"color\":0}]}";
+    }
+
+    /** 表格单元格垂直对齐与四边边框的解码、维度校验与非法输入拒绝 */
+    private static void checkTableCellValignsAndBorders() throws Exception {
+        String PARAGRAPH_A1 = paragraph("A1");
+        String PARAGRAPH_B1 = paragraph("B1");
+        String PARAGRAPH_A2 = paragraph("A2");
+        String PARAGRAPH_B2 = paragraph("B2");
+        String head = "{\"schemaVersion\":9,\"kind\":\"DOCX\",\"width\":595,\"warnings\":[],\"pages\":[],"
+            + "\"cellStyles\":[],\"sheets\":[],\"blocks\":[{"
+            + "\"type\":\"TABLE\",\"x\":0,\"y\":0,\"width\":200,\"height\":40,\"padding\":0,"
+            + "\"transform\":[1,0,0,1,0,0],\"fill\":0,\"stroke\":0,\"strokeWidth\":0,"
+            + "\"verticalAlignment\":\"TOP\",\"textWrap\":true,"
+            + "\"columnWidths\":[100,100],"
+            + "\"rows\":["
+            + "[[" + PARAGRAPH_A1 + "],[" + PARAGRAPH_B1 + "]],"
+            + "[[" + PARAGRAPH_A2 + "],[" + PARAGRAPH_B2 + "]]"
+            + "]";
+        String valigns = ",\"cellValigns\":[[0,2],[1,0]]";
+        String borders = ",\"cellBorders\":["
+            + "[[{\"color\":4279312947,\"width\":1.5},{\"color\":0,\"width\":0},"
+            + "{\"color\":4282668390,\"width\":0.75},{\"color\":0,\"width\":0}],"
+            + "[{\"color\":4279312947,\"width\":1.5},{\"color\":0,\"width\":0},"
+            + "{\"color\":4282668390,\"width\":0.75},{\"color\":0,\"width\":0}]],"
+            + "[[{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},"
+            + "{\"color\":4279312947,\"width\":1.5},{\"color\":0,\"width\":0}],"
+            + "[{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},"
+            + "{\"color\":4279312947,\"width\":1.5},{\"color\":0,\"width\":0}]]"
+            + "]";
+
+        // 1. 正常解码：垂直对齐矩阵
+        OfficeDocument.Element withValigns = DocumentDecoder.decode(head + valigns + "}]}").blocks.get(0);
+        check(withValigns.cellValigns.size() == 2, "table cell valign rows decoded");
+        check(withValigns.cellValigns.get(0).get(0) == 0 && withValigns.cellValigns.get(0).get(1) == 2,
+            "first row valigns decoded");
+        check(withValigns.cellValigns.get(1).get(0) == 1 && withValigns.cellValigns.get(1).get(1) == 0,
+            "second row valigns decoded");
+
+        // 2. 正常解码：四边边框矩阵
+        OfficeDocument.Element withBorders = DocumentDecoder.decode(head + borders + "}]}").blocks.get(0);
+        check(withBorders.cellBorders.size() == 2, "table cell border rows decoded");
+        OfficeDocument.CellBorder[] firstCell = withBorders.cellBorders.get(0).get(0);
+        check(firstCell.length == 4, "each cell holds exactly four border edges");
+        check(firstCell[0].color == (int) 4279312947L, "border top color decoded");
+        check(firstCell[0].width == 1.5f, "border top width decoded");
+        check(firstCell[1].width == 0f && firstCell[1].color == 0, "hidden right edge decoded as zero");
+        check(firstCell[2].color == (int) 4282668390L && firstCell[2].width == 0.75f, "border bottom decoded");
+        check(withBorders.cellBorders.get(1).get(0)[0].width == 0f, "last row top edge hidden");
+        check(withBorders.cellBorders.get(1).get(0)[2].width == 1.5f, "last row bottom edge decoded");
+
+        // 3. 缺省（省略两个字段）保持空集合，兼容既有 JSON
+        OfficeDocument.Element omitted = DocumentDecoder.decode(head + "}]}").blocks.get(0);
+        check(omitted.cellValigns.isEmpty() && omitted.cellBorders.isEmpty(),
+            "omitted cellValigns and cellBorders are empty");
+
+        // 4. cellValigns 非法输入拒绝
+        reject(head + ",\"cellValigns\":[[0,3],[1,0]]}]}", "Invalid core display model", "valign value above 2");
+        reject(head + ",\"cellValigns\":[[0,-1],[1,0]]}]}", "Invalid core display model", "negative valign value");
+        reject(head + ",\"cellValigns\":[[0,1.5],[1,0]]}]}", "Invalid core display model", "fractional valign value");
+        reject(head + ",\"cellValigns\":[[0,2]]}]}", "Invalid core display model", "valign row count mismatch");
+        reject(head + ",\"cellValigns\":[[0,2,1],[1,0]]}]}", "Invalid core display model", "valign column count mismatch");
+
+        // 5. cellBorders 非法输入拒绝
+        String oneCell = "\"cellBorders\":[[[{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},"
+            + "{\"color\":0,\"width\":0},{\"color\":0,\"width\":0}],[{\"color\":0,\"width\":0},"
+            + "{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},{\"color\":0,\"width\":0}]]]";
+        reject(head + "," + oneCell + "}]}", "Invalid core display model", "border row count mismatch");
+        reject(head + ",\"cellBorders\":[[[{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},"
+                + "{\"color\":0,\"width\":0}],[]],[]]}]}",
+            "Invalid core display model", "border edges shorter than four");
+        reject(head + ",\"cellBorders\":[[[{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},"
+                + "{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},{\"color\":0,\"width\":0}],[],"
+                + "[{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},"
+                + "{\"color\":0,\"width\":0}]]]}]}",
+            "Invalid core display model", "border edges longer than four");
+        reject(head + ",\"cellBorders\":[[[{\"color\":0,\"width\":-1},{\"color\":0,\"width\":0},"
+                + "{\"color\":0,\"width\":0},{\"color\":0,\"width\":0}],[]],[]]}]}",
+            "Invalid core display model", "negative border width");
+        reject(head + ",\"cellBorders\":[[[{\"color\":0,\"width\":1500},{\"color\":0,\"width\":0},"
+                + "{\"color\":0,\"width\":0},{\"color\":0,\"width\":0}],[]],[]]}]}",
+            "Invalid core display model", "excessive border width");
+        reject(head + ",\"cellBorders\":[[[{\"color\":0,\"width\":1e3000},{\"color\":0,\"width\":0},"
+                + "{\"color\":0,\"width\":0},{\"color\":0,\"width\":0}],[]],[]]}]}",
+            "Invalid core display model", "infinite border width");
+        reject(head + ",\"cellBorders\":[[[{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},"
+                + "{\"color\":0,\"width\":0},{\"color\":0,\"width\":0}],[]],"
+                + "[[{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},{\"color\":0,\"width\":0},"
+                + "{\"color\":0,\"width\":0}]]]}]}",
+            "Invalid core display model", "border column count mismatch");
     }
 
     private static void checkSearchMatchesDecodeAndValidation() throws Exception {

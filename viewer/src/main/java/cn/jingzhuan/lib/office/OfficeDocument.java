@@ -51,9 +51,27 @@ final class OfficeDocument {
         final List<List<List<Paragraph>>> rows = new ArrayList<>();
         final List<Float> columnWidths = new ArrayList<>();
         final List<List<Integer>> cellFills = new ArrayList<>();
+        /** 单元格垂直对齐矩阵：0 顶部、1 垂直居中、2 底部；为空表示沿用垂直居中 */
+        final List<List<Integer>> cellValigns = new ArrayList<>();
+        /**
+         * 单元格四边边框矩阵，每项为长度 4 的 {@link CellBorder} 数组，
+         * 顺序为 [top, right, bottom, left]；为空表示沿用表格级统一网格框。
+         */
+        final List<List<CellBorder[]>> cellBorders = new ArrayList<>();
         final List<SpreadsheetDocument.CellRange> merges = new ArrayList<>();
         final List<Path> paths = new ArrayList<>();
         GradientFill fillGradient;
+    }
+
+    /** 单元格单边边框：color 为 ARGB 颜色，width 为线宽（pt，0 表示不绘制） */
+    static final class CellBorder {
+        final int color;
+        final float width;
+
+        CellBorder(int color, float width) {
+            this.color = color;
+            this.width = width;
+        }
     }
 
     static final class Path {

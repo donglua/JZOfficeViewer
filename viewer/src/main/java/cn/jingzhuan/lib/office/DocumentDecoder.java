@@ -349,6 +349,41 @@ final class DocumentDecoder {
         return cell;
     }
 
+    /**
+     * 解码单个单元格的四边边框数组，必须恰好包含 [top, right, bottom, left] 四条边。
+     * 每条边为 {@code {"color": <argb>, "width": <pt>}}，线宽限制在 [0, 1000] 且必须有限。
+     */
+    private static OfficeDocument.CellBorder[] cellBorderEdges(Cursor c) {
+        OfficeDocument.CellBorder[] edges = new OfficeDocument.CellBorder[4];
+        int count = 0;
+        c.beginArray();
+        while (c.hasNext()) {
+            if (count >= 4) throw new IllegalArgumentException("Invalid table border edges");
+            int color = 0;
+            float width = 0;
+            c.beginObject();
+            while (c.hasNext()) {
+                switch (c.nextName()) {
+                    case "color": color = (int) c.nextLong(); break;
+                    case "width": {
+                        double value = c.nextDouble();
+                        if (!Double.isFinite(value) || value < 0 || value > 1000) {
+                            throw new IllegalArgumentException("Invalid table border width");
+                        }
+                        width = (float) value;
+                        break;
+                    }
+                    default: c.skipValue(); break;
+                }
+            }
+            c.endObject();
+            edges[count++] = new OfficeDocument.CellBorder(color, width);
+        }
+        c.endArray();
+        if (count != 4) throw new IllegalArgumentException("Invalid table border edges");
+        return edges;
+    }
+
     private static SpreadsheetDocument.CellRange rawMerge(Cursor c) {
         SpreadsheetDocument.CellRange range = new SpreadsheetDocument.CellRange();
         boolean hasSr = false, hasEr = false, hasSc = false, hasEc = false;
@@ -705,6 +740,42 @@ final class DocumentDecoder {
                         c.endArray();
                     }
                     break;
+                case "cellValigns":
+                    if (c.peekNull()) {
+                        c.nextNull();
+                    } else {
+                        c.beginArray();
+                        while (c.hasNext()) {
+                            List<Integer> row = new ArrayList<>();
+                            c.beginArray();
+                            while (c.hasNext()) {
+                                double value = c.nextDouble();
+                                if (value < 0 || value > 2 || value != Math.floor(value)) {
+                                    throw new IllegalArgumentException("Invalid table valign value");
+                                }
+                                row.add((int) value);
+                            }
+                            c.endArray();
+                            e.cellValigns.add(row);
+                        }
+                        c.endArray();
+                    }
+                    break;
+                case "cellBorders":
+                    if (c.peekNull()) {
+                        c.nextNull();
+                    } else {
+                        c.beginArray();
+                        while (c.hasNext()) {
+                            List<OfficeDocument.CellBorder[]> row = new ArrayList<>();
+                            c.beginArray();
+                            while (c.hasNext()) row.add(cellBorderEdges(c));
+                            c.endArray();
+                            e.cellBorders.add(row);
+                        }
+                        c.endArray();
+                    }
+                    break;
                 case "merges":
                     if (c.peekNull()) {
                         c.nextNull();
@@ -727,6 +798,22 @@ final class DocumentDecoder {
             for (int i = 0; i < e.cellFills.size(); i++) {
                 if (e.cellFills.get(i).size() != e.rows.get(i).size()) {
                     throw new IllegalArgumentException("Invalid table fill columns");
+                }
+            }
+        }
+        if (!e.cellValigns.isEmpty()) {
+            if (e.cellValigns.size() != e.rows.size()) throw new IllegalArgumentException("Invalid table valign rows");
+            for (int i = 0; i < e.cellValigns.size(); i++) {
+                if (e.cellValigns.get(i).size() != e.rows.get(i).size()) {
+                    throw new IllegalArgumentException("Invalid table valign columns");
+                }
+            }
+        }
+        if (!e.cellBorders.isEmpty()) {
+            if (e.cellBorders.size() != e.rows.size()) throw new IllegalArgumentException("Invalid table border rows");
+            for (int i = 0; i < e.cellBorders.size(); i++) {
+                if (e.cellBorders.get(i).size() != e.rows.get(i).size()) {
+                    throw new IllegalArgumentException("Invalid table border columns");
                 }
             }
         }

@@ -31,6 +31,11 @@ final class OfficeRenderer {
          */
         final List<int[]> cellTextRanges = new ArrayList<>();
         final List<RectF> cells = new ArrayList<>();
+        /**
+         * 与 {@link #cells} 严格一一对应的锚点坐标，每项为 {@code {row, column}}。
+         * 合并区域只在锚点登记一次，用于按 (r, c) 查单元格底纹、边框与垂直对齐。
+         */
+        final List<int[]> cellAnchors = new ArrayList<>();
         final List<CellImage> cellImages = new ArrayList<>();
         float x, y, width, height;
         final Matrix transform = new Matrix();
@@ -266,6 +271,8 @@ final class OfficeRenderer {
                         y2 = rowTops[r + 1];
                         d.cells.add(new RectF(x1, y1, x2, y2));
                     }
+                    // 锚点与 cells 同步登记，保证两者索引严格一一对应
+                    d.cellAnchors.add(new int[] {r, c});
                     float cellW = Math.max(1, x2 - x1);
                     float cellH = Math.max(1, y2 - y1);
                     List<OfficeDocument.Paragraph> cell = c < row.size() ? row.get(c) : Collections.emptyList();
@@ -287,7 +294,7 @@ final class OfficeRenderer {
                         if (!textParas.isEmpty()) {
                             cellContentH += OfficeTextLayout.measure(textParas, availW, !flow);
                         }
-                        float vOffset = cellH > cellContentH + 10 ? Math.max(5, (cellH - cellContentH) / 2.0f) : 5;
+                        float vOffset = cellVerticalOffset(source, r, c, cellH, cellContentH);
                         float curY = y1 + vOffset;
                         int startTextIdx = d.texts.size();
                         for (OfficeDocument.Paragraph para : cell) {
@@ -579,11 +586,16 @@ final class OfficeRenderer {
             } else { paint.setColor(0xffe0e0e0); canvas.drawRect(rect, paint); }
         }
         if (e.type == OfficeDocument.Type.TABLE) {
-            drawTableCellFills(canvas, e, d.cells);
-            paint.setColor(e.stroke != 0 ? e.stroke : 0xffb7bec7);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(e.strokeWidth > 0 ? e.strokeWidth : 0.6f);
-            for (RectF cell : d.cells) canvas.drawRect(cell, paint);
+            drawTableCellFills(canvas, e, d);
+            if (e.cellBorders.isEmpty()) {
+                // 无单元格级四边边框时沿用表格级统一网格框
+                paint.setColor(e.stroke != 0 ? e.stroke : 0xffb7bec7);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(e.strokeWidth > 0 ? e.strokeWidth : 0.6f);
+                for (RectF cell : d.cells) canvas.drawRect(cell, paint);
+            } else {
+                drawTableCellBorders(canvas, e, d);
+            }
             for (CellImage ci : d.cellImages) {
                 Bitmap bitmap = images.get(ci.image);
                 if (bitmap != null) {
@@ -630,22 +642,96 @@ final class OfficeRenderer {
         canvas.restore();
     }
 
-    private void drawTableCellFills(Canvas canvas, OfficeDocument.Element e, List<RectF> cells) {
-        if (e.cellFills.isEmpty()) return;
-        int columns = 0;
-        for (List<List<OfficeDocument.Paragraph>> row : e.rows) columns = Math.max(columns, row.size());
-        if (columns == 0) return;
+    /**
+     * 绘制单元格底纹。
+     *
+     * 直接按可见单元格的锚点 (r, c) 查 cellFills，不再按顺序递增下标：
+     * 存在合并单元格时非锚点会被跳过，顺序递增会把后续底纹画到错误的矩形上。
+     */
+    private void drawTableCellFills(Canvas canvas, OfficeDocument.Element e, Element d) {
+        if (e.cellFills.isEmpty() || d.cellAnchors.isEmpty()) return;
         paint.setShader(null); paint.setStyle(Paint.Style.FILL);
-        int index = 0;
-        for (int row = 0; row < e.rows.size() && index < cells.size(); row++) {
-            List<Integer> fills = row < e.cellFills.size() ? e.cellFills.get(row) : Collections.emptyList();
-            for (int column = 0; column < columns && index < cells.size(); column++, index++) {
-                int fill = column < fills.size() ? fills.get(column) : 0;
-                if ((fill >>> 24) == 0) continue;
-                paint.setColor(fill);
-                canvas.drawRect(cells.get(index), paint);
+        int count = Math.min(d.cells.size(), d.cellAnchors.size());
+        for (int index = 0; index < count; index++) {
+            int[] anchor = d.cellAnchors.get(index);
+            int fill = cellFillAt(e, anchor[0], anchor[1]);
+            if ((fill >>> 24) == 0) continue;
+            paint.setColor(fill);
+            canvas.drawRect(d.cells.get(index), paint);
+        }
+    }
+
+    /**
+     * 按单元格四边独立边框绘制线段。
+     *
+     * 顺序为 [top, right, bottom, left]，线宽使用该边自己的 width；仅绘制
+     * {@code width > 0} 且颜色 alpha 不为 0 的边，因此全 none 的无框表不会再被默认灰框覆盖。
+     */
+    private void drawTableCellBorders(Canvas canvas, OfficeDocument.Element e, Element d) {
+        paint.setShader(null);
+        paint.setStyle(Paint.Style.STROKE);
+        int count = Math.min(d.cells.size(), d.cellAnchors.size());
+        for (int index = 0; index < count; index++) {
+            int[] anchor = d.cellAnchors.get(index);
+            OfficeDocument.CellBorder[] edges = cellBorderAt(e, anchor[0], anchor[1]);
+            if (edges == null) continue;
+            RectF cell = d.cells.get(index);
+            for (int edge = 0; edge < 4 && edge < edges.length; edge++) {
+                OfficeDocument.CellBorder border = edges[edge];
+                if (border == null || !(border.width > 0) || (border.color >>> 24) == 0) continue;
+                paint.setColor(border.color);
+                paint.setStrokeWidth(border.width);
+                switch (edge) {
+                    case 0: canvas.drawLine(cell.left, cell.top, cell.right, cell.top, paint); break;
+                    case 1: canvas.drawLine(cell.right, cell.top, cell.right, cell.bottom, paint); break;
+                    case 2: canvas.drawLine(cell.left, cell.bottom, cell.right, cell.bottom, paint); break;
+                    default: canvas.drawLine(cell.left, cell.top, cell.left, cell.bottom, paint); break;
+                }
             }
         }
+    }
+
+    /**
+     * 按单元格垂直对齐计算文字起排偏移，缺省（无 cellValigns 或坐标越界）按 1 垂直居中。
+     *
+     * <ul>
+     *   <li>0 顶部：恒为 5；</li>
+     *   <li>1 垂直居中：剩余空间充足时居中，否则回退 5；</li>
+     *   <li>2 底部：剩余空间充足时贴近底部并预留 5 的内边距，否则回退 5。</li>
+     * </ul>
+     * 查询坐标必须是合并区域的锚点 (r, c)，与文字实际存放的单元格一致。
+     */
+    static float cellVerticalOffset(OfficeDocument.Element element, int r, int c,
+                                    float cellH, float cellContentH) {
+        int valign = 1;
+        if (element.cellValigns != null && r >= 0 && r < element.cellValigns.size()) {
+            List<Integer> rowValigns = element.cellValigns.get(r);
+            if (rowValigns != null && c >= 0 && c < rowValigns.size()) {
+                Integer value = rowValigns.get(c);
+                if (value != null) valign = value;
+            }
+        }
+        // 剩余空间不足时任何对齐方式都退回 5 的基准内边距，避免文字被贴边裁切
+        if (!(cellH > cellContentH + 10) || valign == 0) return 5;
+        if (valign == 2) return Math.max(5, cellH - cellContentH - 5);
+        return Math.max(5, (cellH - cellContentH) / 2.0f);
+    }
+
+    /** 取单元格四边边框；无 cellBorders 或坐标越界时返回 null，由调用方回退统一网格框 */
+    private static OfficeDocument.CellBorder[] cellBorderAt(OfficeDocument.Element element, int r, int c) {
+        if (element.cellBorders == null || r < 0 || r >= element.cellBorders.size()) return null;
+        List<OfficeDocument.CellBorder[]> row = element.cellBorders.get(r);
+        if (row == null || c < 0 || c >= row.size()) return null;
+        return row.get(c);
+    }
+
+    /** 取单元格底纹颜色；无 cellFills 或坐标越界时返回 0（透明） */
+    private static int cellFillAt(OfficeDocument.Element element, int r, int c) {
+        if (element.cellFills == null || r < 0 || r >= element.cellFills.size()) return 0;
+        List<Integer> row = element.cellFills.get(r);
+        if (row == null || c < 0 || c >= row.size()) return 0;
+        Integer fill = row.get(c);
+        return fill == null ? 0 : fill;
     }
 
     static SpreadsheetDocument.CellRange findMerge(List<SpreadsheetDocument.CellRange> merges, int r, int c) {

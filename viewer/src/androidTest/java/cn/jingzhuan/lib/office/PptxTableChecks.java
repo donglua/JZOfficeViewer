@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import org.json.JSONArray;
@@ -34,12 +35,225 @@ final class PptxTableChecks {
             emptyDocxCellFillsStayTransparent();
             mergedTableHighlightSkipsCoveredCells(context);
             bulletParagraphHighlightOffsets(context);
+            mergedCellFillsFollowAnchors();
+            threeLineTableHidesInnerVerticalEdges();
+            bottomValignCellOffsetsText();
         });
         return "PASS PPTX table cell fills, transparent body cells and DOCX empty cellFills compatibility\n"
             + "PASS DOCX merged table highlight skips covered cells\n"
             + "PASS DOCX bullet paragraph search highlight offsets\n"
+            + "PASS DOCX merged table cell fills follow anchor coordinates\n"
+            + "PASS DOCX three line table hides inner vertical borders\n"
+            + "PASS DOCX bottom valign cell offsets table text\n"
             + "PASS XLSX search and highlight retains cache file\n"
             + "SCREENSHOTS pptx-table-synthetic.png\n";
+    }
+
+    /**
+     * 合并单元格存在时，底纹必须按锚点 (r, c) 查 cellFills，而不是按可见单元格顺序递增。
+     *
+     * 布局：第 0 行 (0,0)-(0,1) 横向合并，(0,2) 独立；第 1 行三格独立。
+     * 可见单元格顺序为 (0,0)、(0,2)、(1,0)、(1,1)、(1,2)。若按顺序递增取底纹，
+     * (0,2) 会拿到 cellFills[0][1] 的颜色、(1,0) 会拿到 cellFills[0][2] 的颜色，全部错位。
+     */
+    private static void mergedCellFillsFollowAnchors() {
+        int red = Color.RED;
+        int green = Color.GREEN;
+        int blue = Color.BLUE;
+        int yellow = Color.YELLOW;
+        int cyan = Color.CYAN;
+
+        OfficeDocument.Element table = table(0, 0, 300, 80, null);
+        table.rows.clear();
+        table.cellFills.clear();
+        table.columnWidths.clear();
+        for (int column = 0; column < 3; column++) table.columnWidths.add(100f);
+        table.rows.add(rowOfCells(makeParagraph("A"), makeParagraph("covered"), makeParagraph("C")));
+        table.rows.add(rowOfCells(makeParagraph("D"), makeParagraph("E"), makeParagraph("F")));
+
+        SpreadsheetDocument.CellRange merge = new SpreadsheetDocument.CellRange();
+        merge.startRow = 0;
+        merge.startColumn = 0;
+        merge.endRow = 0;
+        merge.endColumn = 1;
+        table.merges.add(merge);
+
+        // 每个锚点使用互不相同的颜色，便于逐格区分；被覆盖格 (0,1) 填一个从不该出现的标记色
+        int marker = 0xff123456;
+        table.cellFills.add(Arrays.asList(red, marker, green));
+        table.cellFills.add(Arrays.asList(blue, yellow, cyan));
+
+        OfficeRenderer renderer = new OfficeRenderer();
+        renderer.layout(pptxDocument(300, 100, table));
+        OfficeRenderer.Element rendered = renderer.pages.get(0).elements.get(0);
+        // 合并区域只登记一次锚点，cells 与 anchors 必须等长
+        check(rendered.cells.size() == 5, "merged table registers five visible cells");
+        check(rendered.cellAnchors.size() == rendered.cells.size(), "cell anchors match visible cell count");
+        check(rendered.cellAnchors.get(1)[0] == 0 && rendered.cellAnchors.get(1)[1] == 2,
+            "second visible cell anchors at row 0 column 2");
+
+        Bitmap bitmap = Bitmap.createBitmap(300, 100, Bitmap.Config.ARGB_8888);
+        try {
+            renderer.draw(new Canvas(bitmap), 0, renderer.height, Collections.emptyMap());
+            // 合并区域按锚点 (0,0) 取红色，整块区域统一
+            color(bitmap, centerX(rendered.cells.get(0), 0.25f), centerY(rendered.cells.get(0)), red,
+                "Merged cell fill uses anchor (0,0) color");
+            color(bitmap, centerX(rendered.cells.get(0), 0.75f), centerY(rendered.cells.get(0)), red,
+                "Merged cell second half shares anchor fill");
+            // (0,2) 必须是绿色而不是错位拿到的标记色
+            color(bitmap, centerX(rendered.cells.get(1), 0.5f), centerY(rendered.cells.get(1)), green,
+                "Cell (0,2) keeps its own fill after merge");
+            // 第 1 行三个格子按各自锚点着色
+            color(bitmap, centerX(rendered.cells.get(2), 0.5f), centerY(rendered.cells.get(2)), blue,
+                "Cell (1,0) keeps its own fill");
+            color(bitmap, centerX(rendered.cells.get(3), 0.5f), centerY(rendered.cells.get(3)), yellow,
+                "Cell (1,1) keeps its own fill");
+            color(bitmap, centerX(rendered.cells.get(4), 0.5f), centerY(rendered.cells.get(4)), cyan,
+                "Cell (1,2) keeps its own fill");
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
+    /**
+     * 三线表：仅首行顶线、表头底线与表格底线可见，左右竖线与内部横竖线全部隐藏。
+     */
+    private static void threeLineTableHidesInnerVerticalEdges() {
+        OfficeDocument.Element table = table(0, 0, 300, 80, null);
+        table.rows.clear();
+        table.columnWidths.clear();
+        table.stroke = 0;
+        table.strokeWidth = 0;
+        for (int column = 0; column < 2; column++) table.columnWidths.add(150f);
+        table.rows.add(rowOfCells(makeParagraph("A"), makeParagraph("B")));
+        table.rows.add(rowOfCells(makeParagraph("C"), makeParagraph("D")));
+
+        OfficeDocument.CellBorder none = new OfficeDocument.CellBorder(0, 0f);
+        OfficeDocument.CellBorder thick = new OfficeDocument.CellBorder(Color.BLACK, 1.5f);
+        for (int row = 0; row < 2; row++) {
+            List<OfficeDocument.CellBorder[]> edges = new ArrayList<>();
+            for (int column = 0; column < 2; column++) {
+                // 首行保留顶线与表头底线，其余全部隐藏
+                edges.add(row == 0
+                    ? new OfficeDocument.CellBorder[] {thick, none, thick, none}
+                    : new OfficeDocument.CellBorder[] {none, none, thick, none});
+            }
+            table.cellBorders.add(edges);
+        }
+
+        OfficeRenderer renderer = new OfficeRenderer();
+        renderer.layout(pptxDocument(300, 140, table));
+        OfficeRenderer.Element rendered = renderer.pages.get(0).elements.get(0);
+        // 第 3 个可见单元格即第二行第一列，其 top 就是表头下边界
+        int boundary = Math.round(rendered.cells.get(2).top);
+        int tableBottom = Math.round(rendered.cells.get(2).bottom);
+        int innerTop = boundary + 4;
+        int innerBottom = tableBottom - 3;
+
+        Bitmap bitmap = Bitmap.createBitmap(300, 140, Bitmap.Config.ARGB_8888);
+        try {
+            renderer.draw(new Canvas(bitmap), 0, renderer.height, Collections.emptyMap());
+            // 顶线、表头底线与表格底线可见
+            check(hasDarkPixel(bitmap, 20, 140, 0, 2), "Three line table keeps its top border");
+            check(hasDarkPixel(bitmap, 20, 140, boundary - 2, boundary + 2),
+                "Three line table keeps its header bottom border");
+            check(hasDarkPixel(bitmap, 20, 140, tableBottom - 2, tableBottom + 2),
+                "Three line table keeps its bottom border");
+            // 内部竖线与左右外框竖线均不应出现
+            check(!hasDarkPixel(bitmap, 149, 152, innerTop, innerBottom),
+                "Three line table hides inner vertical border");
+            check(!hasDarkPixel(bitmap, 0, 2, innerTop, innerBottom),
+                "Three line table hides left outer border");
+            check(!hasDarkPixel(bitmap, 298, 299, innerTop, innerBottom),
+                "Three line table hides right outer border");
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
+    /**
+     * 底部对齐单元格：cellValigns=2 时文字整体下移，且 d.texts 的 block.y 同步带上该偏移，
+     * 从而让选区与检索高亮自动对齐。
+     */
+    private static void bottomValignCellOffsetsText() {
+        OfficeRenderer.Element topCell = layoutValignTable(0);
+        OfficeRenderer.Element bottomCell = layoutValignTable(2);
+        check(!topCell.texts.isEmpty() && !bottomCell.texts.isEmpty(), "Valign table lays out cell text");
+        float topY = topCell.texts.get(0).y;
+        float bottomY = bottomCell.texts.get(0).y;
+        near(topY, 5f, 0.5f, "Top aligned cell text starts at 5pt offset");
+        check(bottomY > topY + 1f, "Bottom aligned cell text sits lower than top aligned");
+        float cellBottom = floatRectBottom(bottomCell.cells.get(0));
+        check(bottomY + bottomCell.texts.get(0).layout.getHeight() <= cellBottom + 0.5f,
+            "Bottom aligned cell text stays inside the cell");
+    }
+
+    /** 构造同行内「文字 + 高图」的表格，让文字单元格出现可区分的垂直剩余空间 */
+    private static OfficeRenderer.Element layoutValignTable(int valign) {
+        OfficeDocument.Element table = table(0, 0, 200, 40, null);
+        table.rows.clear();
+        table.columnWidths.clear();
+        table.columnWidths.add(100f);
+        table.columnWidths.add(100f);
+        List<OfficeDocument.Paragraph> cellImage = new ArrayList<>();
+        OfficeDocument.Paragraph image = new OfficeDocument.Paragraph();
+        image.image = "word/media/tall.png";
+        image.imageWidth = 100f;
+        image.imageHeight = 60f;
+        cellImage.add(image);
+        // 同一行左格放文字、右格放高图，行高被高图抬升后左格才有足够剩余空间
+        table.rows.add(rowOfCells(makeParagraph("Cell"), cellImage));
+        List<Integer> valigns = new ArrayList<>();
+        valigns.add(valign);
+        valigns.add(0);
+        table.cellValigns.add(valigns);
+
+        OfficeRenderer renderer = new OfficeRenderer();
+        renderer.layout(pptxDocument(200, 120, table));
+        return renderer.pages.get(0).elements.get(0);
+    }
+
+    private static OfficeDocument pptxDocument(int width, int height, OfficeDocument.Element element) {
+        OfficeDocument document = new OfficeDocument();
+        document.kind = OfficeDocument.Kind.PPTX;
+        document.width = width;
+        OfficeDocument.Page page = new OfficeDocument.Page();
+        page.width = width;
+        page.height = height;
+        page.elements.add(element);
+        document.pages.add(page);
+        return document;
+    }
+
+    private static int centerX(RectF rect, float ratio) {
+        return Math.round(rect.left + rect.width() * ratio);
+    }
+
+    private static int centerY(RectF rect) {
+        return Math.round(rect.top + rect.height() * 0.5f);
+    }
+
+    private static float floatRectBottom(RectF rect) {
+        return rect.bottom;
+    }
+
+    private static boolean hasDarkPixel(Bitmap bitmap, int fromX, int toX, int fromY, int toY) {
+        for (int y = Math.max(0, fromY); y <= Math.min(bitmap.getHeight() - 1, toY); y++) {
+            for (int x = Math.max(0, fromX); x <= Math.min(bitmap.getWidth() - 1, toX); x++) {
+                int pixel = bitmap.getPixel(x, y);
+                if (Color.alpha(pixel) == 255 && Color.red(pixel) < 200
+                    && Color.green(pixel) < 200 && Color.blue(pixel) < 200) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static List<List<OfficeDocument.Paragraph>> rowOfCells(List<OfficeDocument.Paragraph>... cells) {
+        List<List<OfficeDocument.Paragraph>> row = new ArrayList<>();
+        Collections.addAll(row, cells);
+        return row;
     }
 
     private static void capturePptx(Context context) throws Exception {
