@@ -125,7 +125,7 @@ fn double_arrow(name: &str, geometry: &Node, [width, height]: [f32; 2]) -> Optio
     let points = if name == "leftRightArrow" {
         let d = width.min(height);
         let half = height * stem / 2.0;
-        let inset = d * head;
+        let inset = (d * head).min(width * 0.5);
         vec![
             [0.0, height / 2.0],
             [inset, 0.0],
@@ -142,7 +142,7 @@ fn double_arrow(name: &str, geometry: &Node, [width, height]: [f32; 2]) -> Optio
         // upDownArrow
         let d = width.min(height);
         let half = width * stem / 2.0;
-        let inset = d * head;
+        let inset = (d * head).min(height * 0.5);
         vec![
             [width / 2.0, 0.0],
             [width, inset],
@@ -196,9 +196,20 @@ fn terminator([width, height]: [f32; 2]) -> Option<Path> {
     closed(vec![
         PathCommand::Move([radius, 0.0]),
         PathCommand::Line([right, 0.0]),
-        PathCommand::Cubic([right + control, 0.0, right + control, height, right, height]),
+        // 右半圆拆成上下两段 90° 三次贝塞尔，保证最右端精确抵达 width。
+        PathCommand::Cubic([right + control, 0.0, width, radius - control, width, radius]),
+        PathCommand::Cubic([
+            width,
+            radius + control,
+            right + control,
+            height,
+            right,
+            height,
+        ]),
         PathCommand::Line([radius, height]),
-        PathCommand::Cubic([radius - control, height, 0.0, height, radius - control, 0.0]),
+        // 左半圆拆成下上两段 90° 三次贝塞尔，精确回到起点 (radius, 0.0)。
+        PathCommand::Cubic([radius - control, height, 0.0, radius + control, 0.0, radius]),
+        PathCommand::Cubic([0.0, radius - control, radius - control, 0.0, radius, 0.0]),
         PathCommand::Close,
     ])
 }
@@ -300,7 +311,7 @@ pub(super) fn path(geometry: &Node, [width, height]: [f32; 2]) -> Option<Path> {
             PathCommand::Close,
         ],
         "parallelogram" | "flowChartData" => {
-            let offset = short * adj(geometry, "adj", 25_000, 0, 100_000)?;
+            let offset = (short * adj(geometry, "adj", 25_000, 0, 100_000)?).min(width * 0.5);
             return closed(polygon(&[
                 [offset, 0.0],
                 [width, 0.0],
@@ -309,7 +320,7 @@ pub(super) fn path(geometry: &Node, [width, height]: [f32; 2]) -> Option<Path> {
             ])?);
         }
         "trapezoid" => {
-            let offset = short * adj(geometry, "adj", 25_000, 0, 100_000)?;
+            let offset = (short * adj(geometry, "adj", 25_000, 0, 100_000)?).min(width * 0.5);
             return closed(polygon(&[
                 [offset, 0.0],
                 [width - offset, 0.0],
@@ -327,7 +338,7 @@ pub(super) fn path(geometry: &Node, [width, height]: [f32; 2]) -> Option<Path> {
             ])?);
         }
         "hexagon" => {
-            let inset = short * adj(geometry, "adj", 25_000, 0, 100_000)?;
+            let inset = (short * adj(geometry, "adj", 25_000, 0, 100_000)?).min(width * 0.5);
             return closed(polygon(&[
                 [inset, 0.0],
                 [width - inset, 0.0],
@@ -338,7 +349,9 @@ pub(super) fn path(geometry: &Node, [width, height]: [f32; 2]) -> Option<Path> {
             ])?);
         }
         "octagon" => {
-            let cut = short * adj(geometry, "adj", 29_289, 0, 100_000)?;
+            let cut = (short * adj(geometry, "adj", 29_289, 0, 100_000)?)
+                .min(width * 0.5)
+                .min(height * 0.5);
             let (cw, ch) = ((width - cut).max(0.0), (height - cut).max(0.0));
             return closed(polygon(&[
                 [cut, 0.0],
@@ -413,7 +426,7 @@ pub(super) fn path(geometry: &Node, [width, height]: [f32; 2]) -> Option<Path> {
             let head = adj(geometry, "adj2", 50_000, 0, 100_000)?;
             let half = height * stem / 2.0;
             let tip = (width - short * head).max(0.0);
-            let notch = (short * 0.12).min(width * 0.2);
+            let notch = (short * 0.12).min(width * 0.2).min(tip);
             return closed(polygon(&[
                 [0.0, height / 2.0 - half],
                 [tip, height / 2.0 - half],

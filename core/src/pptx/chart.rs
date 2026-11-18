@@ -102,28 +102,45 @@ impl ChartPaint<'_, '_> {
         let legend_style = legend
             .map(|n| self.style(n, base.size))
             .unwrap_or(base.clone());
-        let named: Vec<_> = chart.series.iter().filter(|s| !s.name.is_empty()).collect();
-        let legend_height = if legend.is_some() {
-            named.len() as f32 * legend_style.size * 1.7
+        let is_pie = matches!(chart.chart_type, ChartType::Pie { .. });
+        let pie_entries: Vec<(usize, String)> = if is_pie {
+            let first = &chart.series[0];
+            first
+                .values
+                .iter()
+                .enumerate()
+                .filter(|(i, v)| v.is_some_and(|v| v > 0.0) && first.categories[*i].is_some())
+                .map(|(i, _)| (i, first.categories[i].unwrap_or_default().to_string()))
+                .collect()
         } else {
-            0.0
+            Vec::new()
+        };
+        let named: Vec<_> = chart.series.iter().filter(|s| !s.name.is_empty()).collect();
+        let legend_rows = if legend.is_some() {
+            if is_pie {
+                pie_entries.len()
+            } else {
+                named.len()
+            }
+        } else {
+            0
+        };
+        let legend_height = legend_rows as f32 * legend_style.size * 1.7;
+        let (left_margin, right_margin, bottom_margin) = match chart.chart_type {
+            ChartType::Pie { .. } => (8.0, 8.0, 8.0),
+            ChartType::Bar => ((xs.size * 6.0).max(32.0), 12.0, ys.size * 2.8),
+            ChartType::Line | ChartType::Column => ((ys.size * 4.8).max(26.0), 12.0, xs.size * 2.8),
+        };
+        let top_margin = if title_text.is_empty() {
+            8.0
+        } else {
+            title_style.size * 2.5
         };
         let plot = Plot {
-            x: (ys.size * 4.8).max(26.0),
-            y: if title_text.is_empty() {
-                8.0
-            } else {
-                title_style.size * 2.5
-            },
-            width: frame.width - (ys.size * 4.8).max(26.0) - 12.0,
-            height: frame.height
-                - xs.size * 2.8
-                - legend_height
-                - if title_text.is_empty() {
-                    8.0
-                } else {
-                    title_style.size * 2.5
-                },
+            x: left_margin,
+            y: top_margin,
+            width: frame.width - left_margin - right_margin,
+            height: frame.height - bottom_margin - legend_height - top_margin,
         };
         if plot.width < 24.0 || plot.height < 16.0 {
             return false;
@@ -283,19 +300,12 @@ impl ChartPaint<'_, '_> {
         }
         if legend.is_some() {
             // 饼图/环形图的图例按分类名逐项生成，色块取对应扇区颜色。
-            if let ChartType::Pie { .. } = chart.chart_type {
+            if is_pie {
                 let first = &chart.series[0];
                 let colors = self.sector_colors(first);
-                let entries: Vec<(usize, String)> = first
-                    .values
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, v)| v.is_some_and(|v| v > 0.0) && first.categories[*i].is_some())
-                    .map(|(i, _)| (i, first.categories[i].unwrap_or_default().to_string()))
-                    .collect();
                 let row_height = legend_style.size * 1.7;
-                for (row, (index, name)) in entries.iter().enumerate() {
-                    let y = frame.height - (entries.len() as f32 - row as f32) * row_height
+                for (row, (index, name)) in pie_entries.iter().enumerate() {
+                    let y = frame.height - (pie_entries.len() as f32 - row as f32) * row_height
                         + legend_style.size * 0.2;
                     let fill = colors
                         .get(*index)
@@ -477,6 +487,10 @@ impl ChartPaint<'_, '_> {
         let (Some(x_axis), Some(y_axis)) = (chart.x_axis, chart.y_axis) else {
             return;
         };
+        if chart.chart_type == ChartType::Bar {
+            self.axes_bar(chart, plot, xs, ys, x_axis, y_axis);
+            return;
+        }
         let (min, max) = chart.y_range;
         let mut tick = (min / chart.y_step).ceil() * chart.y_step;
         for _ in 0..101 {
@@ -569,6 +583,96 @@ impl ChartPaint<'_, '_> {
                 (plot.x + plot.width, plot.y + plot.height),
             ),
             (y_axis, (plot.x, plot.y), (plot.x, plot.y + plot.height)),
+        ] {
+            if super::flag(value(axis, "delete"), false) {
+                continue;
+            }
+            let (color, width) = self.stroke(axis, 0xffaaaaaa, 0.5);
+            self.line(a, b, color, width);
+        }
+    }
+
+    /// 横向条形图专用坐标轴：分类标签在左侧纵轴对齐各条形槽位，数值刻度与竖向网格线在底部横轴。
+    fn axes_bar(
+        &mut self,
+        chart: &Chart<'_>,
+        plot: Plot,
+        xs: Run,
+        ys: Run,
+        x_axis: &Node,
+        y_axis: &Node,
+    ) {
+        let (min, max) = chart.y_range;
+        let mut tick = (min / chart.y_step).ceil() * chart.y_step;
+        let label_w = (ys.size * 5.0).min(plot.width);
+        let mut last_right = f32::NEG_INFINITY;
+        for _ in 0..101 {
+            if tick > max + chart.y_step * 0.000001 {
+                break;
+            }
+            let x = plot.x + fraction(tick, chart.y_range, chart.y_axis) as f32 * plot.width;
+            if let Some(grid) = y_axis.child("majorGridlines") {
+                let (color, width) = self.stroke(grid, 0xffdedede, 0.5);
+                self.line((x, plot.y), (x, plot.y + plot.height), color, width);
+            }
+            if axis_labels(chart.y_axis) {
+                let lx =
+                    (x - label_w / 2.0).clamp(0.0, (plot.x + plot.width + 8.0 - label_w).max(0.0));
+                if lx >= last_right {
+                    let text = self.number(tick, y_axis, false, chart.date1904);
+                    self.label(
+                        text,
+                        ys.clone(),
+                        Plot {
+                            x: lx,
+                            y: plot.y + plot.height + 3.0,
+                            width: label_w,
+                            height: ys.size * 1.6,
+                        },
+                        1,
+                    );
+                    last_right = lx + label_w + 2.0;
+                }
+            }
+            tick += chart.y_step;
+        }
+        let first = &chart.series[0];
+        let cat_count = first.values.len();
+        if axis_labels(chart.x_axis) && cat_count > 0 {
+            let slot_height = plot.height / cat_count as f32;
+            let label_h = xs.size * 1.5;
+            let max_rows = (plot.height / (label_h + 2.0)).floor().max(1.0) as usize;
+            let stride = cat_count.saturating_sub(1).div_ceil(max_rows).max(1);
+            for i in (0..cat_count).step_by(stride) {
+                let center_y = plot.y + (i as f32 + 0.5) * slot_height;
+                let text = if first.dates.is_some() {
+                    let Some(value) = first.x(i) else { continue };
+                    self.number(value, x_axis, true, chart.date1904)
+                } else {
+                    first.categories[i]
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| (i + 1).to_string())
+                };
+                self.label(
+                    text,
+                    xs.clone(),
+                    Plot {
+                        x: 0.0,
+                        y: center_y - label_h * 0.5,
+                        width: (plot.x - 4.0).max(1.0),
+                        height: label_h,
+                    },
+                    2,
+                );
+            }
+        }
+        for (axis, a, b) in [
+            (
+                y_axis,
+                (plot.x, plot.y + plot.height),
+                (plot.x + plot.width, plot.y + plot.height),
+            ),
+            (x_axis, (plot.x, plot.y), (plot.x, plot.y + plot.height)),
         ] {
             if super::flag(value(axis, "delete"), false) {
                 continue;

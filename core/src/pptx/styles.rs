@@ -204,31 +204,31 @@ fn arrowheads(element: &mut Element, line: &Node) {
     for (kind, len, width, at_start) in ends {
         let arrow_len = (arrow_scale(len) * scale).min(length * 0.45);
         let half = arrow_scale(width).max(0.5) * scale;
-        // 端点锚点与朝外方向：起点侧朝外为 -u，终点侧朝外为 +u。
-        let (anchor, sign) = if at_start {
-            ((0.0_f32, 0.0_f32), -1.0)
+        // tip 锚定在真实线段端点（避免外伸穿入目标图形），基部沿 -sign * u 向线段内侧回缩。
+        let (tip, inward) = if at_start {
+            ((0.0_f32, 0.0_f32), 1.0_f32)
         } else {
-            ((dx, dy), 1.0)
+            ((dx, dy), -1.0_f32)
         };
-        let tip = (
-            anchor.0 + sign * ux * arrow_len,
-            anchor.1 + sign * uy * arrow_len,
+        let base = (
+            tip.0 + inward * ux * arrow_len,
+            tip.1 + inward * uy * arrow_len,
         );
         let arrow = match kind {
-            // 开叉双翼线箭头：主干直达顶点，只画两翼。
+            // 开叉双翼线箭头：两翼从后撤的基线指向顶点 tip，主干略微内缩避免钝头刺出尖端。
             "arrow" => Path {
                 fill: false,
                 stroke: true,
                 commands: vec![
-                    PathCommand::Move([tip.0 - nx * half, tip.1 - ny * half]),
+                    PathCommand::Move([base.0 - nx * half, base.1 - ny * half]),
                     PathCommand::Line([tip.0, tip.1]),
-                    PathCommand::Line([tip.0 + nx * half, tip.1 + ny * half]),
+                    PathCommand::Line([base.0 + nx * half, base.1 + ny * half]),
                 ],
             },
             "diamond" => {
                 let mid = (
-                    anchor.0 + sign * ux * arrow_len * 0.5,
-                    anchor.1 + sign * uy * arrow_len * 0.5,
+                    tip.0 + inward * ux * arrow_len * 0.5,
+                    tip.1 + inward * uy * arrow_len * 0.5,
                 );
                 Path {
                     fill: true,
@@ -236,19 +236,16 @@ fn arrowheads(element: &mut Element, line: &Node) {
                     commands: vec![
                         PathCommand::Move([tip.0, tip.1]),
                         PathCommand::Line([mid.0 + nx * half, mid.1 + ny * half]),
-                        PathCommand::Line([anchor.0, anchor.1]),
+                        PathCommand::Line([base.0, base.1]),
                         PathCommand::Line([mid.0 - nx * half, mid.1 - ny * half]),
                         PathCommand::Close,
                     ],
                 }
             }
             "oval" => {
-                // 圆点端点用四段三次贝塞尔近似整圆。
-                let center = (
-                    anchor.0 + sign * ux * arrow_len * 0.5,
-                    anchor.1 + sign * uy * arrow_len * 0.5,
-                );
-                let r = half.max(0.5);
+                // 圆点端点用四段三次贝塞尔近似整圆，圆心落在端点内侧半个半径处。
+                let r = (arrow_len * 0.5).min(half).max(0.5);
+                let center = (tip.0 + inward * ux * r, tip.1 + inward * uy * r);
                 let c = r * 0.552_284_8;
                 Path {
                     fill: true,
@@ -297,23 +294,26 @@ fn arrowheads(element: &mut Element, line: &Node) {
                 stroke: false,
                 commands: vec![
                     PathCommand::Move([tip.0, tip.1]),
-                    PathCommand::Line([anchor.0 - nx * half, anchor.1 - ny * half]),
-                    PathCommand::Line([anchor.0 + nx * half, anchor.1 + ny * half]),
+                    PathCommand::Line([base.0 - nx * half, base.1 - ny * half]),
+                    PathCommand::Line([base.0 + nx * half, base.1 + ny * half]),
                     PathCommand::Close,
                 ],
             },
         };
-        // 实心箭头需把主干端点内缩，避免粗线头刺穿箭头尖端。
-        if arrow.fill {
-            let inset = (
-                anchor.0 + sign * ux * arrow_len * 0.7,
-                anchor.1 + sign * uy * arrow_len * 0.7,
-            );
-            if at_start {
-                trunk_start = inset;
-            } else {
-                trunk_end = inset;
-            }
+        // 实心箭头与开叉箭头均需把主干端点向内收拢，避免粗线头刺穿箭头尖端。
+        let inset_len = if arrow.fill {
+            arrow_len * 0.7
+        } else {
+            (element.stroke_width * 0.5).min(arrow_len * 0.5)
+        };
+        let inset = (
+            tip.0 + inward * ux * inset_len,
+            tip.1 + inward * uy * inset_len,
+        );
+        if at_start {
+            trunk_start = inset;
+        } else {
+            trunk_end = inset;
         }
         arrows.push(arrow);
     }

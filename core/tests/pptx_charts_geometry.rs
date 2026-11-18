@@ -130,14 +130,37 @@ fn chart_horizontal_bar_extends_each_bar_by_value_ratio() -> TestResult {
     // 10 / 25 / 15 / 30 四档数值应产生四种不同宽度
     assert!(max > 0.0);
 
-    // 分类标签仍按分类轴绘制
-    let labels = texts(&document);
+    // 分类标签绘制在左侧纵轴，随 Q1..Q4 自顶向下递增，位于数据条左侧
+    let mut category_ys = Vec::new();
+    let min_bar_x = bars.iter().map(|bar| bar.x).fold(f32::MAX, f32::min);
     for category in ["Q1", "Q2", "Q3", "Q4"] {
+        let label = page
+            .elements
+            .iter()
+            .find(|element| {
+                matches!(element.kind, ElementType::TEXT)
+                    && element.paragraphs.iter().any(|p| {
+                        p.runs.iter().map(|r| r.text.as_str()).collect::<String>() == category
+                    })
+            })
+            .ok_or_else(|| format!("缺少 {category}"))?;
         assert!(
-            labels.iter().any(|label| label == category),
-            "缺少 {category}"
+            label.x < min_bar_x,
+            "{category} 应在左侧纵轴，不应在底部或条形右侧"
         );
+        category_ys.push(label.y);
     }
+    assert!(
+        category_ys.windows(2).all(|pair| pair[0] < pair[1]),
+        "横向条形图左侧分类标签应自顶向下递增: {category_ys:?}"
+    );
+    // 数值轴网格线应为竖线（width == 0, height > 20）
+    assert!(
+        page.elements
+            .iter()
+            .any(|el| matches!(el.kind, ElementType::LINE) && el.width == 0.0 && el.height > 20.0),
+        "横向条形图应绘制竖向网格线"
+    );
     assert!(document
         .warnings
         .iter()
@@ -226,6 +249,57 @@ fn chart_pie_sector_commands_start_at_polar_move() -> TestResult {
     assert_eq!(element.stroke, 0xffff_ffff);
     assert_eq!(element.stroke_width, 1.0);
     assert!(path.fill && path.stroke);
+    Ok(())
+}
+
+#[test]
+fn chart_pie_legend_does_not_overlap_sectors() -> TestResult {
+    let document = chart_document(&pie_chart("pieChart", None, false))?;
+    let page = &document.pages[0];
+    let mut max_sector_y = f32::MIN;
+    for element in page
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::PATH))
+    {
+        for path in &element.paths {
+            for cmd in &path.commands {
+                match *cmd {
+                    PathCommand::Move([_, y]) | PathCommand::Line([_, y]) => {
+                        max_sector_y = max_sector_y.max(element.y + y);
+                    }
+                    PathCommand::Cubic(pts) => {
+                        for y in [pts[1], pts[3], pts[5]] {
+                            max_sector_y = max_sector_y.max(element.y + y);
+                        }
+                    }
+                    PathCommand::Quad(pts) => {
+                        for y in [pts[1], pts[3]] {
+                            max_sector_y = max_sector_y.max(element.y + y);
+                        }
+                    }
+                    PathCommand::Close => {}
+                }
+            }
+        }
+    }
+    let min_legend_y = page
+        .elements
+        .iter()
+        .filter(|el| {
+            matches!(el.kind, ElementType::TEXT)
+                && el.paragraphs.iter().any(|p| {
+                    p.runs
+                        .iter()
+                        .any(|r| matches!(r.text.as_str(), "Red" | "Green" | "Blue"))
+                })
+        })
+        .map(|el| el.y)
+        .fold(f32::MAX, f32::min);
+    assert!(
+        max_sector_y < min_legend_y,
+        "饼图扇区底边 ({max_sector_y}) 不得与分类图例顶边 ({min_legend_y}) 重叠"
+    );
     Ok(())
 }
 
@@ -390,6 +464,38 @@ fn geometry_terminator_and_document_use_cubic_commands() -> TestResult {
             "{name} 应包含 Cubic 命令"
         );
     }
+    // 验证 flowChartTerminator 左右半圆精确触及 0 与 width，并回到起始 Move 点
+    let term_doc = shape_document(&format!(
+        "{BOUNDS}{PAINT}{}",
+        preset("flowChartTerminator", "")
+    ))?;
+    let term_el = &term_doc.pages[0].elements[0];
+    let term_path = term_el.paths.first().ok_or("missing terminator path")?;
+    let mut xs = Vec::new();
+    for cmd in &term_path.commands {
+        match *cmd {
+            PathCommand::Move([x, _]) | PathCommand::Line([x, _]) => xs.push(x),
+            PathCommand::Cubic(pts) => xs.extend([pts[0], pts[2], pts[4]]),
+            PathCommand::Quad(pts) => xs.extend([pts[0], pts[2]]),
+            PathCommand::Close => {}
+        }
+    }
+    let min_x = xs.iter().copied().fold(f32::MAX, f32::min);
+    let max_x = xs.iter().copied().fold(f32::MIN, f32::max);
+    assert!(min_x.abs() < 0.01, "左半圆应触及 x=0，实际 {min_x}");
+    assert!(
+        (max_x - term_el.width).abs() < 0.01,
+        "右半圆应触及 width={}，实际 {max_x}",
+        term_el.width
+    );
+    if let (Some(PathCommand::Move(start)), Some(PathCommand::Cubic(last))) = (
+        term_path.commands.first(),
+        term_path.commands.iter().rev().nth(1),
+    ) {
+        assert!((last[4] - start[0]).abs() < 0.01 && (last[5] - start[1]).abs() < 0.01);
+    } else {
+        return Err("flowChartTerminator 末段应为回到起点的 Cubic".into());
+    }
     Ok(())
 }
 
@@ -470,6 +576,19 @@ fn geometry_tail_end_arrow_builds_solid_triangle_path() -> TestResult {
         .warnings
         .iter()
         .any(|warning| warning.contains("arrowheads are not supported")));
+    // 箭头尖端落在真实端点 dx=200 内，不越出边界
+    let arrow_xs: Vec<f32> = element.paths[1]
+        .commands
+        .iter()
+        .filter_map(|cmd| match *cmd {
+            PathCommand::Move([x, _]) | PathCommand::Line([x, _]) => Some(x),
+            _ => None,
+        })
+        .collect();
+    assert!(arrow_xs
+        .iter()
+        .all(|&x| (0.0..=element.width + 0.01).contains(&x)));
+    assert!(arrow_xs.iter().any(|&x| (x - element.width).abs() < 0.01));
     Ok(())
 }
 
@@ -480,10 +599,21 @@ fn geometry_head_and_tail_ends_build_three_sub_paths() -> TestResult {
     let element = &document.pages[0].elements[0];
     assert!(matches!(element.kind, ElementType::PATH));
     assert_eq!(element.paths.len(), 3);
+    for path in &element.paths {
+        for cmd in &path.commands {
+            if let PathCommand::Move([x, _]) | PathCommand::Line([x, _]) = *cmd {
+                assert!(
+                    (0.0..=element.width + 0.01).contains(&x),
+                    "箭头与主干不应越出 [0, {}]: {x}",
+                    element.width
+                );
+            }
+        }
+    }
     Ok(())
 }
 
-/// 开叉双翼箭头保持描边而不用填充。
+/// 开叉双翼箭头保持描边而不用填充，且双翼形成斜向 V 形而非垂直短线。
 #[test]
 fn geometry_open_arrow_end_stays_stroked() -> TestResult {
     let document = line_document(r#"<a:tailEnd type="arrow" w="lg" len="lg"/>"#)?;
@@ -494,6 +624,19 @@ fn geometry_open_arrow_end_stays_stroked() -> TestResult {
             .iter()
             .all(|path| path.stroke && !path.fill),
         "开叉箭头应以描边绘制"
+    );
+    let wing_xs: Vec<f32> = element.paths[1]
+        .commands
+        .iter()
+        .filter_map(|cmd| match *cmd {
+            PathCommand::Move([x, _]) | PathCommand::Line([x, _]) => Some(x),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(wing_xs.len(), 3);
+    assert!(
+        (wing_xs[1] - element.width).abs() < 0.01 && wing_xs[0] < wing_xs[1] - 1.0,
+        "开叉箭头双翼应从线内侧斜向指向终点: {wing_xs:?}"
     );
     Ok(())
 }
