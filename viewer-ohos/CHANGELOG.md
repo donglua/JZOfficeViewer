@@ -2,7 +2,7 @@
 
 ## 0.15.0
 
-发布页面：[v0.15.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.15.0)。
+发布页面：[v0.15.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.15.0)。
 
 本版本主要新增 XLSX 冻结窗格全端支持（`core` / Android / HarmonyOS NEXT / macOS）与 DOCX / PPTX 正文划词选区及复制能力（Android / HarmonyOS NEXT），并修复 DOCX 行内图水平对齐、文本框自适应及选区交互手势等细节问题。
 
@@ -25,7 +25,7 @@
 
 ## 0.14.0
 
-发布页面：[v0.14.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.14.0)。
+发布页面：[v0.14.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.14.0)。
 
 本版本主要新增 DOCX 浮动图形、DrawingML 形状/文本框与文字环绕全端支持，引入元数据与首屏缩略图轻量路径、解析结果缓存及延迟构建搜索索引优化，并修复多项鸿蒙 NEXT 端渲染、交互与内存问题。
 
@@ -57,7 +57,7 @@
 
 ## 0.13.1
 
-发布页面：[v0.13.1 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.13.1)。
+发布页面：[v0.13.1 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.13.1)。
 
 本版本主要增强 DOCX 排版完整度（保留文本框文字内容、支持图片裁剪映射），并优化鸿蒙 NEXT 端 PPTX 滑动渲染性能与末页页码计算。
 
@@ -76,7 +76,7 @@
 
 ## 0.13.0
 
-发布页面：[v0.13.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.13.0)。
+发布页面：[v0.13.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.13.0)。
 
 本版本主要支持跨平台字体族解析与排版修饰属性（字体回退、字间距、字重、上下标、删除线）、高级段落间距与网格间距补偿，以及全端文本高亮、段落底纹与段落边框高保真渲染。
 
@@ -111,7 +111,7 @@
 
 ## 0.12.0
 
-发布页面：[v0.12.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.12.0)。
+发布页面：[v0.12.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.12.0)。
 
 本版本主要支持 DOCX 表格单元格内图片解析与全端渲染对齐、表格边框样式支持，以及 macOS 原生预览端重大架构重构（接入 `OfficeImageLoader` 异步按需解码、视口裁剪虚拟化渲染与滚动页码感知）。
 
@@ -146,7 +146,7 @@
 
 ## 0.11.0
 
-发布页面：[v0.11.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.11.0)。
+发布页面：[v0.11.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.11.0)。
 
 本版本主要新增 macOS 原生平台支持、三端跨平台全文检索与搜索交互组件、DOCX 编号列表与表格合并排版增强，以及多项端侧渲染与稳定性优化。
 
@@ -183,7 +183,7 @@
 
 ## 0.10.0
 
-发布页面：[v0.10.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.10.0)。
+发布页面：[v0.10.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.10.0)。
 
 本版本主要新增 `OfficeMetadata`、`OfficeThumbnail`、`OfficeSheetTabs` 三个标准组件，并升级双端手势缩放越界回弹与鸿蒙 PPTX 统一矢量视口。
 
@@ -203,7 +203,7 @@
 
 ## 0.9.0
 
-发布页面：[v0.9.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.9.0)。
+发布页面：[v0.9.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.9.0)。
 
 本版本主要更新 PPTX 垂直簇状柱状图渲染、DOCX 随内容滚动页眉页脚、XLSX 表格几何预计算下沉至 Rust Core、鸿蒙原生自动化构建及双端排版与无障碍细节修复。
 
@@ -227,7 +227,7 @@
 
 ## 0.8.0
 
-发布页面：[v0.8.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.8.0)。
+发布页面：[v0.8.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.8.0)。
 
 本版本主要更新鸿蒙端加载与渲染性能全链路重构、大图加载硬限制突破、双端表格合并单元格空间分桶索引与底层文档包缓存精准淘汰能力。
 
@@ -251,7 +251,7 @@
 
 ## 0.7.0
 
-发布页面：[v0.7.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.7.0)。
+发布页面：[v0.7.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.7.0)。
 
 本版本主要更新读屏无障碍能力（Android 与 HarmonyOS NEXT 双端）。
 
@@ -275,7 +275,7 @@
 
 ## 0.6.0
 
-发布页面：[v0.6.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.6.0)。
+发布页面：[v0.6.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.6.0)。
 
 ### 渲染与性能
 
@@ -298,7 +298,7 @@
 
 ## 0.5.0
 
-发布页面：[v0.5.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.5.0)。
+发布页面：[v0.5.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.5.0)。
 
 ### 格式解析与排版
 
@@ -323,7 +323,7 @@
 
 ## 0.4.0
 
-发布页面：[v0.4.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.4.0)。
+发布页面：[v0.4.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.4.0)。
 
 > **说明**：本版本主要更新 **鸿蒙端（HarmonyOS NEXT / `@jzdy/office`）**，补齐手势交互与表格渲染能力；Android 端（`viewer` / `viewer-online`）与 Rust 核心层主要同步版本号。
 
@@ -346,7 +346,7 @@
 
 ## 0.3.1
 
-发布页面：[v0.3.1 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.3.1)。
+发布页面：[v0.3.1 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.3.1)。
 
 ### 显示与修复
 
@@ -355,7 +355,7 @@
 
 ## 0.3.0
 
-发布页面：[v0.3.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.3.0)。
+发布页面：[v0.3.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.3.0)。
 
 ### 升级说明
 
@@ -380,11 +380,11 @@
 - `0.3.0` 候选版本的双模块本地发布、Release 构建与 lint、Rust 检查、47 项下载器检查及缓存检查已通过。独立消费项目已验证新坐标的 Gradle 元数据和纯 POM 传递依赖；容器限制、图片、PPTX、XLSX、排版、Demo 样例及在线模块生命周期专项均在真机通过。
 - 完整设备套件仍有未通过项：曾出现输入分发 ANR，诊断运行捕获到约 26 万字符的 XLSX 单元格在主线程断行计算中持续阻塞；另有 PPTX 屏幕背景色断言失败，截图中已绘出内容。这两项作为本版本已知问题保留。
 - 性能收益分别对应排版和图片请求阶段，不代表整份文档打开耗时按相同比例下降；缓存预算不包含解码中的图片和应用其他内存。
-- 仍为有限内容预览，格式、资源和在线预览限制见 [README](README.md)。正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeViewer/actions/workflows/publish-sonatype.yml)。
+- 仍为有限内容预览，格式、资源和在线预览限制见 [README](README.md)。正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeKit/actions/workflows/publish-sonatype.yml)。
 
 ## 0.2.0
 
-发布页面：[v0.2.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.2.0)。
+发布页面：[v0.2.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.2.0)。
 
 ### 在线预览与缓存
 
@@ -412,9 +412,9 @@
 
 - Debug/Release 构建、lint、47 项网络检查、缓存检查及 Rust 检查已通过。
 - 双模块本地发布产物检查已通过。独立消费项目使用 Gradle 元数据和纯 POM 均能从 `viewer-online:0.2.0` 解析出同版本的 `viewer`。
-- 正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeViewer/actions/workflows/publish-sonatype.yml)。
+- 正式签名和上传由发布 CI 执行，结果见 [Actions](https://github.com/donglua/JZOfficeKit/actions/workflows/publish-sonatype.yml)。
 - Android Instrumentation APK 已编译，尚无可用设备或 AVD 执行，设备验收未完成。
 
 ## 0.1.0（已发布）
 
-`viewer` 的历史版本已发布至 [Maven Central](https://central.sonatype.com/artifact/io.github.donglua/viewer/0.1.0)，AAR 附件见 [v0.1.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.1.0)。
+`viewer` 的历史版本已发布至 [Maven Central](https://central.sonatype.com/artifact/io.github.donglua/viewer/0.1.0)，AAR 附件见 [v0.1.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.1.0)。

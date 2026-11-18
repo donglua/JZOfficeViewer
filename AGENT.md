@@ -4,7 +4,7 @@
 
 ## 1. 项目概览
 
-JZOfficeViewer：轻量、离线、只读的 DOCX / PPTX / XLSX 预览库。Rust 核心负责解析与安全边界校验，平台层（Android、HarmonyOS NEXT 与 macOS）负责排版、绘制与手势交互。
+JZOfficeKit：轻量、离线、只读的 DOCX / PPTX / XLSX 预览 SDK。Rust 核心负责解析与安全边界校验，平台层（Android、HarmonyOS NEXT 与 macOS）负责排版、绘制与手势交互。
 
 | 目录 | 语言 | 职责 |
 | --- | --- | --- |

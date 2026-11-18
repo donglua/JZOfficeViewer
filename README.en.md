@@ -1,14 +1,14 @@
-# JZOfficeViewer
+# JZOfficeKit
 
 **English** | [简体中文](README.md)
 
-A lightweight offline Office document preview library for **Android**, **HarmonyOS NEXT** and **macOS**, providing local read-only preview of DOCX, PPTX and XLSX files.
+A lightweight cross-platform offline Office document preview SDK for **Android**, **HarmonyOS NEXT**, and **macOS**, providing local read-only preview of DOCX, PPTX, and XLSX files.
 
 Both platforms share the Rust parsing core `jz-office-core`; the platform layers use native components and Canvas for layout and drawing. There is no server-side conversion, no WebView, no external Office app and no bundled fonts. Android also offers an optional `viewer-online` module for online document download and cache management.
 
 The latest version is **0.15.0**. See the [CHANGELOG](CHANGELOG.md) (Chinese) for release notes and [AGENT.md](AGENT.md) (Chinese) for development, testing and release guidelines.
 
-- **GitHub Release**: [v0.15.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.15.0)
+- **GitHub Release**: [v0.15.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.15.0)
 - **Maven Central (Android)**: [io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.15.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.15.0)
 - **OHPM (HarmonyOS NEXT)**: `@jzdy/office` (`0.15.0`)
 

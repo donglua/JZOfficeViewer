@@ -1,14 +1,14 @@
-# JZOfficeViewer
+# JZOfficeKit
 
 [English](README.en.md) | **简体中文**
 
-轻量级 Office 文档离线预览库，支持 **Android**、**HarmonyOS NEXT** 与 **macOS**，提供 DOCX、PPTX 和 XLSX 的本地只读预览。
+轻量级跨平台 Office 文档离线预览 SDK，支持 **Android**、**HarmonyOS NEXT** 与 **macOS**，提供 DOCX、PPTX 和 XLSX 的本地只读预览。
 
 底层共用 Rust 解析核心 `jz-office-core`，平台层使用原生组件与 Canvas 排版绘制，不依赖服务端转换、WebView、外部 Office 应用或内置字体。Android 端另提供可选的 `viewer-online` 模块，支持在线文档下载与缓存管理。
 
 当前最新版本为 **0.15.0**，详细变更记录见 [CHANGELOG](CHANGELOG.md)，开发、测试与发布规范见 [AGENT.md](AGENT.md)。
 
-- **GitHub Release**：[v0.15.0 Release](https://github.com/donglua/JZOfficeViewer/releases/tag/v0.15.0)
+- **GitHub Release**：[v0.15.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.15.0)
 - **Maven Central (Android)**：[io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.15.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.15.0)
 - **OHPM (HarmonyOS NEXT)**：`@jzdy/office`（`0.15.0`）
 

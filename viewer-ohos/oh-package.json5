@@ -4,8 +4,8 @@
   "description": "Lightweight DOCX, PPTX and XLSX offline preview library for HarmonyOS NEXT",
   "main": "Index.ets",
   "author": "donglua <dongluh@gmail.com>",
-  "homepage": "https://github.com/donglua/JZOfficeViewer",
-  "repository": "https://github.com/donglua/JZOfficeViewer",
+  "homepage": "https://github.com/donglua/JZOfficeKit",
+  "repository": "https://github.com/donglua/JZOfficeKit",
   "license": "Apache-2.0",
   "keywords": [
     "docx",
