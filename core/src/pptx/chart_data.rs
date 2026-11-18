@@ -8,17 +8,25 @@ pub(super) struct Series<'a> {
     pub name: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) enum ChartType {
     Line,
     Column,
+    /// 横向条形图（`barChart` 且 `barDir="bar"`）
+    Bar,
+    /// 饼图（`hole_ratio == 0.0`）与环形图（`hole_ratio > 0.0`）
+    Pie {
+        hole_ratio: f32,
+    },
 }
 
 pub(super) struct Chart<'a> {
     pub node: &'a Node,
     pub plot: &'a Node,
-    pub x_axis: &'a Node,
-    pub y_axis: &'a Node,
+    /// 分类轴；饼图与环形图没有坐标轴，此时为 `None`。
+    pub x_axis: Option<&'a Node>,
+    /// 数值轴；饼图与环形图没有坐标轴，此时为 `None`。
+    pub y_axis: Option<&'a Node>,
     pub series: Vec<Series<'a>>,
     pub x_range: (f64, f64),
     pub y_range: (f64, f64),
@@ -105,41 +113,57 @@ impl<'a> Chart<'a> {
                 ChartType::Line
             }
             "barChart" => {
-                if value(chart_node, "barDir") != "col" {
-                    return None;
-                }
                 if !matches!(value(chart_node, "grouping"), "" | "clustered" | "standard") {
                     return None;
                 }
-                ChartType::Column
+                match value(chart_node, "barDir") {
+                    "col" => ChartType::Column,
+                    "bar" => ChartType::Bar,
+                    _ => return None,
+                }
             }
+            "pieChart" => ChartType::Pie { hole_ratio: 0.0 },
+            "doughnutChart" => ChartType::Pie {
+                hole_ratio: hole_ratio(chart_node),
+            },
             _ => return None,
         };
+        // 饼图与环形图不依赖坐标轴，缺少 catAx / valAx 也应正常渲染。
+        let no_axes = matches!(chart_type, ChartType::Pie { .. });
         let axes: Vec<_> = plot
             .children
             .iter()
             .filter(|n| n.name.ends_with("Ax"))
             .collect();
-        if axes.len() != 2 {
-            return None;
-        }
-        let x_axis = *axes
-            .iter()
-            .find(|n| matches!(n.name.as_str(), "catAx" | "dateAx"))?;
-        let y_axis = *axes.iter().find(|n| n.name == "valAx")?;
-        for axis in &axes {
-            let id = value(axis, "axId");
-            if id.is_empty() || !chart_node.named("axId").any(|n| n.attr("val") == id) {
+        // 饼图/环形图允许完全没有坐标轴；其余图表要求分类轴与数值轴各一。
+        let (x_axis, y_axis) = if no_axes && axes.is_empty() {
+            (None, None)
+        } else {
+            if axes.len() != 2 {
                 return None;
             }
-            if axis
-                .child("scaling")
-                .is_some_and(|n| n.child("logBase").is_some())
-                || axis.child("dispUnits").is_some()
-            {
-                return None;
+            for axis in &axes {
+                let id = value(axis, "axId");
+                if id.is_empty() || !chart_node.named("axId").any(|n| n.attr("val") == id) {
+                    return None;
+                }
+                if axis
+                    .child("scaling")
+                    .is_some_and(|n| n.child("logBase").is_some())
+                    || axis.child("dispUnits").is_some()
+                {
+                    return None;
+                }
             }
-        }
+            (
+                Some(
+                    *axes
+                        .iter()
+                        .find(|n| matches!(n.name.as_str(), "catAx" | "dateAx"))?,
+                ),
+                Some(*axes.iter().find(|n| n.name == "valAx")?),
+            )
+        };
         let blanks = match value(node, "dispBlanksAs") {
             "" | "gap" => "gap",
             "zero" => "zero",
@@ -174,7 +198,7 @@ impl<'a> Chart<'a> {
             if categories.len() != values.len() {
                 return None;
             }
-            let dates = if x_axis.name == "dateAx" {
+            let dates = if x_axis.is_some_and(|n| n.name == "dateAx") {
                 Some(
                     categories
                         .iter()
@@ -213,11 +237,21 @@ impl<'a> Chart<'a> {
                 }
             }
         }
-        if chart_type == ChartType::Column && !ys.is_empty() && ys.iter().all(|&y| y >= 0.0) {
+        if matches!(chart_type, ChartType::Column | ChartType::Bar)
+            && !ys.is_empty()
+            && ys.iter().all(|&y| y >= 0.0)
+        {
             ys.push(0.0);
         }
-        let (x_range, _) = range(&xs, x_axis, false)?;
-        let (y_range, y_step) = range(&ys, y_axis, true)?;
+        // 饼图/环形图不使用坐标轴范围，按扇区求和绘制，这里给出占位范围。
+        let (x_range, y_range, y_step) = match (x_axis, y_axis) {
+            (Some(x_axis), Some(y_axis)) => {
+                let (x_range, _) = range(&xs, x_axis, false)?;
+                let (y_range, y_step) = range(&ys, y_axis, true)?;
+                (x_range, y_range, y_step)
+            }
+            _ => ((0.0, 1.0), (0.0, 1.0), 1.0),
+        };
         Some(Self {
             node,
             plot,
@@ -232,6 +266,17 @@ impl<'a> Chart<'a> {
             chart_type,
         })
     }
+}
+
+/// 解析环形图 `<c:holeSize val="...">`，合法范围 1..=90（默认 50），
+/// 换算为内半径占比并钳位到 `0.1..=0.9`，避免退化或自交的环。
+fn hole_ratio(chart_node: &Node) -> f32 {
+    let parsed = chart_node
+        .child("holeSize")
+        .and_then(|n| n.attr("val").parse::<i32>().ok())
+        .filter(|value| (1..=90).contains(value))
+        .unwrap_or(50);
+    (parsed as f32 / 100.0).clamp(0.1, 0.9)
 }
 
 impl Series<'_> {

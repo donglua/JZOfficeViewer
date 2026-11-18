@@ -194,11 +194,14 @@ fn unresolved_rounding_is_omitted_with_warning() -> TestResult {
             .iter()
             .any(|warning| warning.contains("complex geometry")));
     }
-    let custom = with_layout_panel("star5", r#"<a:gd name="adj" fmla="val 0"/>"#)?;
-    assert!(matches!(
-        custom.pages[0].elements[0].kind,
-        ElementType::TEXT
-    ));
+    // star5 现已纳入支持的预设几何：即使携带无关的 adj 调整值也应生成星形路径，
+    // 而不再退化为纯文本元素。
+    let star = with_layout_panel("star5", r#"<a:gd name="adj" fmla="val 0"/>"#)?;
+    assert!(matches!(star.pages[0].elements[0].kind, ElementType::PATH));
+    assert!(!star
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("complex geometry")));
     Ok(())
 }
 
