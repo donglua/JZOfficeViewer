@@ -2017,6 +2017,96 @@ struct JZOfficeTests {
         #expect(abs((bottomRect.minY - bottomedPlan.placements[0].frame.minY) - bottomY) < 0.5)
     }
 
+    @Test("strokeDash 虚线描边解码与离屏绘制")
+    func strokeDashDecodingAndRendering() throws {
+        // 1. 解码：含 strokeDash 的元素
+        let dashedJSON = """
+        {"type":"LINE","x":0,"y":0,"width":100,"height":0,"transform":[1,0,0,1,0,0],
+        "padding":0,"fill":0,"stroke":4278190080,"strokeWidth":2,
+        "verticalAlignment":"TOP","textWrap":true,"strokeDash":[8.0,6.0]}
+        """.data(using: .utf8)!
+        let dashed = try JSONDecoder().decode(OfficeElement.self, from: dashedJSON)
+        #expect(dashed.strokeDash == [8, 6])
+
+        // 2. 解码：缺少该字段时回落为空数组（实线），保证旧文档 JSON 结构兼容
+        let plainJSON = """
+        {"type":"LINE","x":0,"y":0,"width":100,"height":0,"transform":[1,0,0,1,0,0],
+        "padding":0,"fill":0,"stroke":4278190080,"strokeWidth":2,
+        "verticalAlignment":"TOP","textWrap":true}
+        """.data(using: .utf8)!
+        let plain = try JSONDecoder().decode(OfficeElement.self, from: plainJSON)
+        #expect(plain.strokeDash.isEmpty)
+
+        // 3. 解码：非法序列（长度不足 / 非正数）整体回退为实线
+        for invalid in ["[8.0]", "[0,6.0]", "[-1,6.0]"] {
+            let json = """
+            {"type":"LINE","x":0,"y":0,"width":100,"height":0,"transform":[1,0,0,1,0,0],
+            "padding":0,"fill":0,"stroke":4278190080,"strokeWidth":2,
+            "verticalAlignment":"TOP","textWrap":true,"strokeDash":\(invalid)}
+            """.data(using: .utf8)!
+            let element = try JSONDecoder().decode(OfficeElement.self, from: json)
+            #expect(element.strokeDash.isEmpty, "非法序列 \(invalid) 应回退为实线")
+        }
+
+        // 4. 离屏绘制：虚线在描边路径上产生间断，实线则连续
+        func strokeRunLengths(dash: [CGFloat]) -> [Int] {
+            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+            let width = 240, height = 40
+            var bytes = [UInt8](repeating: 255, count: width * height * 4)
+            let ctx = CGContext(
+                data: &bytes,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            let element = OfficeElement(
+                type: .line,
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 0,
+                padding: 0,
+                stroke: 0xff000000,
+                strokeWidth: 3,
+                strokeDash: dash
+            )
+            CGElementDrawer.drawElement(in: ctx, element: element, images: [:])
+            // drawElement 会应用 transform 矩阵，线段沿 (0,0)->(200,0) 绘制；
+            // 逐行扫描并取描边像素最多的那一行，统计连续被覆盖的像素段长度（即虚线段数）。
+            var best: [Int] = []
+            for y in 0..<height {
+                var runs: [Int] = []
+                var run = 0
+                for x in 0..<width {
+                    let inked = bytes[(y * width + x) * 4] < 200
+                    if inked {
+                        run += 1
+                    } else if run > 0 {
+                        runs.append(run)
+                        run = 0
+                    }
+                }
+                if run > 0 { runs.append(run) }
+                if runs.reduce(0, +) > best.reduce(0, +) { best = runs }
+            }
+            return best
+        }
+
+        let solidRuns = strokeRunLengths(dash: [])
+        #expect(solidRuns.count <= 2, "实线应为一到两段连续描边，实际 \(solidRuns)")
+
+        let dashRuns = strokeRunLengths(dash: [8, 6])
+        #expect(dashRuns.count >= 4, "虚线应产生多段间断描边，实际 \(dashRuns)")
+        #expect(dashRuns.allSatisfy { $0 > 0 })
+
+        // 5. 非法点线序列按实线绘制且不崩溃
+        let fallbackRuns = strokeRunLengths(dash: [0, -1])
+        #expect(fallbackRuns.count <= 2, "非法序列应按实线绘制，实际 \(fallbackRuns)")
+    }
+
     private func createTestCGImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         var bytes = [UInt8](repeating: 128, count: width * height * 4)

@@ -69,8 +69,11 @@ public enum CGElementDrawer {
                 if p.stroke, let strokeColor {
                     ctx.setStrokeColor(strokeColor)
                     ctx.setLineWidth(max(0.5, element.strokeWidth))
+                    // 仅对描边应用虚线，绘制后立即恢复实线，避免影响后续子路径与元素
+                    ctx.setLineDash(phase: 0, lengths: element.strokeDash)
                     ctx.addPath(cgPath)
                     ctx.strokePath()
+                    ctx.setLineDash(phase: 0, lengths: [])
                 }
             }
         } else {
@@ -99,6 +102,8 @@ public enum CGElementDrawer {
             if let strokeColor {
                 ctx.setStrokeColor(strokeColor)
                 ctx.setLineWidth(max(0.5, element.strokeWidth))
+                // 虚线描边：先应用元素级点线序列，绘制完成后立即恢复实线
+                ctx.setLineDash(phase: 0, lengths: element.strokeDash)
                 if element.type == .ellipse {
                     ctx.strokeEllipse(in: rect)
                 } else if element.type == .line {
@@ -108,6 +113,7 @@ public enum CGElementDrawer {
                 } else if element.stroke != 0 {
                     ctx.stroke(rect)
                 }
+                ctx.setLineDash(phase: 0, lengths: [])
             }
         }
 
@@ -426,9 +432,12 @@ public enum CGElementDrawer {
                 if let edges = cellBorderEdges, !edges.isEmpty {
                     drawCellBorderEdges(in: ctx, borders: edges, cellRect: cellRect)
                 } else if let borderColor {
+                    // 表格级统一网格框使用 element 级 stroke，按元素虚线绘制后恢复实线
                     ctx.setStrokeColor(borderColor)
                     ctx.setLineWidth(borderWidth)
+                    ctx.setLineDash(phase: 0, lengths: element.strokeDash)
                     ctx.stroke(cellRect)
+                    ctx.setLineDash(phase: 0, lengths: [])
                 }
 
                 let cellParas = c < row.count ? row[c] : []

@@ -277,6 +277,8 @@ public struct OfficeElement: Codable, Sendable {
     public var cellValigns: [[UInt8]]
     /// 单元格四边边框矩阵，每个元素为 [top, right, bottom, left]；为空表示沿用表格级统一网格框
     public var cellBorders: [[[OfficeCellBorder]]]
+    /// 虚线描边点线序列（单位 point），按“实线长度、间隔长度”成对循环；为空表示实线
+    public var strokeDash: [CGFloat]
     public var paths: [OfficePath]
     public var fillGradient: OfficeGradientFill?
     public var merges: [OfficeCellRange]
@@ -291,7 +293,7 @@ public struct OfficeElement: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case type, x, y, width, height, transform, padding, fill, stroke, strokeWidth
         case image, imageBounds, verticalAlignment, textWrap, paragraphs, rows, columnWidths, cellFills, paths, fillGradient, merges
-        case cellValigns, cellBorders
+        case cellValigns, cellBorders, strokeDash
         case wrapMode, horizontalAlign, behindDoc, distTop, distBottom, distLeft, distRight
     }
 
@@ -316,6 +318,7 @@ public struct OfficeElement: Codable, Sendable {
         cellFills: [[UInt32]] = [],
         cellValigns: [[UInt8]] = [],
         cellBorders: [[[OfficeCellBorder]]] = [],
+        strokeDash: [CGFloat] = [],
         paths: [OfficePath] = [],
         fillGradient: OfficeGradientFill? = nil,
         merges: [OfficeCellRange] = [],
@@ -347,6 +350,7 @@ public struct OfficeElement: Codable, Sendable {
         self.cellFills = cellFills
         self.cellValigns = cellValigns
         self.cellBorders = cellBorders
+        self.strokeDash = strokeDash
         self.paths = paths
         self.fillGradient = fillGradient
         self.merges = merges
@@ -381,6 +385,9 @@ public struct OfficeElement: Codable, Sendable {
         self.cellFills = try c.decodeIfPresent([[UInt32]].self, forKey: .cellFills) ?? []
         self.cellValigns = try c.decodeIfPresent([[UInt8]].self, forKey: .cellValigns) ?? []
         self.cellBorders = try c.decodeIfPresent([[[OfficeCellBorder]]].self, forKey: .cellBorders) ?? []
+        // 虚线序列按 core 协议校验：长度 2..=16 且每个元素为有限正数、上限 10000，非法值整体回退为实线
+        let rawDash = try c.decodeIfPresent([CGFloat].self, forKey: .strokeDash) ?? []
+        self.strokeDash = Self.validDash(rawDash)
         self.paths = try c.decodeIfPresent([OfficePath].self, forKey: .paths) ?? []
         self.fillGradient = try c.decodeIfPresent(OfficeGradientFill.self, forKey: .fillGradient)
         self.merges = try c.decodeIfPresent([OfficeCellRange].self, forKey: .merges) ?? []
@@ -397,6 +404,13 @@ public struct OfficeElement: Codable, Sendable {
     private static func clampWrapDistance(_ value: CGFloat?) -> CGFloat {
         guard let value, value.isFinite else { return 0 }
         return max(0, min(1200, value))
+    }
+
+    /// 校验虚线点线序列：仅接受 2...16 个有限正数（上限 10000 point），其余整体回退为实线
+    private static func validDash(_ dash: [CGFloat]) -> [CGFloat] {
+        guard (2...16).contains(dash.count) else { return [] }
+        guard dash.allSatisfy({ $0.isFinite && $0 > 0 && $0 <= 10_000 }) else { return [] }
+        return dash
     }
 }
 
