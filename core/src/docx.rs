@@ -1,3 +1,4 @@
+mod cell_style;
 mod drawings;
 mod format;
 pub(super) mod numbering;
@@ -322,7 +323,6 @@ fn inspect(node: &Node, document: &mut Document) {
             Some("Paragraph page breaks are ignored in continuous flow.")
         }
         "effectLst" => Some("Image drawing effects are not reproduced."),
-        "tblStyle" => Some("Table styles use the viewer's default cell appearance."),
         _ => None,
     };
     if let Some(message) = warning {

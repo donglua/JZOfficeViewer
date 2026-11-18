@@ -101,6 +101,49 @@ impl Styles {
         chain
     }
 
+    /// 解析 `w:type="table"` 表格样式的继承链（顺序为自身 → basedOn 祖先）。
+    ///
+    /// 与段落样式链共用 `MAX_STYLE_DEPTH` 防环保护，但样式 id 缺失时静默返回，
+    /// 因为文档引用未定义的表格样式在 Word 中同样静默退化为无样式。
+    pub fn table_chain<'a>(&'a self, id: &'a str) -> Vec<&'a Node> {
+        let mut chain = Vec::new();
+        let mut seen = HashSet::new();
+        let mut current = id;
+        while !current.is_empty() && chain.len() < MAX_STYLE_DEPTH {
+            if !seen.insert(current) {
+                break;
+            }
+            let Some(style) = self.entries.get(current) else {
+                break;
+            };
+            if style.attr("type") != "table" {
+                break;
+            }
+            chain.push(style);
+            current = style.child("basedOn").map_or("", |node| node.attr("val"));
+        }
+        chain
+    }
+
+    /// 主题名到 ARGB 颜色的映射，用于 `w:themeFill` 一类主题派生色。
+    ///
+    /// DOCX 与 PPTX 共用 clrScheme 的槽位名（accent1..6、dk1/lt1、dk2/lt2 等），
+    /// 名称缺失时回落到 `None`，由调用方决定是否使用后备色。
+    pub fn theme_color(&self, name: &str) -> Option<u32> {
+        if name.is_empty() {
+            return None;
+        }
+        // DOCX 允许以 tx1/bg1/tx2/bg2 别名引用 dk1/lt1/dk2/lt2
+        let slot = match name {
+            "tx1" => "dk1",
+            "bg1" => "lt1",
+            "tx2" => "dk2",
+            "bg2" => "lt2",
+            other => other,
+        };
+        self.theme.style_color(slot)
+    }
+
     pub fn paragraph(
         &self,
         node: &Node,

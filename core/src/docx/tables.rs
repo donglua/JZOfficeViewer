@@ -1,3 +1,4 @@
+use super::cell_style::TableStyler;
 use super::{alternate, format, skipped, Parser, MAX_CELLS, MAX_COLUMNS, MAX_ROWS};
 use crate::model::{CellRange, Element, ElementType, Paragraph};
 use crate::xml::{self, Node};
@@ -11,6 +12,8 @@ impl Parser<'_> {
             stroke: 0xffdadce0,
             ..Element::default()
         };
+        // 表格样式结算器：随解析循环累积声明，行补齐后一次性生成三个样式矩阵
+        let mut styler = TableStyler::new(node, &self.styles);
         if let Some(borders) = node.child("tblPr").and_then(|n| n.child("tblBorders")) {
             for border_name in ["top", "left", "bottom", "right", "insideH", "insideV"] {
                 if let Some(border) = borders.child(border_name) {
@@ -55,6 +58,8 @@ impl Parser<'_> {
             let properties = row.child("trPr");
             let before = grid_count(properties, "gridBefore", 0)?;
             let after = grid_count(properties, "gridAfter", 0)?;
+            // 行级 trPr/tblPrEx 的底纹与边框覆盖
+            styler.row(row_num, properties, &self.styles);
             let mut cells = Vec::new();
             self.pad(&mut cells, before)?;
             let mut continued_in_row = Vec::new();
@@ -82,6 +87,8 @@ impl Parser<'_> {
                 }
                 let mut paragraphs = Vec::new();
                 self.cell(cell, &mut paragraphs)?;
+                // 单元格自身的 shd / vAlign / tcBorders 声明，按起始网格列登记
+                styler.cell(row_num, start_col, properties, &self.styles);
                 cells.push(paragraphs);
                 cells.resize_with(end, Vec::new);
 
@@ -203,6 +210,19 @@ impl Parser<'_> {
             *width = *width / total * desired;
         }
         table.width = desired;
+        // 行已补齐、merges 已收集完毕，按最终 rows × cols 结算三个样式矩阵
+        let row_count = table.rows.len();
+        let col_count = table.column_widths.len();
+        let merges = std::mem::take(&mut table.merges);
+        TableStyler::finish(
+            &mut table,
+            styler,
+            &self.styles,
+            row_count,
+            col_count,
+            &merges,
+        );
+        table.merges = merges;
         Ok(table)
     }
 

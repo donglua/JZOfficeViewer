@@ -162,6 +162,15 @@ pub enum VerticalAlignment {
     Bottom,
 }
 
+/// 表格单元格单条边框（跨平台 JSON 协议，字段采用 camelCase）。
+/// `color` 为 ARGB，`width` 单位为 point；当边被隐藏（`w:val="none" | "nil"`）时两者均为 0。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellBorder {
+    pub color: u32,
+    pub width: f32,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Default, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum LineSpacingRule {
@@ -319,6 +328,18 @@ pub struct Element {
     pub merges: Vec<CellRange>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cell_fills: Vec<Vec<u32>>,
+    /// 单元格垂直对齐矩阵：0 顶部、1 垂直居中、2 底部。
+    /// 为空表示表格没有显式 vAlign，平台层沿用垂直居中行为。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cell_valigns: Vec<Vec<u8>>,
+    /// 单元格四边边框矩阵，每项为 `[top, right, bottom, left]`。
+    /// 为空表示全表为均匀网格框，由 `stroke` / `stroke_width` 承担统一绘制。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cell_borders: Vec<Vec<[CellBorder; 4]>>,
+    /// 虚线描边点线序列，单位为 point，按“实线长度、间隔长度”成对循环；为空表示实线。
+    /// 由 `a:prstDash` 在 `core` 层换算，平台层直接用于 `DashPathEffect` / `setLineDash`。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stroke_dash: Vec<f32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<Path>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -365,6 +386,9 @@ impl Default for Element {
             column_widths: Vec::new(),
             merges: Vec::new(),
             cell_fills: Vec::new(),
+            cell_valigns: Vec::new(),
+            cell_borders: Vec::new(),
+            stroke_dash: Vec::new(),
             paths: Vec::new(),
             fill_gradient: None,
             wrap_mode: WrapMode::Inline,

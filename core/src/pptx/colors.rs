@@ -106,6 +106,12 @@ impl Theme {
         self.resolve("tx1").unwrap_or(0xff202124)
     }
 
+    /// 按 clrScheme 槽位名直接取主题色，不做 tx1/bg1 别名映射。
+    /// DOCX 的 `w:themeColor` / `w:themeFill` 直接引用槽位名（accent1、dk1 等），故单独提供。
+    pub(crate) fn style_color(&self, key: &str) -> Option<u32> {
+        self.colors.get(key).copied()
+    }
+
     pub fn accent(&self, index: usize) -> u32 {
         const FALLBACK: [u32; 6] = [
             0xff4472c4, 0xffed7d31, 0xffa5a5a5, 0xffffc000, 0xff5b9bd5, 0xff70ad47,
