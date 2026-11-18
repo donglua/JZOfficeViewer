@@ -247,6 +247,23 @@ export class CanvasElementDrawer {
   private static readonly pathCache: WeakMap<model.Path, Path2D> = new WeakMap();
   private static readonly paragraphCache: WeakMap<model.Paragraph, CachedParagraphEntry[]> = new WeakMap();
 
+  /**
+   * 归一化虚线点线序列：仅接受 2..=16 个有限正数（上限 10000 point），
+   * 其余情况整体回退为实线，与 core 的 strokeDash 协议校验保持一致。
+   */
+  private static dashArrayOf(element: model.Element): number[] {
+    const dash = element.strokeDash;
+    if (dash === undefined || dash.length < 2 || dash.length > 16) {
+      return [];
+    }
+    for (const value of dash) {
+      if (!Number.isFinite(value) || value <= 0 || value > 10000) {
+        return [];
+      }
+    }
+    return dash;
+  }
+
   public static drawElement(
     ctx: OfficeCanvasContext,
     element: model.Element,
@@ -285,7 +302,10 @@ export class CanvasElementDrawer {
         if (p.stroke && strokeCss) {
           ctx.strokeStyle = strokeCss;
           ctx.lineWidth = Math.max(0.5, element.strokeWidth || 1);
+          // 虚线仅作用于描边，绘制后立即恢复实线，避免影响后续子路径与元素
+          ctx.setLineDash(CanvasElementDrawer.dashArrayOf(element));
           ctx.stroke(path2d);
+          ctx.setLineDash([]);
         }
       }
     } else {
@@ -304,6 +324,7 @@ export class CanvasElementDrawer {
       if (strokeCss) {
         ctx.strokeStyle = strokeCss;
         ctx.lineWidth = Math.max(0.5, element.strokeWidth || 1);
+        ctx.setLineDash(CanvasElementDrawer.dashArrayOf(element));
         if (element.type === 'ELLIPSE') {
           ctx.beginPath();
           ctx.ellipse(w / 2, h / 2, Math.max(0, w / 2), Math.max(0, h / 2), 0, 0, Math.PI * 2);
@@ -316,6 +337,7 @@ export class CanvasElementDrawer {
         } else if (element.stroke !== 0) {
           ctx.strokeRect(0, 0, w, h);
         }
+        ctx.setLineDash([]);
       }
     }
 
@@ -670,9 +692,12 @@ export class CanvasElementDrawer {
         if (cellBorderEdges !== undefined && cellBorderEdges.length > 0) {
           CanvasElementDrawer.drawCellBorderEdges(ctx, cellBorderEdges, x1, y1, cellW, cellH);
         } else {
+          // 表格级统一网格框使用 element 级 stroke，按元素虚线绘制后恢复实线
           ctx.strokeStyle = strokeCss;
           ctx.lineWidth = strokeWidth;
+          ctx.setLineDash(CanvasElementDrawer.dashArrayOf(element));
           ctx.strokeRect(x1, y1, cellW, cellH);
+          ctx.setLineDash([]);
         }
 
         const cellParas = c < row.length ? row[c] : [];

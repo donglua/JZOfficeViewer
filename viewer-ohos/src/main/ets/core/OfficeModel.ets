@@ -106,6 +106,8 @@ export interface Element {
   cellValigns?: number[][];
   /** 单元格四边边框矩阵，每个元素为 [top, right, bottom, left]；缺省为空表示沿用表格级统一网格框 */
   cellBorders?: CellBorder[][][];
+  /** 虚线描边点线序列（单位 point），按“实线长度、间隔长度”成对循环；缺省为空表示实线 */
+  strokeDash?: number[];
   paths?: Path[];
   fillGradient?: GradientFill;
   merges?: CellRange[];

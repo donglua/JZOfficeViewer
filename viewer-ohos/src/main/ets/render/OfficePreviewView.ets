@@ -2922,6 +2922,7 @@ function cloneElementForCanvas(src: model.Element, width: number, height: number
     cellFills: src.cellFills,
     cellValigns: src.cellValigns,
     cellBorders: src.cellBorders,
+    strokeDash: src.strokeDash,
     paths: src.paths,
     fillGradient: src.fillGradient,
     merges: src.merges
