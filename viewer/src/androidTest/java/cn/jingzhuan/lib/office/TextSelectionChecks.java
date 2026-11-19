@@ -16,8 +16,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 设备端文本选区契约验证：公开 API、长按选词与手柄拖拽、浮动气泡复制、
- * 无障碍全选/复制/清除动作，以及 XLSX 不支持划词的边界。
+ * 设备端选区契约验证：DOCX / PPTX 文本选区、XLSX 单元格与区域选区、
+ * 手柄拖拽、浮动气泡复制与无障碍全选/复制/清除动作。
  *
  * <p>运行方式：{@code am instrument -w -e suite selection}，全部通过时输出
  * {@code ALL SELECTION CHECKS PASSED}。
@@ -346,21 +346,22 @@ final class TextSelectionChecks {
         instrumentation.check(hasAction(instrumentation, view, actionId("ACTION_SELECT_ALL"), "全选文本"),
             "Spreadsheet exposes the select-all accessibility action");
 
-        // 7. 长按选格：命中单元格即建立选区并进入可扩选状态
-        float x = read(instrumentation, () -> SheetRenderer.HEADER_WIDTH + 24f);
-        float y = read(instrumentation, () -> SheetRenderer.HEADER_HEIGHT + 12f);
+        // 7. 长按选格：按设备缩放把文档坐标换算为屏幕像素，命中 A2（避开 A1:D1 合并区域以验证跨格拖选）
+        float[] startCell = read(instrumentation, () -> sheetCellScreenCenter(view, 1, 0));
+        float x = startCell[0], y = startCell[1];
+        instrumentation.check(x > 0 && y > 0, "Located spreadsheet A2 screen center: " + x + "," + y);
         long down = SystemClock.uptimeMillis();
         feed(instrumentation, view, down, down, MotionEvent.ACTION_DOWN, x, y);
         SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 150L);
         instrumentation.check(read(instrumentation, view::hasSelection),
             "Long press starts a cell selection in a spreadsheet");
         String cellText = read(instrumentation, view::getSelectedText);
-        instrumentation.check(!cellText.contains("\t") && !cellText.contains("\n"),
+        instrumentation.check(!cellText.contains("\t") && !cellText.contains("\n") && !cellText.isEmpty(),
             "Long press selects a single logical cell: " + cellText);
 
-        // 8. 长按后不抬手直接拖动扩选：向右下移动一个单元格，TSV 应变成 2x2 网格
-        float dragX = x + 80f;
-        float dragY = y + 40f;
+        // 8. 长按后不抬手直接拖动扩选：拖到 B3 中心，TSV 应变成 2x2 网格
+        float[] targetCell = read(instrumentation, () -> sheetCellScreenCenter(view, 2, 1));
+        float dragX = targetCell[0], dragY = targetCell[1];
         feed(instrumentation, view, down, down + 400L, MotionEvent.ACTION_MOVE, dragX, dragY);
         feed(instrumentation, view, down, down + 450L, MotionEvent.ACTION_UP, dragX, dragY);
         String dragged = read(instrumentation, view::getSelectedText);
@@ -394,6 +395,22 @@ final class TextSelectionChecks {
             "Single-finger scrolling never creates a spreadsheet selection");
         instrumentation.check(read(instrumentation, view::getCurrentPage) == 1,
             "Scrolling keeps the current sheet");
+        instrumentation.check(read(instrumentation, () -> offsetY(view)) > 0f,
+            "Single-finger scrolling advances spreadsheet vertical offset");
+
+        // 12. 滚动后的长按命中校验：不能重复叠加滚动偏移
+        int visibleRow = read(instrumentation, () -> firstVisibleSheetRowBelowHeader(view));
+        float[] scrolledCell = read(instrumentation, () -> sheetCellScreenCenter(view, visibleRow, 0));
+        String expectedScrolled = read(instrumentation, () -> expectedSheetCellText(view, visibleRow, 0));
+        long scrolledDown = SystemClock.uptimeMillis();
+        feed(instrumentation, view, scrolledDown, scrolledDown, MotionEvent.ACTION_DOWN,
+            scrolledCell[0], scrolledCell[1]);
+        SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 150L);
+        feed(instrumentation, view, scrolledDown, scrolledDown + 60L, MotionEvent.ACTION_UP,
+            scrolledCell[0], scrolledCell[1]);
+        instrumentation.check(expectedScrolled.equals(read(instrumentation, view::getSelectedText)),
+            "Scrolled long press hits exact row " + visibleRow + " text=" + expectedScrolled);
+        instrumentation.runOnMainChecked(view::clearSelection);
     }
 
     // ------------------------------------------------------------------
@@ -483,6 +500,66 @@ final class TextSelectionChecks {
         return (TextSelectionModel.DocumentTextLayout) declared.get(view);
     }
 
+    private static float[] sheetCellScreenCenter(OfficePreviewView view, int row, int column) throws Exception {
+        SheetRenderer renderer = sheetRenderer(view);
+        if (renderer == null || renderer.layout == null) return new float[] {-1f, -1f};
+        float[] colOffsets = renderer.layout.columns.offsets;
+        float[] rowOffsets = renderer.layout.rows.offsets;
+        if (row < 0 || row + 1 >= rowOffsets.length || column < 0 || column + 1 >= colOffsets.length) {
+            return new float[] {-1f, -1f};
+        }
+        float docX = (colOffsets[column] + colOffsets[column + 1]) * 0.5f;
+        float docY = (rowOffsets[row] + rowOffsets[row + 1]) * 0.5f;
+        return new float[] {docToScreenX(view, docX), docToScreenY(view, docY)};
+    }
+
+    private static int firstVisibleSheetRowBelowHeader(OfficePreviewView view) throws Exception {
+        SheetRenderer renderer = sheetRenderer(view);
+        if (renderer == null || renderer.layout == null) return 0;
+        float s = scale(view);
+        float minY = SheetRenderer.HEADER_HEIGHT * s + 16f * s;
+        float maxY = view.getHeight() - 32f * s;
+        for (int r : renderer.layout.rows.visible) {
+            float centerY = docToScreenY(view,
+                (renderer.layout.rows.offsets[r] + renderer.layout.rows.offsets[r + 1]) * 0.5f);
+            if (centerY >= minY && centerY <= maxY) return r;
+        }
+        return 0;
+    }
+
+    private static String expectedSheetCellText(OfficePreviewView view, int row, int column) throws Exception {
+        SheetRenderer renderer = sheetRenderer(view);
+        java.lang.reflect.Method currentSheet = OfficePreviewView.class.getDeclaredMethod("currentSheet");
+        currentSheet.setAccessible(true);
+        SpreadsheetDocument.Sheet sheet = (SpreadsheetDocument.Sheet) currentSheet.invoke(view);
+        if (sheet == null || renderer == null || renderer.layout == null) return "";
+        String text = SheetSelectionModel.cellTextAt(sheet, renderer.layout, row, column);
+        return text == null ? "" : text;
+    }
+
+    private static SheetRenderer sheetRenderer(OfficePreviewView view) throws Exception {
+        Field declared = OfficePreviewView.class.getDeclaredField("sheetRenderer");
+        declared.setAccessible(true);
+        return (SheetRenderer) declared.get(view);
+    }
+
+    private static SheetSelectionModel.SheetSelection sheetSelection(OfficePreviewView view) throws Exception {
+        Field declared = OfficePreviewView.class.getDeclaredField("sheetSelection");
+        declared.setAccessible(true);
+        return (SheetSelectionModel.SheetSelection) declared.get(view);
+    }
+
+    private static void restoreSheetSelection(OfficePreviewView view,
+                                              SheetSelectionModel.SheetSelection value) throws Exception {
+        Field declared = OfficePreviewView.class.getDeclaredField("sheetSelection");
+        declared.setAccessible(true);
+        declared.set(view, value);
+        java.lang.reflect.Method sync = OfficePreviewView.class.getDeclaredMethod("syncSheetSelection");
+        sync.setAccessible(true);
+        sync.invoke(view);
+        view.invalidate();
+    }
+
     /** 文档坐标 → 屏幕坐标，复用与视图内部一致的换算规则 */
     private static float docToScreenX(OfficePreviewView view, float docX) throws Exception {
         return docX * scale(view) - offset(view, "offsetX") + left(view);
@@ -525,11 +602,13 @@ final class TextSelectionChecks {
         Bitmap withSelection = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         Bitmap withoutSelection = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         TextSelectionModel.TextSelection snapshot = selection(view);
+        SheetSelectionModel.SheetSelection sheetSnapshot = sheetSelection(view);
         try {
             view.draw(new Canvas(withSelection));
             view.clearSelection();
             view.draw(new Canvas(withoutSelection));
             restoreSelection(view, snapshot);
+            restoreSheetSelection(view, sheetSnapshot);
             int changed = 0;
             for (int y = 0; y < height; y += 2) {
                 for (int x = 0; x < width; x += 2) {
