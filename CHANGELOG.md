@@ -1,10 +1,16 @@
 # 更新日志
 
-## 未发布
+## 0.16.0
 
-本版本扩展 PPTX（及复用 DrawingML 的 DOCX 图形）的图表与几何图形预览能力，并为 XLSX 补齐单元格与区域选择复制，`schemaVersion` 保持 **9** 不变。
+发布页面：[v0.16.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.16.0)。
+
+本版本新增 XLSX 单元格与区域选择复制全端支持（`core` / Android / HarmonyOS NEXT / macOS）、PPTX 图表与预设几何/虚线描边/连接线箭头扩展，以及 DOCX 表格单元格边框、背景底纹与垂直对齐全端支持，项目名称统一更名为 `JZOfficeKit`，`schemaVersion` 保持 **9** 不变。
 
 ### 排版与特性
+
+- **DOCX 表格单元格边框、背景底纹与垂直对齐（`core` / Android / HarmonyOS NEXT / macOS）**：
+  - **核心解析（`core`）**：`Element` 新增可选矩阵字段 `cellValigns`（`0` 顶部、`1` 垂直居中、`2` 底部）与 `cellBorders`（每格四边 `[top, right, bottom, left]` 的 `{ color, width }`，`w:val="none" | "nil"` 时为 0），继承表格级/单元格级边框与 `<w:shd>` 底纹解析（`schemaVersion` 保持 9）。
+  - **三端渲染**：Android（`viewer`）、HarmonyOS NEXT（`viewer-ohos`）与 macOS（`viewer-macos`）同步实现单元格四边独立边框绘制、合并单元格填充与单元格级垂直对齐排版。
 
 - **XLSX 单元格与区域选择复制（Android / HarmonyOS NEXT / macOS）**：
   - **三端同构选区模型**：新增零 UI 依赖的纯逻辑模型 `SheetSelectionModel`（Java / TypeScript / Swift），统一实现二维网格锚点-焦点选区、合并单元格**不动点闭包扩张**（选区与任何合并区域相交即并入其完整范围并迭代到稳定，避免选区被合并区域切开）、冻结窗格感知的 `hitTest`（按冻结边界消解滚动偏移，锁定轴不叠加滚动量，拖拽时按 `clampToBounds` 钳位到表格边缘继续扩选）、全选范围与 TSV 格式化。三端模型由同一套 111 项断言逐条校验，语义完全一致。
@@ -29,6 +35,7 @@
 
 ### 测试
 
+- 新增 `core/tests/docx_table_styling.rs`（15 项用例）与 Android `PptxTableChecks` 校验 DOCX 表格单元格边框、底纹与垂直对齐；同步扩展 `DocumentDecoderChecks.java` 与 macOS `JZOfficeTests.swift`（全套 47 项用例通过）。
 - 新增纯 JVM `scripts/tests/SheetSelectionChecks.java`（111 项断言）与纯 TS `scripts/tests/SheetSelectionChecks.ts`（111 项断言 + 24 项集成静态检查），两者逐条对齐，并接入 CI `rust-and-jvm` 作业。
 - 不动点闭包用例使用**相互重叠**的合并区域构造，并已通过变异测试验证：把 `resolve` 退化为单轮遍历时该用例以 `endColumn=2` 失败，确保「不动点」语义真正被锁定（相邻但不重叠的合并区域在合法数据下无法串联，无法区分单轮与不动点）。
 - 扩展 Android 设备端 `selection` 套件的 XLSX 段：全选整表 TSV、Tab/换行结构、高亮像素比对、剪贴板往返、长按选中单元格、拖动扩选成多格网格、单击清除、切表清除选区与单指滚动零退化。
@@ -36,6 +43,16 @@
 - 新增 `core/tests/pptx_charts_geometry.rs`（15 项用例）覆盖横向条形图、饼图/环形图扇区与配色、22 种预设几何、虚线换算与箭头端点。
 - 扩展纯 JVM `scripts/tests/DocumentDecoderChecks.java` 校验 `strokeDash` 解码与非法输入拦截（140 → **155** 项断言）。
 - 扩展 macOS `JZOfficeTests.swift` 覆盖 `strokeDash` 解码回退与离屏虚线间断绘制（31 项用例全通过）。
+
+### 细节修复与交互优化
+
+- **项目更名（全端）**：仓库与工程对外名称统一更名为 `JZOfficeKit`，同步更新 Gradle 发布配置、OHPM 包主页与三端文档链接。
+- **XLSX 选区手势、冻结窗格与缩放细节（`viewer` / `viewer-ohos` / `viewer-macos`）**：
+  - 统一修复三端拖拽扩选越入行列标头时的坐标钳位（`clamp`）。
+  - Android 端修复向 `hitTestSheetCell` 传入未偏移视图坐标、修正冻结象限选区裁剪及缩放屏幕边界，并补充设备端缩放触摸与选区恢复校验。
+  - HarmonyOS NEXT 端修复冻结窗格选区屏幕矩形映射、平移/惯性滑动/捏合缩放时隐藏与重定位选区气泡，以及拖拽手柄期间拦截长按并隔离单击/双击手势。
+  - macOS 端保持跨缩放级别的固定选区描边线宽，并修复光标切换与鼠标按下处理；同时修复紧边界 `TEXT` 文本框不再被裁切。
+- **PPTX 图表与箭头绘制修正（`core`）**：对齐条形图坐标轴、饼图图例布局、流程图终止符圆弧及连接线箭头端点细节。
 
 ## 0.15.0
 

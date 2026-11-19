@@ -1,5 +1,28 @@
 # 更新日志
 
+## 0.16.0
+
+发布页面：[v0.16.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.16.0)。
+
+本版本新增 XLSX 单元格与区域选择复制、PPTX 图表与预设几何/虚线描边/连接线箭头支持，以及 DOCX 表格单元格边框、背景底纹与垂直对齐全端支持，项目名称统一更名为 `JZOfficeKit`，`schemaVersion` 保持 **9** 不变。
+
+### 排版与特性
+
+- **XLSX 单元格与区域选择复制（`viewer-ohos`）**：
+  - **纯逻辑选区模型（`SheetSelectionModel.ts`）**：纯 TypeScript 实现（零 ArkUI / `@kit.*` 依赖），支持二维网格锚点-焦点选区、合并单元格不动点闭包扩张、冻结窗格感知 `hitTest`、全选范围与 RFC 4180 兼容 TSV 格式化，与 Java / Swift 端由同一套 111 项断言校验。
+  - **四象限高亮与标头联动**：选区高亮（`#261A73E8` 填充 + `#FF1A73E8` 外框）在滚动区与三个冻结象限分别裁剪绘制，行列标头按选区范围联动高亮为 `#D2E3FC` 底色与 `#174EA6` 加粗文字。
+  - **交互与 API**：支持长按选格并拖动扩选、双角手柄微调与边缘自动滚动；平移、惯性滑动与捏合缩放时自动隐藏/重定位「复制 / 全选」浮动气泡；`OfficePreviewController` / `OfficePreviewActions` 提供 `selectAll`、`clearSelection`、`hasSelection`、`getSelectedText`、`copySelection`。
+- **PPTX 图表、预设几何与虚线描边（`core` / `viewer-ohos`）**：
+  - `core` 新增横向条形图、饼图/环形图、22 种高频预设几何、`a:prstDash` 虚线换算与连接线端点箭头子路径。
+  - 鸿蒙端 `CanvasElementDrawer` 支持读取 `strokeDash` 并通过 `ctx.setLineDash` 绘制图形、线条与表格虚线边框，绘制后立即恢复实线。
+- **DOCX 表格单元格边框、底纹与垂直对齐（`core` / `viewer-ohos`）**：
+  - 支持读取 `cellValigns` 与四边 `cellBorders`，`CanvasElementDrawer` 按单元格独立边框线宽/颜色、合并单元格背景填充及单元格垂直对齐绘制。
+
+### 细节修复与交互优化
+
+- **项目更名与交互修复（`viewer-ohos`）**：项目更名为 `JZOfficeKit`；修复冻结窗格选区屏幕矩形映射、拖拽越入标头坐标钳位，以及拖拽手柄期间拦截长按并隔离单击/双击手势。
+- **测试**：新增 `scripts/tests/SheetSelectionChecks.ts`（111 项断言 + 24 项集成静态检查）。
+
 ## 0.15.0
 
 发布页面：[v0.15.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.15.0)。
