@@ -562,14 +562,13 @@ final class SheetRenderer {
         SheetSelectionModel.CellRect rect = SheetSelectionModel.docRect(layout, selection);
         if (rect == null || rect.isEmpty()) return;
         selectionRect.set(rect.left, rect.top, rect.right, rect.bottom);
-        // 完全不可见时直接跳过，避免为屏幕外选区做多次 clip
-        if (selectionRect.right <= viewport.left || selectionRect.left >= viewport.right
-            || selectionRect.bottom <= viewport.top || selectionRect.top >= viewport.bottom) return;
         float lineWidth = strokeWidth > 0 ? strokeWidth : SELECTION_STROKE_WIDTH;
 
         List<Quadrant> quadrants = plan != null ? quadrants(plan) : Collections.emptyList();
         if (quadrants.isEmpty()) {
-            // 没有可用冻结几何（尚未绘制过）时退化为整块直接绘制
+            // 没有可用冻结几何（尚未绘制过）时按未平移视口裁剪后整块直接绘制
+            if (selectionRect.right <= viewport.left || selectionRect.left >= viewport.right
+                || selectionRect.bottom <= viewport.top || selectionRect.top >= viewport.bottom) return;
             selectionPaint.setStyle(Paint.Style.FILL);
             selectionPaint.setColor(SELECTION_FILL_COLOR);
             canvas.drawRect(selectionRect, selectionPaint);

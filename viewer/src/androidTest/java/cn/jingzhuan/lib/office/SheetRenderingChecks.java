@@ -341,6 +341,42 @@ final class SheetRenderingChecks {
         try {
             assertColor(bitmap, 130, 80, Color.RED, 0, "Multi-bucket merge overlapping scrolled visible rows still renders");
         } finally { bitmap.recycle(); }
+
+        // 冻结选区绘制与屏幕包围框：滚动超出冻结格原始位置后，冻结角选区仍必须正常绘制与定位
+        SpreadsheetDocument.Sheet selectionSheet = new SpreadsheetDocument.Sheet();
+        selectionSheet.rowHeights = new float[] {30, 30, 30, 30};
+        selectionSheet.columnWidths = new float[] {80, 80, 80, 80};
+        selectionSheet.frozenRows = 1;
+        selectionSheet.frozenColumns = 1;
+        renderer.setSheet(selectionSheet, styles);
+        renderer.setSelection(new SheetSelectionModel.SheetSelection(new SheetSelectionModel.CellCoord(0, 0)));
+        RectF scrolledViewport = new RectF(100, 60, 300, 220);
+        Bitmap selectionBitmap = Bitmap.createBitmap(200, 160, Bitmap.Config.ARGB_8888);
+        Canvas selectionCanvas = new Canvas(selectionBitmap);
+        selectionCanvas.drawColor(Color.WHITE);
+        selectionCanvas.translate(-scrolledViewport.left, -scrolledViewport.top);
+        renderer.draw(selectionCanvas, scrolledViewport);
+        renderer.drawSelection(selectionCanvas, scrolledViewport, 1.5f);
+        try {
+            int frozenCornerPixel = selectionBitmap.getPixel(82, 35);
+            check(Color.blue(frozenCornerPixel) > Color.red(frozenCornerPixel),
+                "Frozen corner selection renders even when viewport scrolled past unshifted cell: "
+                    + Integer.toHexString(frozenCornerPixel));
+        } finally { selectionBitmap.recycle(); }
+
+        // 屏幕包围框（scaled header 与冻结段保留）
+        float[] scaledClamp = OfficePreviewView.computeSheetScreenSpan(
+            0, 0, 42f, 122f, 0, 42f, 42f, 20f * 3f, 3f, 1080f);
+        check(scaledClamp != null && Math.round(scaledClamp[0]) == 126 && Math.round(scaledClamp[1]) == 306,
+            "Screen span clamps to scaled header width instead of unscaled 42px");
+        float[] frozenPinned = OfficePreviewView.computeSheetScreenSpan(
+            0, 0, 42f, 122f, 1, 42f, 122f, 800f, 2f, 1080f);
+        check(frozenPinned != null && Math.round(frozenPinned[0]) == 84 && Math.round(frozenPinned[1]) == 244,
+            "Frozen cell keeps visible screen span under large scroll");
+        float[] hiddenBehindFrozen = OfficePreviewView.computeSheetScreenSpan(
+            1, 1, 122f, 202f, 1, 42f, 122f, 200f, 1f, 1080f);
+        check(hiddenBehindFrozen == null,
+            "Scrollable cell tucked completely behind frozen pane yields null screen span");
     }
 
     /** 在给定坐标附近的小邻域内查找目标颜色（容忍抗锯齿与 1px 描边落点） */

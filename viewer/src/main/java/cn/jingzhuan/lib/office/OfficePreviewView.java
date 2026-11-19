@@ -1266,28 +1266,71 @@ public final class OfficePreviewView extends View {
     }
 
     /**
-     * 选区在屏幕坐标系下的外接矩形，用于放置浮动气泡与对角手柄。
+     * 选区在屏幕坐标系下的可见外接矩形，用于放置浮动气泡与对角手柄。
      *
-     * <p>采用"文档矩形直接线性映射 + 收敛到正文可见区"的做法：未冻结时与单元格
-     * 绘制完全重合；存在冻结窗格时，跨冻结边界的选区会被收敛到正文区内，
-     * 手柄因此落在可见边缘而不是滚出屏幕的真实边缘上——这正是手柄应处的交互位置。
-     * 冻结几何本身仍由 {@link #hitTestSheetCell} 精确处理，拖拽扩选的命中不受此简化影响。
+     * <p>按冻结边界把选区在 X/Y 两轴上分别拆成"冻结段"与"滚动段"后各自裁剪再求并集：
+     * <ul>
+     *   <li>表头下界按 {@code HEADER_WIDTH * scale} / {@code HEADER_HEIGHT * scale} 换算到屏幕像素，
+     *       防止高分屏或放大下手柄/气泡画进标头区；</li>
+     *   <li>落在冻结行/列内的选区在滚动后仍能贴合屏幕上的冻结位置，不会误判为滚出视口；</li>
+     *   <li>落在滚动区且已完全滑入冻结区遮挡下的选区返回 {@code null}，避免手柄漏到冻结区上。</li>
+     * </ul>
      */
     private RectF sheetSelectionScreenRect() {
         SheetLayout layout = sheetRenderer.layout;
-        if (layout == null || sheetSelection == null) return null;
+        float s = scale();
+        if (layout == null || sheetSelection == null || s <= 0f) return null;
         SheetSelectionModel.CellRect rect = SheetSelectionModel.docRect(layout, sheetSelection);
         if (rect == null || rect.isEmpty()) return null;
-        float headerWidth = SheetRenderer.HEADER_WIDTH, headerHeight = SheetRenderer.HEADER_HEIGHT;
-        float screenLeft = docToScreenX(rect.left);
-        float screenRight = docToScreenX(rect.right);
-        float screenTop = docToScreenY(rect.top);
-        float screenBottom = docToScreenY(rect.bottom);
-        // 选区整体滚出视口时不提供手柄几何
-        if (screenRight <= headerWidth || screenLeft >= getWidth()
-            || screenBottom <= headerHeight || screenTop >= getHeight()) return null;
-        return new RectF(Math.max(headerWidth, screenLeft), Math.max(headerHeight, screenTop),
-            Math.min(getWidth(), screenRight), Math.min(getHeight(), screenBottom));
+        SheetRenderer.FreezePlan plan = sheetFreezePlan();
+        int frozenCols = plan == null ? 0 : plan.effectiveColumns;
+        int frozenRows = plan == null ? 0 : plan.effectiveRows;
+        float frozenDocRight = SheetRenderer.HEADER_WIDTH + (plan == null ? 0f : plan.frozenDataWidth);
+        float frozenDocBottom = SheetRenderer.HEADER_HEIGHT + (plan == null ? 0f : plan.frozenDataHeight);
+        float[] spanX = computeSheetScreenSpan(sheetSelection.startColumn, sheetSelection.endColumn,
+            rect.left, rect.right, frozenCols, SheetRenderer.HEADER_WIDTH, frozenDocRight, offsetX, s, getWidth());
+        if (spanX == null) return null;
+        float[] spanY = computeSheetScreenSpan(sheetSelection.startRow, sheetSelection.endRow,
+            rect.top, rect.bottom, frozenRows, SheetRenderer.HEADER_HEIGHT, frozenDocBottom, offsetY, s, getHeight());
+        if (spanY == null) return null;
+        return new RectF(spanX[0], spanY[0], spanX[1], spanY[1]);
+    }
+
+    /**
+     * 计算单轴上选区（冻结段与滚动段）在屏幕可见区内的外接区间 {@code [min, max]}；
+     * 两段都不可见时返回 {@code null}。
+     */
+    static float[] computeSheetScreenSpan(int startIndex, int endIndex, float docStart, float docEnd,
+                                          int frozenCount, float headerDoc, float frozenDocEdge,
+                                          float scrollPx, float scale, float viewExtent) {
+        if (scale <= 0f || viewExtent <= 0f) return null;
+        float headerScreen = headerDoc * scale;
+        float frozenScreenEdge = Math.min(viewExtent, frozenDocEdge * scale);
+        float minOut = Float.MAX_VALUE;
+        float maxOut = -Float.MAX_VALUE;
+        if (frozenCount > 0 && startIndex < frozenCount) {
+            float segStart = docStart * scale;
+            float segEnd = Math.min(docEnd, frozenDocEdge) * scale;
+            float c0 = Math.max(headerScreen, segStart);
+            float c1 = Math.min(frozenScreenEdge, segEnd);
+            if (c1 > c0) {
+                minOut = Math.min(minOut, c0);
+                maxOut = Math.max(maxOut, c1);
+            }
+        }
+        if (endIndex >= frozenCount) {
+            float scrollClipMin = frozenCount > 0 ? Math.max(headerScreen, frozenScreenEdge) : headerScreen;
+            float segDocStart = frozenCount > 0 ? Math.max(docStart, frozenDocEdge) : docStart;
+            float segStart = segDocStart * scale - scrollPx;
+            float segEnd = docEnd * scale - scrollPx;
+            float c0 = Math.max(scrollClipMin, segStart);
+            float c1 = Math.min(viewExtent, segEnd);
+            if (c1 > c0) {
+                minOut = Math.min(minOut, c0);
+                maxOut = Math.max(maxOut, c1);
+            }
+        }
+        return maxOut > minOut ? new float[] {minOut, maxOut} : null;
     }
 
     /** 当前工作表；非 XLSX 或页码越界时返回 {@code null} */
