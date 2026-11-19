@@ -135,6 +135,7 @@ node scripts/tests/OhosGestureChecks.ts      # 手势与缩放数学
 node scripts/tests/TextSelectionChecks.ts    # 文本选区模型
 node scripts/tests/DocxWrapLayoutChecks.ts   # DOCX 折行
 node scripts/tests/PptxViewportChecks.ts     # PPTX 视口
+```
 
 ### 4.3 Android 构建与设备 Instrumentation 测试
 
