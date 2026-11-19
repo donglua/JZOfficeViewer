@@ -2533,6 +2533,26 @@ struct JZOfficeTests {
             clampToBounds: true
         ) == at(0, 0), "正文原点是首格")
 
+        // 拖拽入标头/左上方视口外时，clampToBounds=true 收敛到当前可见左/上缘
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 0, scrollDataY: 0,
+            viewX: SheetFixture.headerWidth - 12, viewY: SheetFixture.headerHeight + 5,
+            clampToBounds: true
+        ) == at(0, 0), "拖入行标头钳位后应落在列 0")
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 64, scrollDataY: 20,
+            viewX: SheetFixture.headerWidth - 10, viewY: SheetFixture.headerHeight - 10,
+            clampToBounds: true
+        ) == at(1, 1), "滚动后拖入标头钳位应落在左上可见格")
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 1, effFrozenCols: 1,
+            frozenDataW: 64, frozenDataH: 20, scrollDataX: 64, scrollDataY: 20,
+            viewX: SheetFixture.headerWidth - 10, viewY: SheetFixture.headerHeight - 10,
+            clampToBounds: true
+        ) == at(0, 0), "冻结角下拖入标头钳位应落在 (0, 0)")
+
         // NaN 触点直接拒绝，避免污染二分结果
         #expect(SheetSelectionModel.hitTest(
             layout: layout, effFrozenRows: 0, effFrozenCols: 0,

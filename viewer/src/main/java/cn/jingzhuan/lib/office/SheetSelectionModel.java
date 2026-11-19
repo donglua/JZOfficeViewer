@@ -307,10 +307,11 @@ public final class SheetSelectionModel {
         if (Float.isNaN(viewX) || Float.isNaN(viewY)) return null;
         float headerWidth = layout.columns.offsets[0];
         float headerHeight = layout.rows.offsets[0];
-        // 触点落在外围行列标头内：不产生单元格命中，交给标头自身的联动高亮处理
-        if (viewX < headerWidth || viewY < headerHeight) return null;
-        float bodyX = viewX - headerWidth;
-        float bodyY = viewY - headerHeight;
+        // 触点落在外围行列标头内：非钳位态不产生单元格命中；
+        // 钳位态（拖拽扩选 / 边缘自动滚动）把坐标收敛到正文左/上缘，保证向左上拖选不中断
+        if (!clampToBounds && (viewX < headerWidth || viewY < headerHeight)) return null;
+        float bodyX = (clampToBounds ? Math.max(headerWidth, viewX) : viewX) - headerWidth;
+        float bodyY = (clampToBounds ? Math.max(headerHeight, viewY) : viewY) - headerHeight;
 
         float totalWidth = dataExtent(layout.columns);
         float totalHeight = dataExtent(layout.rows);

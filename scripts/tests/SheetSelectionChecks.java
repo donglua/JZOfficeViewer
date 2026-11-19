@@ -514,6 +514,20 @@ public final class SheetSelectionChecks {
             0, 0, 0f, 0f, 0f, 0f, HEADER_WIDTH, HEADER_HEIGHT, true);
         check(origin != null && origin.row == 0 && origin.column == 0,
             "Clamp: body origin maps to the first cell");
+
+        // 拖拽入标头/左上方视口外时，clampToBounds=true 收敛到当前可见左/上缘（支持向左上拖选与边缘滚动）
+        SheetSelectionModel.CellCoord leftHeaderClamped = SheetSelectionModel.hitTest(layout,
+            0, 0, 0f, 0f, 0f, 0f, HEADER_WIDTH - 12f, HEADER_HEIGHT + 5f, true);
+        check(leftHeaderClamped != null && leftHeaderClamped.row == 0 && leftHeaderClamped.column == 0,
+            "Clamp: dragging into row header clamps column to 0");
+        SheetSelectionModel.CellCoord topHeaderScrolledClamped = SheetSelectionModel.hitTest(layout,
+            0, 0, 0f, 0f, 64f, 20f, HEADER_WIDTH - 10f, HEADER_HEIGHT - 10f, true);
+        check(topHeaderScrolledClamped != null && topHeaderScrolledClamped.row == 1 && topHeaderScrolledClamped.column == 1,
+            "Clamp: dragging into headers while scrolled clamps to top-left visible cell");
+        SheetSelectionModel.CellCoord frozenHeaderClamped = SheetSelectionModel.hitTest(layout,
+            1, 1, 64f, 20f, 64f, 20f, HEADER_WIDTH - 10f, HEADER_HEIGHT - 10f, true);
+        check(frozenHeaderClamped != null && frozenHeaderClamped.row == 0 && frozenHeaderClamped.column == 0,
+            "Clamp: dragging into headers with frozen corner clamps to (0, 0)");
     }
 
     // ------------------------------------------------------------------

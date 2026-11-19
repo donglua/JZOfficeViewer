@@ -2,10 +2,10 @@
  * XLSX 二维网格选区模型检查（node 直接执行，无需构建）：
  *   node scripts/tests/SheetSelectionChecks.ts
  *
- * 本文件是 `scripts/tests/SheetSelectionChecks.java`（106 条断言）的鸿蒙端镜像：
+ * 本文件是 `scripts/tests/SheetSelectionChecks.java`（111 条断言）的鸿蒙端镜像：
  * 用例顺序、测试夹具与期望字符串逐条一致，用于证明
  * `viewer-ohos/src/main/ets/render/SheetSelectionModel.ts` 与 Java 参考实现语义同构。
- * 期望输出：Sheet selection checks passed: 106
+ * 期望输出：Sheet selection checks passed: 111
  */
 import {
   allRange,
@@ -544,6 +544,14 @@ expectNullCoord(hitTest(clampLayout, 0, 0, 0, 0, 200, 200,
 expectCoord(hitTest(clampLayout, 0, 0, 0, 0, 0, 0,
   HEADER_WIDTH, HEADER_HEIGHT, true), 0, 0, '钳位：正文原点映射到首个单元格');
 
+// 拖拽入标头/左上方视口外时，clampToBounds=true 收敛到当前可见左/上缘（支持向左上拖选与边缘滚动）
+expectCoord(hitTest(clampLayout, 0, 0, 0, 0, 0, 0,
+  HEADER_WIDTH - 12, HEADER_HEIGHT + 5, true), 0, 0, '钳位：拖入行标头时列收敛到 0');
+expectCoord(hitTest(clampLayout, 0, 0, 0, 0, 64, 20,
+  HEADER_WIDTH - 10, HEADER_HEIGHT - 10, true), 1, 1, '钳位：滚动后拖入标头收敛到左上可见格');
+expectCoord(hitTest(clampLayout, 1, 1, 64, 20, 64, 20,
+  HEADER_WIDTH - 10, HEADER_HEIGHT - 10, true), 0, 0, '钳位：冻结角下拖入标头收敛到 (0, 0)');
+
 // ---------------------------------------------------------------------------
 // 13. allRangeRequiresText：空表返回 null；有文本时覆盖首个到末个可见单元格
 // ---------------------------------------------------------------------------
@@ -662,7 +670,7 @@ if (mergedDocRect !== null) {
 expectNullRect(mergeDocRect(mergedRectLayout, merge(0, 0, 9, 9)), '矩形：越界合并区域返回 null');
 
 // ---------------------------------------------------------------------------
-// 附加自检（不计入 106 条对齐断言）：构造器与判定辅助的一致性
+// 附加自检（不计入 111 条对齐断言）：构造器与判定辅助的一致性
 // ---------------------------------------------------------------------------
 // createSelection 的 min/max 规范化与 null 兜底必须与 Java 构造器逐条一致
 const normalised = createSelection(at(5, 7), null, 3, 4, 1, 2);
@@ -684,7 +692,7 @@ if (mergeAt(mergedRectSheet, 0, 1) === null || mergeAt(mergedRectSheet, 1, 0) !=
 }
 
 // ---------------------------------------------------------------------------
-// 接入点静态检查：确认视图层与父视图的选区接入完整（不改变上面的 106 条对齐断言计数）
+// 接入点静态检查：确认视图层与父视图的选区接入完整（不改变上面的 111 条对齐断言计数）
 // ---------------------------------------------------------------------------
 const modelSource = readFileSync(resolvePath(root, 'viewer-ohos/src/main/ets/render/SheetSelectionModel.ts'), 'utf8');
 const viewSource = readFileSync(resolvePath(root, 'viewer-ohos/src/main/ets/render/SpreadsheetView.ets'), 'utf8');

@@ -406,9 +406,10 @@ public enum SheetSelectionModel {
         if viewX.isNaN || viewY.isNaN { return nil }
         guard let headerWidth = layout.columns.offsets.first,
               let headerHeight = layout.rows.offsets.first else { return nil }
-        if viewX < headerWidth || viewY < headerHeight { return nil }
-        let bodyX = viewX - headerWidth
-        let bodyY = viewY - headerHeight
+        // 触点落在标头内：非钳位态不产生单元格命中；钳位态（拖拽扩选）收敛到正文左/上缘
+        if !clampToBounds && (viewX < headerWidth || viewY < headerHeight) { return nil }
+        let bodyX = (clampToBounds ? max(headerWidth, viewX) : viewX) - headerWidth
+        let bodyY = (clampToBounds ? max(headerHeight, viewY) : viewY) - headerHeight
 
         let totalWidth = dataExtent(layout.columns)
         let totalHeight = dataExtent(layout.rows)
