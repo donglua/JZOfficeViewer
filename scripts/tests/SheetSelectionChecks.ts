@@ -769,6 +769,12 @@ expectIntegration(/settlePinchScale\(\): void[\s\S]{0,300}this\.rescheduleBubble
   'Pinch 停稳后未重新定位气泡');
 expectIntegration(/stepFlingWithDt\(dt: number\): void[\s\S]{0,600}this\.rescheduleBubbleIfSelected\(\);/.test(viewSource),
   'Fling 停稳后未重新定位气泡');
+expectIntegration(/handleLongPress\(event: GestureEvent\): void[\s\S]{0,200}this\.selectionDragMode !== DRAG_NONE/.test(viewSource),
+  'handleLongPress 缺少拖拽态防重入守卫');
+expectIntegration(/LongPressGesture[\s\S]{0,400}this\.selectionDragMode === DRAG_LONG_PRESS/.test(viewSource),
+  'LongPressGesture 结束/取消时只应终止 DRAG_LONG_PRESS，不得打断手柄拖拽');
+expectIntegration(/GestureMode\.Exclusive/.test(viewSource),
+  'SpreadsheetView 单击与双击必须使用 GestureMode.Exclusive 互斥');
 
 // 父视图必须把 XLSX 的选区钩子转交出去
 expectIntegration(/registerControls: \(\s*selectSheet:[\s\S]{0,600}selection\?: SelectionControlHooks[\s\S]{0,400}this\.applySelectionHooks\(selection\);/

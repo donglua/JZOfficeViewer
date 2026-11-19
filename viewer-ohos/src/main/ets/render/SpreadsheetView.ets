@@ -83,8 +83,6 @@ const SELECTION_EDGE_SCROLL_MAX_STEP: number = 12;
 const SELECTION_EDGE_SCROLL_INTERVAL: number = 16;
 /** 浮动气泡延迟定位时长（ms）：手势停稳后延迟一拍，避免滚动/缩放过程中反复布局 */
 const BUBBLE_SETTLE_MS: number = 32;
-/** 拖选模式下发给命中测试的 Y 上移补偿（vp），抵消指腹对目标单元格的遮挡 */
-const SELECTION_TOUCH_LIFT: number = 12;
 
 /** 选区拖拽模式：0 无 / 1 左上角手柄 / 2 右下角手柄 / 3 长按拖选 */
 const DRAG_NONE: number = 0;
@@ -682,7 +680,8 @@ export struct SpreadsheetView {
    * 锚点固定为命中单元格，焦点随手指移动由 `applySelectionFocus` 更新。
    */
   private handleLongPress(event: GestureEvent): void {
-    if (!this.document) return;
+    // 正在拖拽手柄时不重新建选，防止按住手柄停顿 ≥400ms 后把选区折叠回单格
+    if (!this.document || this.selectionDragMode !== DRAG_NONE) return;
     const fingerList = event.fingerList;
     if (!fingerList || fingerList.length === 0) return;
     const screenX = fingerList[0].localX;
@@ -779,8 +778,8 @@ export struct SpreadsheetView {
     if (!anchor) return;
     const sheet = this.currentSheet();
     if (!sheet) return;
-    // 拖选时抬高触点，抵消指腹遮挡，让焦点落在用户真正指向的单元格
-    const focus = this.hitTestSheetCell(screenX, screenY - SELECTION_TOUCH_LIFT, true);
+    // 表格单元格远大于手指偏移，不做 Y 上移防遮挡（与 Android 对齐），避免第 0 行上部误入表头
+    const focus = this.hitTestSheetCell(screenX, screenY, true);
     if (!focus) return;
     const resolved = resolveSheetSelection(sheet, anchor, focus);
     if (!resolved) return;
@@ -2281,39 +2280,43 @@ export struct SpreadsheetView {
         .gesture(
           GestureGroup(
             GestureMode.Parallel,
-            // 单击：存在选区时清除（双击的第一下也会走到这里，并行组下不影响双击缩放）
-            TapGesture({ count: 1 })
-              .onAction((_event: GestureEvent) => {
-                this.handleSingleTap();
-              }),
+            // 双击缩放优先于单击清选，避免双击放大（1x -> 2x）第一下误清选区
+            GestureGroup(
+              GestureMode.Exclusive,
+              // 双击快速缩放：已放大则恢复 1.0x（同时清选区），否则放大为 2.0x
+              TapGesture({ count: 2, distanceThreshold: 3 })
+                .onAction((event: GestureEvent) => {
+                  this.stopFling();
+                  const focusX = event.fingerList && event.fingerList.length > 0
+                    ? event.fingerList[0].localX
+                    : (this.canvasWidth / 2);
+                  const focusY = event.fingerList && event.fingerList.length > 0
+                    ? event.fingerList[0].localY
+                    : (this.canvasHeight / 2);
+                  const reset = this.scaleVal > 1.1;
+                  // 复位到 1.0x 时表头回正，与改动前的落点一致
+                  this.startZoomTween(reset ? 1.0 : 2.0, focusX, focusY, ZOOM_TWEEN_MS, reset);
+                }),
+              // 单击：存在选区时清除并消费本次点击
+              TapGesture({ count: 1 })
+                .onAction((_event: GestureEvent) => {
+                  this.handleSingleTap();
+                })
+            ),
             // 长按 400ms 选格：之后不抬手即可拖动扩选（与 DOCX/PPTX 长按选词手感一致）
             LongPressGesture({ duration: SELECTION_LONG_PRESS_MS, repeat: false })
               .onAction((event: GestureEvent) => {
                 this.handleLongPress(event);
               })
               .onActionEnd(() => {
-                if (this.selectionDragMode !== DRAG_NONE) {
+                if (this.selectionDragMode === DRAG_LONG_PRESS) {
                   this.endSelectionDrag();
                 }
               })
               .onActionCancel(() => {
-                if (this.selectionDragMode !== DRAG_NONE) {
+                if (this.selectionDragMode === DRAG_LONG_PRESS) {
                   this.endSelectionDrag();
                 }
-              }),
-            // 双击快速缩放：已放大则恢复 1.0x，否则放大为 2.0x（完全对齐安卓端）
-            TapGesture({ count: 2, distanceThreshold: 3 })
-              .onAction((event: GestureEvent) => {
-                this.stopFling();
-                const focusX = event.fingerList && event.fingerList.length > 0
-                  ? event.fingerList[0].localX
-                  : (this.canvasWidth / 2);
-                const focusY = event.fingerList && event.fingerList.length > 0
-                  ? event.fingerList[0].localY
-                  : (this.canvasHeight / 2);
-                const reset = this.scaleVal > 1.1;
-                // 复位到 1.0x 时表头回正，与改动前的落点一致
-                this.startZoomTween(reset ? 1.0 : 2.0, focusX, focusY, ZOOM_TWEEN_MS, reset);
               }),
             // 双指缩放：以双指中心点为锚点动态补偿对齐，平滑不漂移
             PinchGesture({ fingers: 2 })
