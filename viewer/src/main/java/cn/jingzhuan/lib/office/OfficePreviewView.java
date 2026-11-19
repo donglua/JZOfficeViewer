@@ -1163,14 +1163,16 @@ public final class OfficePreviewView extends View {
     /**
      * 屏幕触点 → 工作表单元格坐标。
      *
-     * <p>模型层约定全部浮点入参为"视图数据坐标"（已除以缩放、含表头原点），
-     * 因此这里先把屏幕坐标换算成文档坐标，再交给
-     * {@link SheetSelectionModel#hitTest} 消解冻结偏移；超出表头或表格范围时按
-     * {@code clampToBounds} 决定返回 null 还是贴边（拖拽扩选需要贴边持续扩展）。
+     * <p>模型层约定 {@code viewX} / {@code viewY} 为不含滚动偏移的"视图数据坐标"
+     * （已除以缩放、以当前可见窗口左上角为原点），因此不能传已叠加 {@code offsetX}/{@code offsetY}
+     * 的 {@link #screenToDocX}/{@link #screenToDocY}，否则滚动后非冻结区会重复叠加滚动量，
+     * 冻结区与表头判定也会一起错位。
      */
     private SheetSelectionModel.CellCoord hitTestSheetCell(float screenX, float screenY, boolean clampToBounds) {
         SheetLayout layout = sheetRenderer.layout;
         if (layout == null) return null;
+        float s = scale();
+        if (s <= 0f) return null;
         SheetRenderer.FreezePlan plan = sheetFreezePlan();
         int frozenRows = plan == null ? 0 : plan.effectiveRows;
         int frozenColumns = plan == null ? 0 : plan.effectiveColumns;
@@ -1179,7 +1181,7 @@ public final class OfficePreviewView extends View {
         float scrollX = plan == null ? 0f : plan.scrollX;
         float scrollY = plan == null ? 0f : plan.scrollY;
         return SheetSelectionModel.hitTest(layout, frozenRows, frozenColumns, frozenW, frozenH,
-            scrollX, scrollY, screenToDocX(screenX), screenToDocY(screenY), clampToBounds);
+            scrollX, scrollY, screenX / s, screenY / s, clampToBounds);
     }
 
     /** 把当前工作表选区同步给渲染层（行列标头联动高亮的唯一数据来源） */
