@@ -1945,7 +1945,8 @@ public enum CGElementDrawer {
         sheet: OfficeSheet,
         styles: [OfficeCellStyle],
         viewport: CGRect,
-        selection: SheetSelectionModel.SheetSelection? = nil
+        selection: SheetSelectionModel.SheetSelection? = nil,
+        zoom: CGFloat = 1.0
     ) {
         let (colOffsets, rowOffsets, totalW, totalH) = computeSheetExtents(sheet)
         let rowCount = sheet.rowHeights.count
@@ -2021,7 +2022,8 @@ public enum CGElementDrawer {
             selection: selection,
             plan: plan,
             rowCount: rowCount,
-            columnCount: columnCount
+            columnCount: columnCount,
+            zoom: zoom
         )
     }
 
@@ -2041,7 +2043,8 @@ public enum CGElementDrawer {
         selection: SheetSelectionModel.SheetSelection?,
         plan: SheetFreezePlan,
         rowCount: Int,
-        columnCount: Int
+        columnCount: Int,
+        zoom: CGFloat
     ) {
         guard let selection,
               let cellRect = SheetSelectionModel.docRect(layout: layout, selection: selection) else { return }
@@ -2054,6 +2057,7 @@ public enum CGElementDrawer {
         guard rect.width > 0, rect.height > 0 else { return }
         let fillColor = argbToCGColor(SHEET_SELECTION_FILL)
         let strokeColor = argbToCGColor(SHEET_SELECTION_STROKE)
+        let lineWidth = SHEET_SELECTION_LINE_WIDTH / max(0.1, zoom)
         // 按象限切分：与检索高亮复用同一套裁剪结果，滚动区选区绝不覆盖冻结区
         for piece in clipSheetHighlight(rect, plan: plan, rowCount: rowCount, columnCount: columnCount) {
             ctx.saveGState()
@@ -2063,9 +2067,9 @@ public enum CGElementDrawer {
                 ctx.fill(piece.rect)
             }
             if let strokeColor {
-                // 描边宽度固定 1.5pt（设计文档 §3.2.1），不随缩放变化
+                // 画布外层已按 zoom 缩放，这里除以 zoom 保持 1.5pt 固定物理观感（设计文档 §3.2.1）
                 ctx.setStrokeColor(strokeColor)
-                ctx.setLineWidth(SHEET_SELECTION_LINE_WIDTH)
+                ctx.setLineWidth(lineWidth)
                 ctx.stroke(piece.rect)
             }
             ctx.restoreGState()

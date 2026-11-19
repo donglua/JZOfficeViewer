@@ -962,7 +962,8 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        guard let layout = ensureTextLayout() else { return }
+        // XLSX 不参与自由划词，避免构建空的文本索引
+        guard document?.kind != .xlsx, let layout = ensureTextLayout() else { return }
         for block in layout.blocks {
             let viewRect = CGRect(
                 x: block.bounds.minX * zoom,
@@ -1055,7 +1056,8 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 sheet: sheet,
                 styles: doc.cellStyles,
                 viewport: docVisible,
-                selection: sheetSelection
+                selection: sheetSelection,
+                zoom: safeZoom
             )
             xlsxFreezePlan = CGElementDrawer.sheetFreezePlan(sheet: sheet, viewport: docVisible)
         }
@@ -1364,8 +1366,9 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         // XLSX 只做单元格点选，不构建文本索引（表格不参与自由划词）；
         // 点在标头或表格外时回落系统行为，同时清掉旧选区
         if document?.kind == .xlsx {
-            _ = handleSheetMouseDown(with: event)
-            super.mouseDown(with: event)
+            if !handleSheetMouseDown(with: event) {
+                super.mouseDown(with: event)
+            }
             return
         }
         let docPoint = documentPoint(for: event)

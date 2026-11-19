@@ -2862,12 +2862,57 @@ struct JZOfficeTests {
         #expect(view.sheetCell(atViewPoint: CGPoint(x: 20, y: 23), docVisible: unrolled, clampToBounds: false) == nil)
         #expect(view.sheetCell(atViewPoint: CGPoint(x: 43, y: 10), docVisible: unrolled, clampToBounds: false) == nil)
 
-        // 滚动 (128,40)：可见窗口原点即滚动量，屏幕点 (171,63) 减去原点得模型坐标 (43,23)，
-        // 叠加滚动量后落在 C3 —— 证明「减 docVisible.origin」与抽屉的 scrollX 语义一致
+        // 滚动 (128,40)：可见窗口原点即滚动量，视图点 (171,63) 减去原点得模型坐标 (43,23)，
+        // 叠加滚动量后落在 C3；作为对照，在未滚动窗口中同一视口相对点 (43,23) 对应 A1
         let scrolled = CGRect(x: 128, y: 40, width: 400, height: 300)
         #expect(view.sheetCell(atViewPoint: CGPoint(x: 171, y: 63), docVisible: scrolled, clampToBounds: false) == at(2, 2))
-        // 同一屏幕点在不滚动窗口中对应 A1，说明滚动量确实被消解掉了
-        #expect(view.sheetCell(atViewPoint: CGPoint(x: 171, y: 63), docVisible: unrolled, clampToBounds: false) == at(2, 2))
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 43, y: 23), docVisible: unrolled, clampToBounds: false) == at(0, 0))
+
+        // 冻结窗格端到端命中：冻结 1 行 1 列并在缩放 2 倍、滚动 (128,40) 下校验四象限
+        let frozenDoc = try JSONDecoder().decode(OfficeDocument.self, from: """
+        {
+            "schemaVersion": 9,
+            "kind": "XLSX",
+            "sheets": [
+                {
+                    "name": "Frozen",
+                    "rowHeights": [20, 20, 20, 20, 20],
+                    "columnWidths": [64, 64, 64, 64, 64],
+                    "frozenRows": 1,
+                    "frozenColumns": 1,
+                    "cells": [],
+                    "merges": []
+                }
+            ],
+            "cellStyles": []
+        }
+        """.data(using: .utf8)!)
+        let frozenView = OfficeDocumentNSView()
+        frozenView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        frozenView.setDocument(frozenDoc)
+        frozenView.currentPage = 1
+        frozenView.zoom = 2
+        let frozenScrolled = CGRect(x: 128, y: 40, width: 400, height: 300)
+        // 交叉角（视图相对坐标落在表头之后、冻结区之内）：(128+50)*2, (40+30)*2 → (0,0)
+        #expect(frozenView.sheetCell(
+            atViewPoint: CGPoint(x: (128 + 50) * 2, y: (40 + 30) * 2),
+            docVisible: frozenScrolled, clampToBounds: false
+        ) == at(0, 0))
+        // 冻结列 + 滚动行：(128+50)*2, (40+22+20+5)*2 → 列 0, 行 (25+40)/20 = 3
+        #expect(frozenView.sheetCell(
+            atViewPoint: CGPoint(x: (128 + 50) * 2, y: (40 + 47) * 2),
+            docVisible: frozenScrolled, clampToBounds: false
+        ) == at(3, 0))
+        // 冻结行 + 滚动列：(128+42+64+10)*2, (40+30)*2 → 行 0, 列 (74+128)/64 = 3
+        #expect(frozenView.sheetCell(
+            atViewPoint: CGPoint(x: (128 + 116) * 2, y: (40 + 30) * 2),
+            docVisible: frozenScrolled, clampToBounds: false
+        ) == at(0, 3))
+        // 拖拽入标头时 clampToBounds=true 收敛到冻结交叉角 (0, 0)
+        #expect(frozenView.sheetCell(
+            atViewPoint: CGPoint(x: (128 + 10) * 2, y: (40 + 5) * 2),
+            docVisible: frozenScrolled, clampToBounds: true
+        ) == at(0, 0))
 
         // 缩放 2：屏幕点翻倍后换算结果不变
         view.zoom = 2
