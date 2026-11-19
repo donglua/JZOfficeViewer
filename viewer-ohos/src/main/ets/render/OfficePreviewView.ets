@@ -373,8 +373,12 @@ function docxGroupFloatTextParts(group: DocxWrapGroup): string[] {
 }
 
 /**
- * 选区控制钩子集合：子视图（DocxFlowView / PptxSlidesView）在 aboutToAppear 时回填，
- * 由 OfficePreviewView 转交给 OfficePreviewActions / OfficePreviewController。
+ * 选区控制钩子集合：子视图（DocxFlowView / PptxSlidesView / SpreadsheetView）在
+ * aboutToAppear 时回填，由 OfficePreviewView 转交给 OfficePreviewActions / OfficePreviewController。
+ *
+ * <p>SpreadsheetView 内另有一份字段完全相同的声明，原因是本文件必须
+ * `import { SpreadsheetView }` 才能渲染它，反向导入本文件的类型会形成模块环；
+ * TypeScript 结构类型让两份声明可以直接互相赋值，无需断言。
  */
 export interface SelectionControlHooks {
   selectAll: () => boolean;
@@ -422,13 +426,19 @@ export interface OfficePreviewActions {
   hideSearchBar: () => void;
   isSearchBarVisible: () => boolean;
   // MARK: 文本选区控制（对齐 Android OfficePreviewView 的公开 API）
-  /** 全选正文；无选区能力（XLSX 或无可选文本）返回 false */
+  /**
+   * 全选正文：DOCX/PPTX 选中全部可选文本，XLSX 选中整表可见数据区（输出为 TSV）。
+   * 无可选内容（空文档、全空工作表）或子视图未注册选区能力时返回 false。
+   */
   selectAll: () => boolean;
   /** 清空选区并隐藏手柄与浮动气泡 */
   clearSelection: () => void;
   /** 当前是否存在非空选区 */
   hasSelection: () => boolean;
-  /** 当前选中的纯文本（跨块以 \n 连接），无选区返回空串 */
+  /**
+   * 当前选中的纯文本。DOCX/PPTX 跨块以 `\n` 连接；XLSX 为 TSV
+   * （同行 `\t`、跨行 `\n`，隐藏行列跳过、合并从属位置留空）。无选区返回空串。
+   */
   getSelectedText: () => string;
   /** 将选中文本写入系统剪贴板，无选区返回 false */
   copySelection: () => boolean;
@@ -579,7 +589,10 @@ export class OfficePreviewController {
     return this.actions ? this.actions.isSearchBarVisible() : false;
   }
 
-  /** 全选正文（DOCX/PPTX）；无可选文本或当前为 XLSX 时返回 false */
+  /**
+   * 全选正文：DOCX/PPTX 选中全部可选文本，XLSX 选中整表可见数据区。
+   * 无可选内容（空文档、全空工作表）或预览尚未绑定时返回 false。
+   */
   public selectAll(): boolean {
     return this.actions ? this.actions.selectAll() : false;
   }
@@ -594,7 +607,10 @@ export class OfficePreviewController {
     return this.actions ? this.actions.hasSelection() : false;
   }
 
-  /** 当前选中的纯文本，跨段落/跨块以换行符连接；无选区返回空串 */
+  /**
+   * 当前选中的纯文本。DOCX/PPTX 跨段落/跨块以换行符连接；
+   * XLSX 为 TSV（同行制表符、跨行换行符）。无选区返回空串。
+   */
   public getSelectedText(): string {
     return this.actions ? this.actions.getSelectedText() : '';
   }
@@ -632,7 +648,8 @@ export struct OfficePreviewView {
   private childJumpToPage: ((pageNumber: number) => void) | null = null;
   private childSelectSheet: ((sheetNumber: number) => void) | null = null;
   private childScrollToMatch: ((match: model.SearchMatch) => void) | null = null;
-  // 选区控制委派给当前格式的子视图（DOCX/PPTX）；XLSX 不注册，相关 API 返回 false
+  // 选区控制委派给当前格式的子视图（DOCX / PPTX / XLSX 都会注册）；
+  // 子视图未注册时（如加载失败、尚未挂载）相关 API 返回 false / 空串
   private childSelectAll: (() => boolean) | null = null;
   private childClearSelection: (() => void) | null = null;
   private childHasSelection: (() => boolean) | null = null;
@@ -985,12 +1002,14 @@ export struct OfficePreviewView {
               selectSheet: (sheetNumber: number) => void,
               getZoom: () => number,
               setZoom: (value: number) => void,
-              scrollToMatch?: (match: model.SearchMatch) => void
+              scrollToMatch?: (match: model.SearchMatch) => void,
+              selection?: SelectionControlHooks
             ): void => {
               this.childSelectSheet = selectSheet;
               this.childGetZoom = getZoom;
               this.childSetZoom = setZoom;
               this.childScrollToMatch = scrollToMatch ?? null;
+              this.applySelectionHooks(selection);
             }
           })
             .id(`doc-${this.docRevision}-${this.rawDocument?.kind ?? ''}`)

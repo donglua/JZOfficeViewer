@@ -15,6 +15,53 @@ import {
   resolveQuadrantMergeBounds,
   resolveScrollToTarget
 } from './SheetFreeze';
+import {
+  CellCoord,
+  CellRect,
+  HEADER_SELECTED_COLOR,
+  HEADER_SELECTED_TEXT_COLOR,
+  SELECTION_FILL_COLOR,
+  SELECTION_HANDLE_RADIUS,
+  SELECTION_HANDLE_STROKE_WIDTH,
+  SELECTION_HANDLE_TOUCH_RADIUS,
+  SELECTION_STROKE_COLOR,
+  SELECTION_STROKE_WIDTH,
+  SelectionAxis,
+  SelectionLayout,
+  SheetSelection,
+  allRange,
+  createCoord,
+  docRect,
+  hitTest,
+  resolve as resolveSheetSelection,
+  selectedText,
+  selectionContainsColumn,
+  selectionContainsRow,
+  selectionEquals
+} from './SheetSelectionModel';
+import { SelectionMenuBubble, copyTextToPasteboard } from './SelectionMenuBubble';
+
+/**
+ * 选区控制钩子集合（表格视图侧）。
+ *
+ * <p>为什么在这里再声明一份、而不是从 `OfficePreviewView.ets` 导入规范定义：
+ * `OfficePreviewView.ets` 必须 `import { SpreadsheetView }` 才能渲染本组件，
+ * 本文件若反向导入它的类型就构成模块环；跨 `.ets` 的类型环解析在 ArkTS 下不做保证
+ * （本仓库已因同类风险在 `translateLineMetrics` 处显式回避 `instanceof`）。
+ * 而 `viewer-ohos/Index.ets` 又把 `SelectionControlHooks` 这个公开名字固定在
+ * `OfficePreviewView` 导出上，因此无法把唯一定义搬到本文件，只能在两侧各留一份。
+ *
+ * <p>两份声明字段完全一致，TypeScript 的结构类型让父视图构造的对象可以直接传入
+ * `registerControls` 的第 5 个参数，无需类型断言。本副本刻意不 `export`：
+ * 对外只暴露 `OfficePreviewView` 那一份，避免同名类型出现两条公开导入路径。
+ */
+interface SelectionControlHooks {
+  selectAll: () => boolean;
+  clearSelection: () => void;
+  hasSelection: () => boolean;
+  getSelectedText: () => string;
+  copySelection: () => boolean;
+}
 
 const HEADER_WIDTH = 42;
 const HEADER_HEIGHT = 22;
@@ -25,6 +72,24 @@ const HEADER_TEXT = '#52606d';
 const ZOOM_TWEEN_MS = RenderUtils.ZOOM_ANIMATION_MS;
 /** 表格缩放下限，与 Android 电子表格分支一致 */
 const MIN_SCALE = 0.5;
+/** 长按选格触发时长（ms）：与 DOCX/PPTX 长按选词一致，短于系统默认 500ms 以贴合拖选手感 */
+const SELECTION_LONG_PRESS_MS: number = 400;
+/** 拖选期间边缘自动滚动热区（vp） */
+const SELECTION_EDGE_SCROLL_ZONE: number = 36;
+/** 边缘自动滚动单帧最大步长（vp） */
+const SELECTION_EDGE_SCROLL_MAX_STEP: number = 12;
+/** 边缘自动滚动步进间隔（ms） */
+const SELECTION_EDGE_SCROLL_INTERVAL: number = 16;
+/** 浮动气泡延迟定位时长（ms）：手势停稳后延迟一拍，避免滚动/缩放过程中反复布局 */
+const BUBBLE_SETTLE_MS: number = 32;
+/** 拖选模式下发给命中测试的 Y 上移补偿（vp），抵消指腹对目标单元格的遮挡 */
+const SELECTION_TOUCH_LIFT: number = 12;
+
+/** 选区拖拽模式：0 无 / 1 左上角手柄 / 2 右下角手柄 / 3 长按拖选 */
+const DRAG_NONE: number = 0;
+const DRAG_HANDLE_START: number = 1;
+const DRAG_HANDLE_END: number = 2;
+const DRAG_LONG_PRESS: number = 3;
 
 /**
  * 预计算 0..255 列标字母，彻底消除表头绘制时的高频字符串循环拼接
@@ -271,11 +336,20 @@ export struct SpreadsheetView {
   @Prop @Watch('onSearchChanged') searchMatches: model.SearchMatch[] = [];
   @Prop @Watch('onSearchChanged') currentMatchIndex: number = -1;
   onSheetChange?: (sheetNumber: number, sheetCount: number) => void;
+  /**
+   * 回填控制回调给父视图。
+   *
+   * <p>第 5 个参数 `selection` 为本组件新增的选区钩子：父视图（OfficePreviewView）把它
+   * 转发给 `OfficePreviewController`，使 `selectAll` / `clearSelection` / `hasSelection` /
+   * `getSelectedText` / `copySelection` 在 XLSX 下与 DOCX / PPTX 行为一致。
+   * 追加为可选尾参以保持既有 4 参调用点的兼容。
+   */
   registerControls?: (
     selectSheet: (sheetNumber: number) => void,
     getZoom: () => number,
     setZoom: (value: number) => void,
-    scrollToMatch?: (match: model.SearchMatch) => void
+    scrollToMatch?: (match: model.SearchMatch) => void,
+    selection?: SelectionControlHooks
   ) => void;
   @State currentSheetIndex: number = 0;
 
@@ -299,6 +373,39 @@ export struct SpreadsheetView {
   private pinchStartOffsetY: number = 0;
   private pinchFocusX: number = 0;
   private pinchFocusY: number = 0;
+
+  // MARK: - XLSX 选区状态
+
+  /** 当前选区（null 表示无选区）；变化即触发重绘，行列标头联动高亮共享同一份数据 */
+  private selection: SheetSelection | null = null;
+  /** 拖拽锚点：长按选格时固定为命中单元格，手柄拖拽时固定为选区另一端 */
+  private dragAnchor: CellCoord | null = null;
+  /** 拖拽模式，取值见 DRAG_* 常量 */
+  private selectionDragMode: number = 0;
+  /** 拖拽期间屏蔽 PanGesture 的平移分支，防止画布在拖选时抢走手指 */
+  @State private isSelectionDragging: boolean = false;
+  /** 最近一次触点（屏幕 vp），边缘自动滚动每帧据此重算焦点 */
+  private lastTouchX: number = 0;
+  private lastTouchY: number = 0;
+  /**
+   * 本次触摸是否已由长按/手柄拖拽接管。
+   *
+   * <p>GestureGroup 是 Parallel 模式，各个手势独立识别：长按建立选区后抬手，
+   * 并行的 TapGesture 仍会照常触发，若不加这道闸门就会在建立选区的同一帧把它清掉。
+   * 每次 Down 复位，长按或手柄接管时置位。
+   */
+  private touchConsumedBySelection: boolean = false;
+  /** 边缘自动滚动状态 */
+  private edgeScrollTimer: number = -1;
+  private edgeScrollDirectionX: number = 0;
+  private edgeScrollDirectionY: number = 0;
+  /** 浮动气泡状态：仅在手势停稳后展示，位置为选区包围框（屏幕 vp） */
+  @State private bubbleShown: boolean = false;
+  @State private bubbleAnchorX: number = 0;
+  @State private bubbleAnchorY: number = 0;
+  @State private bubbleBottomY: number = 0;
+  @State private bubbleShowSelectAll: boolean = true;
+  private bubbleTimer: number = -1;
 
   // 惯性滑动 (Fling) 物理仿真状态与硬件 VSync
   private flingTimer: number = -1;
@@ -374,9 +481,22 @@ export struct SpreadsheetView {
         },
         (match: model.SearchMatch): void => {
           this.scrollToMatch(match);
-        }
+        },
+        this.buildSelectionHooks()
       );
     }
+  }
+
+  /** 组装选区控制钩子，交给 OfficePreviewView 转交 OfficePreviewController */
+  private buildSelectionHooks(): SelectionControlHooks {
+    const hooks: SelectionControlHooks = {
+      selectAll: (): boolean => this.selectAll(),
+      clearSelection: (): void => this.clearSelection(),
+      hasSelection: (): boolean => this.hasSelection(),
+      getSelectedText: (): string => this.getSelectedText(),
+      copySelection: (): boolean => this.copySelection()
+    };
+    return hooks;
   }
 
   public scrollToMatch(match: model.SearchMatch): void {
@@ -457,10 +577,508 @@ export struct SpreadsheetView {
     return this.resolveCellDocRect(r, c, layout);
   }
 
+  // MARK: - XLSX 选区：布局适配
+
+  /**
+   * 把 `SheetLayoutData` 包装成纯模型所需的 `SelectionLayout`。
+   *
+   * <p>两者唯一的差异是坐标系原点：`SheetLayoutData` 的前缀和以数据区左上角为 0，
+   * 而模型约定 `offsets[0]` = 外围标头 gutter（对齐 Android `SheetLayout`）。
+   * 因此这里补上 HEADER_WIDTH / HEADER_HEIGHT 偏移，其余（可见索引、rowStarts、
+   * 合并区域行列号）完全共享，不复制任何大数组，也不会因两份几何不一致而错位。
+   */
+  private selectionLayoutOf(layout: SheetLayoutData): SelectionLayout {
+    const rowOffsets: number[] = [];
+    for (let i = 0; i < layout.rows.offsets.length; i++) {
+      rowOffsets.push(layout.rows.offsets[i] + HEADER_HEIGHT);
+    }
+    const columnOffsets: number[] = [];
+    for (let i = 0; i < layout.columns.offsets.length; i++) {
+      columnOffsets.push(layout.columns.offsets[i] + HEADER_WIDTH);
+    }
+    const rows: SelectionAxis = { offsets: rowOffsets, visible: layout.rows.visible };
+    const columns: SelectionAxis = { offsets: columnOffsets, visible: layout.columns.visible };
+    return { rows: rows, columns: columns, rowStarts: layout.rowStarts };
+  }
+
+  /** 当前工作表（越界或未加载时返回 null） */
+  private currentSheet(): model.Sheet | null {
+    const sheets = this.document?.sheets;
+    if (!sheets || sheets.length === 0) return null;
+    const idx = Math.min(Math.max(0, this.currentSheetIndex), sheets.length - 1);
+    return sheets[idx];
+  }
+
+  // MARK: - XLSX 选区：坐标换算与命中
+
+  /**
+   * 屏幕触点 → 单元格坐标，按冻结边界消解滚动偏移。
+   *
+   * <p>`clampToBounds` 为 true 时越界会贴到表格边缘，供拖拽扩选持续扩展；
+   * 长按选格用 false，避免在表头或表格空白处误建立选区。
+   */
+  private hitTestSheetCell(screenX: number, screenY: number, clampToBounds: boolean): CellCoord | null {
+    const sheet = this.currentSheet();
+    if (!sheet) return null;
+    const layout = this.ensureSheetLayout(sheet);
+    const frozen = this.resolveFrameFrozen(sheet, layout, this.scaleVal, this.canvasWidth, this.canvasHeight);
+    const s = this.scaleVal > 0 ? this.scaleVal : 1;
+
+    // 模型入参统一是「视图数据坐标」：以表头右/下边缘为原点、1 单位 = 1 个文档单位。
+    // 表头是固定 42/22vp 不随缩放变化，正文单元才随缩放变化，因此这里只能把
+    // 「表头之后的那段屏幕距离」除以缩放，绝不能把整个 screenX 直接除（那会把
+    // 表头宽度也当成会缩放，s != 1 时选区整体偏移 HEADER_WIDTH*(1/s - 1)）。
+    const viewX = HEADER_WIDTH + (screenX - HEADER_WIDTH) / s;
+    const viewY = HEADER_HEIGHT + (screenY - HEADER_HEIGHT) / s;
+
+    // 冻结区尺寸（文档单位，未乘缩放）与滚动量（屏幕偏移取负后除以缩放）同量纲
+    const frozenDataW = frozen.effFrozenCols > 0
+      ? (layout.columns.offsets[frozen.effFrozenCols] ?? 0) : 0;
+    const frozenDataH = frozen.effFrozenRows > 0
+      ? (layout.rows.offsets[frozen.effFrozenRows] ?? 0) : 0;
+    const scrollDataX = -this.offsetX / s;
+    const scrollDataY = -this.offsetY / s;
+
+    return hitTest(this.selectionLayoutOf(layout), frozen.effFrozenRows, frozen.effFrozenCols,
+      frozenDataW, frozenDataH, scrollDataX, scrollDataY, viewX, viewY, clampToBounds);
+  }
+
+  // MARK: - XLSX 选区：状态变更
+
+  /** 更新选区并按需同步气泡与重绘 */
+  private applySelection(next: SheetSelection | null): void {
+    this.selection = next;
+    if (next === null) {
+      this.bubbleShown = false;
+      this.cancelBubbleTimer();
+    }
+    this.redraw();
+  }
+
+  /** 清空选区、拖拽状态与气泡（切表、重新加载、双击缩放复位共用） */
+  private resetSelection(showRedraw: boolean = true): void {
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.selectionDragMode = DRAG_NONE;
+    if (this.isSelectionDragging) {
+      this.isSelectionDragging = false;
+    }
+    this.dragAnchor = null;
+    this.bubbleShown = false;
+    this.selection = null;
+    if (showRedraw) {
+      this.redraw();
+    }
+  }
+
+  // MARK: - XLSX 选区：手势入口
+
+  /**
+   * 长按选格：把触点命中的单元格设为锚点与焦点，并进入不抬手即可扩选的状态。
+   *
+   * <p>与 DOCX/PPTX 的自由划词一致，长按后直接进入 `DRAG_LONG_PRESS`，
+   * 锚点固定为命中单元格，焦点随手指移动由 `applySelectionFocus` 更新。
+   */
+  private handleLongPress(event: GestureEvent): void {
+    if (!this.document) return;
+    const fingerList = event.fingerList;
+    if (!fingerList || fingerList.length === 0) return;
+    const screenX = fingerList[0].localX;
+    const screenY = fingerList[0].localY;
+    this.lastTouchX = screenX;
+    this.lastTouchY = screenY;
+    const hit = this.hitTestSheetCell(screenX, screenY, false);
+    if (!hit) return;
+    const sheet = this.currentSheet();
+    if (!sheet) return;
+    const resolved = resolveSheetSelection(sheet, hit, hit);
+    if (!resolved) return;
+    this.stopFling();
+    this.stopZoomTween();
+    this.cancelBubbleTimer();
+    this.bubbleShown = false;
+    this.selectionDragMode = DRAG_LONG_PRESS;
+    this.touchConsumedBySelection = true;
+    if (!this.isSelectionDragging) {
+      this.isSelectionDragging = true;
+    }
+    this.dragAnchor = hit;
+    this.applySelection(resolved);
+  }
+
+  /**
+   * 单击：存在选区时清除并消费本次点击。
+   *
+   * <p>长按建选与手柄拖拽之后的抬手不算「单击」，由 `touchConsumedBySelection` 拦下，
+   * 否则并行手势下刚建立的选区会被同一次抬手的 Tap 立即清空。
+   */
+  private handleSingleTap(): void {
+    if (this.touchConsumedBySelection) {
+      this.touchConsumedBySelection = false;
+      return;
+    }
+    if (this.hasSelection()) {
+      this.clearSelection();
+    }
+  }
+
+  /**
+   * 触摸事件总入口：接管选区拖拽的按下/移动/抬起。
+   *
+   * <p>为什么用 `onTouch` 而不是把扩展逻辑挂在 `PanGesture` 上：`PanGesture` 需要移动超过
+   * 识别距离才回调 `onActionStart`，而选区扩选必须在**手指按下那一刻**就能判定手柄命中，
+   * 并且长按后不抬手直接拖动就要生效（Android 侧的 TOUCH_LONG_PRESS_DRAG 同款语义）。
+   * 用 `onTouch` 可以在 Down 阶段命中手柄、在 Move 阶段持续更新焦点，且与并行的
+   * Pan/Pinch/Tap 手势互不抢占——拖拽期间通过 `isSelectionDragging` 让 Pan 分支让步。
+   */
+  private handleSheetTouch(event: TouchEvent): void {
+    const touches = event.touches;
+    // 抬手/取消时 touches 为空，必须先把进行中的拖拽收尾，再返回
+    if (!touches || touches.length === 0) {
+      if (this.selectionDragMode !== DRAG_NONE) {
+        this.endSelectionDrag();
+      }
+      return;
+    }
+    const touch = touches[0];
+    const x = touch.x;
+    const y = touch.y;
+    if (event.type === TouchType.Down) {
+      this.lastTouchX = x;
+      this.lastTouchY = y;
+      this.touchConsumedBySelection = false;
+      // 按下即命中对角手柄：命中则接管，后续 Move 走扩选而不是平移
+      if (this.beginHandleDrag(x, y)) {
+        this.touchConsumedBySelection = true;
+      }
+      return;
+    }
+    if (event.type === TouchType.Move) {
+      if (this.selectionDragMode === DRAG_NONE) return;
+      this.lastTouchX = x;
+      this.lastTouchY = y;
+      this.applySelectionFocus(x, y);
+      this.updateEdgeScroll(x, y);
+      return;
+    }
+    if (this.selectionDragMode !== DRAG_NONE) {
+      this.endSelectionDrag();
+    }
+  }
+
+  /**
+   * 把触点映射为新的焦点单元格并刷新选区。
+   *
+   * <p>锚点始终固定为 `dragAnchor`，焦点可越过锚点，由 `resolveSheetSelection`（模型 `resolve`）给出规范化闭区间
+   * 并自动并入相交的合并区域（设计文档 §3.1.1 的不动点闭包）。
+   */
+  private applySelectionFocus(screenX: number, screenY: number): void {
+    const anchor = this.dragAnchor;
+    if (!anchor) return;
+    const sheet = this.currentSheet();
+    if (!sheet) return;
+    // 拖选时抬高触点，抵消指腹遮挡，让焦点落在用户真正指向的单元格
+    const focus = this.hitTestSheetCell(screenX, screenY - SELECTION_TOUCH_LIFT, true);
+    if (!focus) return;
+    const resolved = resolveSheetSelection(sheet, anchor, focus);
+    if (!resolved) return;
+    this.selection = resolved;
+    this.redraw();
+  }
+
+  /**
+   * 命中左上/右下角手柄时接管本次触摸，返回是否已接管。
+   *
+   * <p>手柄重叠时优先右下角（与 Android `beginSheetHandleDrag` 一致）：
+   * 拖起始手柄时锚点固定在选区右下角，拖结束手柄时锚点固定在左上角。
+   */
+  private beginHandleDrag(screenX: number, screenY: number): boolean {
+    const rect = this.selectionScreenRect();
+    if (!rect) return false;
+    const selection = this.selection;
+    if (!selection) return false;
+    const onEnd = this.hitSelectionHandle(screenX, screenY, rect.right, rect.bottom);
+    const onStart = this.hitSelectionHandle(screenX, screenY, rect.left, rect.top);
+    if (!onStart && !onEnd) return false;
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.bubbleShown = false;
+    this.selectionDragMode = onEnd ? DRAG_HANDLE_END : DRAG_HANDLE_START;
+    if (!this.isSelectionDragging) {
+      this.isSelectionDragging = true;
+    }
+    this.dragAnchor = onEnd
+      ? createCoord(selection.startRow, selection.startColumn)
+      : createCoord(selection.endRow, selection.endColumn);
+    this.lastTouchX = screenX;
+    this.lastTouchY = screenY;
+    return true;
+  }
+
+  /** 触点是否落在手柄热区内（圆形热区，半径 SELECTION_HANDLE_TOUCH_RADIUS） */
+  private hitSelectionHandle(screenX: number, screenY: number, handleX: number, handleY: number): boolean {
+    const dx = screenX - handleX;
+    const dy = screenY - handleY;
+    return Math.sqrt(dx * dx + dy * dy) <= SELECTION_HANDLE_TOUCH_RADIUS;
+  }
+
+  /** 结束一次选区拖拽：恢复平移手势，非空选区在下一拍重新定位气泡 */
+  private endSelectionDrag(): void {
+    this.selectionDragMode = DRAG_NONE;
+    this.stopEdgeScroll();
+    if (this.isSelectionDragging) {
+      this.isSelectionDragging = false;
+    }
+    this.dragAnchor = null;
+    this.redraw();
+    if (this.hasSelection()) {
+      this.scheduleBubble();
+    } else {
+      this.bubbleShown = false;
+    }
+  }
+
+  // MARK: - XLSX 选区：屏幕几何
+
+  /**
+   * 选区在屏幕坐标系下的外接矩形，用于放置浮动气泡与对角手柄。
+   *
+   * <p>采用「文档矩形线性映射 + 收敛到正文可见区」的做法，与 Android
+   * `sheetSelectionScreenRect` 一致：未冻结时与单元格绘制完全重合；存在冻结窗格时，
+   * 跨冻结边界的选区会收敛到正文区内，手柄因此落在可见边缘而不是滚出屏幕的真实边缘上。
+   * 真正的四象限裁剪仍由绘制阶段完成，命中测试也不受此简化影响。
+   */
+  private selectionScreenRect(): CellRect | null {
+    const selection = this.selection;
+    if (!selection) return null;
+    const sheet = this.currentSheet();
+    if (!sheet) return null;
+    const layout = this.ensureSheetLayout(sheet);
+    const rect = docRect(this.selectionLayoutOf(layout), selection);
+    if (!rect) return null;
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return null;
+    const s = this.scaleVal > 0 ? this.scaleVal : 1;
+    // docRect 的坐标已含表头偏移（模型约定 offsets[0] = gutter），而表头本身不缩放，
+    // 所以先减去 gutter 得到纯正文文档坐标，再乘缩放并加回固定的表头宽高
+    const screenLeft = HEADER_WIDTH + this.offsetX + (rect.left - HEADER_WIDTH) * s;
+    const screenRight = HEADER_WIDTH + this.offsetX + (rect.right - HEADER_WIDTH) * s;
+    const screenTop = HEADER_HEIGHT + this.offsetY + (rect.top - HEADER_HEIGHT) * s;
+    const screenBottom = HEADER_HEIGHT + this.offsetY + (rect.bottom - HEADER_HEIGHT) * s;
+    // 选区整体滚出视口时不提供手柄几何，避免手柄钉在屏幕边缘误导用户
+    if (screenRight <= HEADER_WIDTH || screenLeft >= this.canvasWidth
+      || screenBottom <= HEADER_HEIGHT || screenTop >= this.canvasHeight) {
+      return null;
+    }
+    return {
+      left: Math.max(HEADER_WIDTH, screenLeft),
+      top: Math.max(HEADER_HEIGHT, screenTop),
+      right: Math.min(this.canvasWidth, screenRight),
+      bottom: Math.min(this.canvasHeight, screenBottom)
+    };
+  }
+
+  // MARK: - XLSX 选区：边缘自动滚动
+
+  /**
+   * 触点进入视口边缘热区时启动定时滚动，步长随深入程度线性递增
+   * （设计文档 §3.2.1 第 3 条与 Android `updateEdgeScroll` / `stepEdgeScroll`）。
+   * 拖选期间滚动后立刻以最新触点重算焦点，选区因此能持续扩展到屏幕外的单元格。
+   */
+  private updateEdgeScroll(screenX: number, screenY: number): void {
+    let directionX = 0;
+    let directionY = 0;
+    if (screenX < HEADER_WIDTH + SELECTION_EDGE_SCROLL_ZONE) {
+      directionX = -1;
+    } else if (screenX > this.canvasWidth - SELECTION_EDGE_SCROLL_ZONE) {
+      directionX = 1;
+    }
+    if (screenY < HEADER_HEIGHT + SELECTION_EDGE_SCROLL_ZONE) {
+      directionY = -1;
+    } else if (screenY > this.canvasHeight - SELECTION_EDGE_SCROLL_ZONE) {
+      directionY = 1;
+    }
+    if (directionX === 0 && directionY === 0) {
+      this.stopEdgeScroll();
+      return;
+    }
+    if (this.edgeScrollTimer !== -1
+      && this.edgeScrollDirectionX === directionX && this.edgeScrollDirectionY === directionY) {
+      return;
+    }
+    this.stopEdgeScroll();
+    this.edgeScrollDirectionX = directionX;
+    this.edgeScrollDirectionY = directionY;
+    this.edgeScrollTimer = setInterval(() => {
+      this.stepEdgeScroll();
+    }, SELECTION_EDGE_SCROLL_INTERVAL);
+  }
+
+  /** 单步边缘滚动：按到边缘的距离决定步长，滚动后以最新触点重算焦点 */
+  private stepEdgeScroll(): void {
+    if (this.selectionDragMode === DRAG_NONE
+      || (this.edgeScrollDirectionX === 0 && this.edgeScrollDirectionY === 0)) {
+      this.stopEdgeScroll();
+      return;
+    }
+    const zone = SELECTION_EDGE_SCROLL_ZONE;
+    let depthX = 0;
+    if (this.edgeScrollDirectionX < 0) {
+      depthX = Math.max(0, zone - (this.lastTouchX - HEADER_WIDTH));
+    } else if (this.edgeScrollDirectionX > 0) {
+      depthX = Math.max(0, this.lastTouchX - (this.canvasWidth - zone));
+    }
+    let depthY = 0;
+    if (this.edgeScrollDirectionY < 0) {
+      depthY = Math.max(0, zone - (this.lastTouchY - HEADER_HEIGHT));
+    } else if (this.edgeScrollDirectionY > 0) {
+      depthY = Math.max(0, this.lastTouchY - (this.canvasHeight - zone));
+    }
+    if (depthX <= 0 && depthY <= 0) {
+      this.stopEdgeScroll();
+      return;
+    }
+    if (depthX > 0) {
+      const ratioX = Math.min(1, depthX / zone);
+      // 屏幕偏移恒 <= 0：向右拖（方向 1）应减小 offsetX 以显示右侧内容
+      this.offsetX -= Math.max(1, SELECTION_EDGE_SCROLL_MAX_STEP * ratioX) * this.edgeScrollDirectionX;
+    }
+    if (depthY > 0) {
+      const ratioY = Math.min(1, depthY / zone);
+      this.offsetY -= Math.max(1, SELECTION_EDGE_SCROLL_MAX_STEP * ratioY) * this.edgeScrollDirectionY;
+    }
+    this.clampOffsets();
+    this.applySelectionFocus(this.lastTouchX, this.lastTouchY);
+  }
+
+  private stopEdgeScroll(): void {
+    if (this.edgeScrollTimer !== -1) {
+      clearInterval(this.edgeScrollTimer);
+      this.edgeScrollTimer = -1;
+    }
+    this.edgeScrollDirectionX = 0;
+    this.edgeScrollDirectionY = 0;
+  }
+
+  // MARK: - XLSX 选区：浮动气泡
+
+  /** 手势停稳后延迟一拍再定位气泡，避免在滚动/缩放过程中反复布局 */
+  private scheduleBubble(): void {
+    this.cancelBubbleTimer();
+    this.bubbleTimer = setTimeout(() => {
+      this.bubbleTimer = -1;
+      this.repositionBubble();
+    }, BUBBLE_SETTLE_MS);
+  }
+
+  private cancelBubbleTimer(): void {
+    if (this.bubbleTimer !== -1) {
+      clearTimeout(this.bubbleTimer);
+      this.bubbleTimer = -1;
+    }
+  }
+
+  /** 依据选区屏幕包围框定位气泡，并按「是否已全选」决定是否展示「全选」按钮 */
+  private repositionBubble(): void {
+    const selection = this.selection;
+    if (!selection) {
+      this.bubbleShown = false;
+      return;
+    }
+    const bounds = this.selectionScreenRect();
+    if (!bounds) {
+      // 选区当前不可见（如全选后尚未滚动到），不展示气泡避免悬空
+      this.bubbleShown = false;
+      return;
+    }
+    this.bubbleAnchorX = (bounds.left + bounds.right) / 2;
+    this.bubbleAnchorY = bounds.top;
+    this.bubbleBottomY = bounds.bottom;
+    this.bubbleShowSelectAll = !this.isWholeSheetSelected(selection);
+    this.bubbleShown = true;
+  }
+
+  /** 当前选区是否已覆盖整表（用于隐藏气泡里无效的「全选」按钮） */
+  private isWholeSheetSelected(selection: SheetSelection): boolean {
+    const sheet = this.currentSheet();
+    if (!sheet) return false;
+    const layout = this.ensureSheetLayout(sheet);
+    const all = allRange(sheet, this.selectionLayoutOf(layout));
+    return all !== null && selectionEquals(all, selection);
+  }
+
+  /** 气泡「复制」：写入剪贴板后退出选区态，与系统复制行为一致 */
+  private onBubbleCopy(): void {
+    if (!this.copySelection()) return;
+    this.clearSelection();
+  }
+
+  /** 气泡「全选」：切换为整表选区并刷新气泡（已全选时按钮隐藏，无需处理切换） */
+  private onBubbleSelectAll(): void {
+    this.selectAll();
+  }
+
+  // MARK: - XLSX 选区：公开控制 API
+
+  /** 全选：覆盖首个到末个可见单元格；工作表全空或无可见行列时返回 false */
+  public selectAll(): boolean {
+    const sheet = this.currentSheet();
+    if (!sheet) return false;
+    const layout = this.ensureSheetLayout(sheet);
+    const all = allRange(sheet, this.selectionLayoutOf(layout));
+    if (!all) return false;
+    this.stopFling();
+    this.stopZoomTween();
+    this.stopEdgeScroll();
+    this.selectionDragMode = DRAG_NONE;
+    if (this.isSelectionDragging) {
+      this.isSelectionDragging = false;
+    }
+    this.dragAnchor = null;
+    this.selection = all;
+    this.redraw();
+    this.scheduleBubble();
+    return true;
+  }
+
+  /** 清空选区、手柄与浮动气泡；无选区时为空操作 */
+  public clearSelection(): void {
+    this.resetSelection(true);
+  }
+
+  /** 当前是否存在选区（仅反映状态，不触发重绘） */
+  public hasSelection(): boolean {
+    return this.selection !== null;
+  }
+
+  /**
+   * 当前选中的纯文本。
+   *
+   * <p>XLSX 返回 TSV：同行以 `"\t"`、跨行以 `"\n"` 分隔，隐藏行列跳过、
+   * 合并单元格从属位置留空（设计文档 §3.1.3）。
+   */
+  public getSelectedText(): string {
+    const selection = this.selection;
+    if (!selection) return '';
+    const sheet = this.currentSheet();
+    if (!sheet) return '';
+    const layout = this.ensureSheetLayout(sheet);
+    const text = selectedText(sheet, this.selectionLayoutOf(layout), selection);
+    return text === null ? '' : text;
+  }
+
+  /** 把当前选中文本写入系统剪贴板；无选区或剪贴板不可用时返回 false */
+  public copySelection(): boolean {
+    const text = this.getSelectedText();
+    if (text.length === 0) return false;
+    return copyTextToPasteboard(text);
+  }
+
   private switchSheet(idx: number): void {
     const sheets = this.document?.sheets;
     if (!sheets || idx < 0 || idx >= sheets.length) return;
     this.stopFling();
+    // 切表必须清除选区：行号/列号在新工作表上指向完全不同的数据（设计文档 §全局约束）
+    this.resetSelection(false);
     if (this.currentSheetIndex !== idx) {
       this.currentSheetIndex = idx;
       this.cachedSheet = null;
@@ -478,6 +1096,13 @@ export struct SpreadsheetView {
   aboutToDisappear(): void {
     this.isReady = false;
     this.stopFling();
+    // 组件销毁时清理选区相关定时器，避免定时器持有已销毁组件的闭包
+    this.stopEdgeScroll();
+    this.cancelBubbleTimer();
+    this.selectionDragMode = DRAG_NONE;
+    this.isSelectionDragging = false;
+    this.selection = null;
+    this.dragAnchor = null;
     if (this.vsync) {
       try {
         this.vsync.off('frame');
@@ -685,6 +1310,11 @@ export struct SpreadsheetView {
     this.stopZoomTween();
     const from = this.scaleVal;
     const to = this.clampScale(target);
+    // 缩放复位（双击 2x -> 1x、外部「重置缩放」）会连带把表头与偏移归零，
+    // 选区在归零后的坐标系里不再对应原来的数据，必须一并清除（设计文档 §全局约束）
+    if (resetOffsets) {
+      this.clearSelection();
+    }
     if (duration <= 0 || Math.abs(to - from) < 0.002) {
       if (resetOffsets) {
         this.offsetX = 0;
@@ -748,6 +1378,8 @@ export struct SpreadsheetView {
       this.scaleVal = 1.0;
       this.cachedSheet = null;
       this.cachedLayout = null;
+      // 文档重新加载后旧选区的行列号指向另一份数据，必须清除（设计文档 §全局约束）
+      this.resetSelection(false);
     }
     const sheet = this.getCurrentSheet();
     const ctx = this.context2D;
@@ -834,6 +1466,10 @@ export struct SpreadsheetView {
         this.drawSearchHighlights(ctx, layout, s, ox, oy, frozenScreenW, frozenScreenH, bodyRight, bodyBottom);
       }
 
+      // 1.7 绘制选区：与检索高亮同样走象限切片，两者可共存（选区叠在检索高亮之上，
+      //     让"当前选中区域"始终可辨认；这一点与 Android 的绘制顺序一致）
+      this.drawSelection(ctx, layout, s, ox, oy, frozenScreenW, frozenScreenH, bodyRight, bodyBottom);
+
       // 2. 顶部列头 (A, B, C...)：先画滚动列标头，再在冻结列区间内锁定 X 绘制冻结列标头
       const frozenRight = HEADER_WIDTH + frozenScreenW;
       const frozenBottom = HEADER_HEIGHT + frozenScreenH;
@@ -863,8 +1499,7 @@ export struct SpreadsheetView {
         const colW = (columns.offsets[col + 1] - columns.offsets[col]) * s;
         if (left + colW < frozenRight) continue;
 
-        ctx.strokeRect(left, 0, colW, HEADER_HEIGHT);
-        ctx.fillText(this.indexToColumnLetter(col), left + colW / 2, HEADER_HEIGHT / 2);
+        this.drawColumnHeader(ctx, col, left, colW);
       }
       ctx.restore();
 
@@ -878,8 +1513,7 @@ export struct SpreadsheetView {
           const left = HEADER_WIDTH + columns.offsets[col] * s;
           const colW = (columns.offsets[col + 1] - columns.offsets[col]) * s;
           if (colW <= 0) continue;
-          ctx.strokeRect(left, 0, colW, HEADER_HEIGHT);
-          ctx.fillText(this.indexToColumnLetter(col), left + colW / 2, HEADER_HEIGHT / 2);
+          this.drawColumnHeader(ctx, col, left, colW);
         }
         ctx.restore();
       }
@@ -915,8 +1549,7 @@ export struct SpreadsheetView {
         const rowH = (rows.offsets[row + 1] - rows.offsets[row]) * s;
         if (top + rowH < frozenBottom) continue;
 
-        ctx.strokeRect(0, top, HEADER_WIDTH, rowH);
-        ctx.fillText(`${row + 1}`, HEADER_WIDTH - 6, top + rowH / 2);
+        this.drawRowHeader(ctx, row, top, rowH);
       }
       ctx.restore();
 
@@ -930,8 +1563,7 @@ export struct SpreadsheetView {
           const top = HEADER_HEIGHT + rows.offsets[row] * s;
           const rowH = (rows.offsets[row + 1] - rows.offsets[row]) * s;
           if (rowH <= 0) continue;
-          ctx.strokeRect(0, top, HEADER_WIDTH, rowH);
-          ctx.fillText(`${row + 1}`, HEADER_WIDTH - 6, top + rowH / 2);
+          this.drawRowHeader(ctx, row, top, rowH);
         }
         ctx.restore();
       }
@@ -964,6 +1596,9 @@ export struct SpreadsheetView {
         ctx.lineTo(bodyRight, lineY);
       }
       ctx.stroke();
+
+      // 6. 选区对角手柄：在屏幕坐标系绘制，缩放 0.5x..4x 时保持稳定物理尺寸
+      this.drawSelectionHandles(ctx);
     } catch (err) {
       console.error(`SpreadsheetView draw failed: ${err}`);
     }
@@ -1217,6 +1852,146 @@ export struct SpreadsheetView {
     ctx.restore();
   }
 
+  // MARK: - 选区绘制
+
+  /**
+   * 单个列标格：命中选区时改用 `HEADER_SELECTED_COLOR` 底色与加粗深蓝文字。
+   *
+   * <p>裁剪边界由调用方（滚动段 / 冻结段各自 save-clip）决定，因此冻结窗格下
+   * 列标高亮与选区自身的四象限绘制天然对齐（设计文档 §3.2.1 第 2 条）。
+   */
+  private drawColumnHeader(ctx: CanvasRenderingContext2D, column: number, left: number, colW: number): void {
+    const selection = this.selection;
+    const selected = selection !== null && selectionContainsColumn(selection, column);
+    if (selected) {
+      ctx.fillStyle = HEADER_SELECTED_COLOR;
+      ctx.fillRect(left, 0, colW, HEADER_HEIGHT);
+    }
+    ctx.strokeStyle = GRID_COLOR;
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(left, 0, colW, HEADER_HEIGHT);
+    ctx.fillStyle = selected ? HEADER_SELECTED_TEXT_COLOR : HEADER_TEXT;
+    ctx.font = selected ? 'bold 10vp sans-serif' : '10vp sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText(this.indexToColumnLetter(column), left + colW / 2, HEADER_HEIGHT / 2);
+  }
+
+  /** 单个行号标格：命中选区时改用 `HEADER_SELECTED_COLOR` 底色与加粗深蓝文字 */
+  private drawRowHeader(ctx: CanvasRenderingContext2D, row: number, top: number, rowH: number): void {
+    const selection = this.selection;
+    const selected = selection !== null && selectionContainsRow(selection, row);
+    if (selected) {
+      ctx.fillStyle = HEADER_SELECTED_COLOR;
+      ctx.fillRect(0, top, HEADER_WIDTH, rowH);
+    }
+    ctx.strokeStyle = GRID_COLOR;
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(0, top, HEADER_WIDTH, rowH);
+    ctx.fillStyle = selected ? HEADER_SELECTED_TEXT_COLOR : HEADER_TEXT;
+    ctx.font = selected ? 'bold 10vp sans-serif' : '10vp sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${row + 1}`, HEADER_WIDTH - 6, top + rowH / 2);
+  }
+
+  /**
+   * 绘制选区半透明填充与外框（按象限分别绘制），对角手柄由 {@link drawSelectionHandles} 单独绘制。
+   *
+   * <p><b>填充与外框都必须逐象限平移并裁剪</b>（设计文档 §3.2.1：选区矩形「在各个象限分别
+   * 平移与裁剪绘制」）。原因是冻结窗格下同一个选区矩形在各象限使用的滚动量不同：
+   * 滚动区叠加 `offsetX`/`offsetY`，冻结区则被固定在 `HEADER_WIDTH`/`HEADER_HEIGHT` 处不随滚动位移。
+   * 若整块矩形只按一套偏移描边，当选区起点落在冻结列/冻结行内且存在滚动量时，冻结侧那条边
+   * 会被额外平移一个滚动量，与它本应包住的单元格错位；而 `ox == 0 && oy == 0`（未滚动）时
+   * 两种画法恰好重合，因此这个错误在无滚动路径上不会暴露。只在象限内裁剪后绘制，
+   * 跨冻结边界的选区就会呈现「冻结窗格里一段、滚动窗格里一段、在分隔线处被裁断」的观感，
+   * 与 Excel 的冻结窗格表现一致。
+   *
+   * <p>描边排在填充之后、且同样受象限裁剪，因此线宽不会被相邻象限的填充覆盖。
+   * 线宽用屏幕 vp 常量：此处坐标系已含缩放，恒为 1.5vp 的物理粗细。
+   */
+  private drawSelection(
+    ctx: CanvasRenderingContext2D,
+    layout: SheetLayoutData,
+    s: number,
+    ox: number,
+    oy: number,
+    frozenScreenW: number,
+    frozenScreenH: number,
+    bodyRight: number,
+    bodyBottom: number
+  ): void {
+    const selection = this.selection;
+    if (!selection) return;
+    const rect = docRect(this.selectionLayoutOf(layout), selection);
+    if (!rect) return;
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+
+    // docRect 返回含表头 gutter 的文档坐标，而 SheetFreeze 的象限映射接受的是
+    // 「不含 gutter 的正文文档坐标」（表头宽高由 headerW/headerH 单独给出），故先扣掉 gutter
+    const bodyRect: FreezeDocRect = {
+      left: rect.left - HEADER_WIDTH,
+      top: rect.top - HEADER_HEIGHT,
+      right: rect.right - HEADER_WIDTH,
+      bottom: rect.bottom - HEADER_HEIGHT
+    };
+    const frozenDocW = s > 0 ? frozenScreenW / s : 0;
+    const frozenDocH = s > 0 ? frozenScreenH / s : 0;
+
+    // 填充与外框逐象限绘制：每块都在自己的象限裁剪内先填充后描边，
+    // 滚动区绝不越界盖住冻结区，冻结区也不会被滚动量额外平移
+    const pieces = mapMatchRectToQuadrants({
+      rect: bodyRect,
+      headerW: HEADER_WIDTH,
+      headerH: HEADER_HEIGHT,
+      offsetX: ox,
+      offsetY: oy,
+      scale: s,
+      frozenDocW: frozenDocW,
+      frozenDocH: frozenDocH,
+      bodyRight: bodyRight,
+      bodyBottom: bodyBottom
+    });
+    for (const piece of pieces) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(piece.clip.x, piece.clip.y, piece.clip.width, piece.clip.height);
+      ctx.clip();
+      ctx.fillStyle = SELECTION_FILL_COLOR;
+      ctx.fillRect(piece.rect.x, piece.rect.y, piece.rect.width, piece.rect.height);
+      // 描边在同一象限裁剪内、填充之后，避免线宽被相邻象限的填充覆盖
+      ctx.strokeStyle = SELECTION_STROKE_COLOR;
+      ctx.lineWidth = SELECTION_STROKE_WIDTH;
+      ctx.strokeRect(piece.rect.x, piece.rect.y, piece.rect.width, piece.rect.height);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * 绘制选区左上 / 右下两个对角拖拽手柄。
+   *
+   * <p>固定物理尺寸（半径 SELECTION_HANDLE_RADIUS vp，不随缩放变化），实心圆 + 白色描边；
+   * 表格选区是矩形，对角手柄天然表达「拉伸两条边」的语义（设计文档 §3.2.1 第 3 条）。
+   */
+  private drawSelectionHandles(ctx: CanvasRenderingContext2D): void {
+    if (!this.selection) return;
+    const rect = this.selectionScreenRect();
+    if (!rect) return;
+    this.drawSelectionHandle(ctx, rect.left, rect.top);
+    this.drawSelectionHandle(ctx, rect.right, rect.bottom);
+  }
+
+  /** 单个圆形拖拽手柄：实心圆点 + 白色描边，热区由 hitSelectionHandle 单独判定 */
+  private drawSelectionHandle(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+    ctx.beginPath();
+    ctx.arc(x, y, SELECTION_HANDLE_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = SELECTION_STROKE_COLOR;
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = SELECTION_HANDLE_STROKE_WIDTH;
+    ctx.stroke();
+  }
+
   private static readonly MAX_CELL_PREVIEW_LENGTH = 4096;
 
   private drawSingleCell(
@@ -1433,7 +2208,7 @@ export struct SpreadsheetView {
   build() {
     if (this.document) {
       Column() {
-        Stack() {
+        Stack({ alignContent: Alignment.TopStart }) {
           Canvas(this.context2D)
             .width(this.canvasWidth > 0 ? this.canvasWidth : '100%')
             .height(this.canvasHeight > 0 ? this.canvasHeight : '100%')
@@ -1442,6 +2217,24 @@ export struct SpreadsheetView {
               this.isReady = true;
               this.redraw();
             })
+
+          // 选区浮动操作气泡：仅在手势停稳后出现，锚定选区包围框上方
+          if (this.bubbleShown) {
+            SelectionMenuBubble({
+              anchorX: this.bubbleAnchorX,
+              anchorY: this.bubbleAnchorY,
+              anchorBottomY: this.bubbleBottomY,
+              viewportWidth: this.canvasWidth,
+              viewportHeight: this.canvasHeight,
+              showSelectAll: this.bubbleShowSelectAll,
+              onCopy: (): void => {
+                this.onBubbleCopy();
+              },
+              onSelectAll: (): void => {
+                this.onBubbleSelectAll();
+              }
+            })
+          }
         }
         .width('100%')
         .layoutWeight(1)
@@ -1461,10 +2254,31 @@ export struct SpreadsheetView {
           if (event.type === TouchType.Down) {
             this.stopFling();
           }
+          this.handleSheetTouch(event);
         })
         .gesture(
           GestureGroup(
             GestureMode.Parallel,
+            // 单击：存在选区时清除（双击的第一下也会走到这里，并行组下不影响双击缩放）
+            TapGesture({ count: 1 })
+              .onAction((_event: GestureEvent) => {
+                this.handleSingleTap();
+              }),
+            // 长按 400ms 选格：之后不抬手即可拖动扩选（与 DOCX/PPTX 长按选词手感一致）
+            LongPressGesture({ duration: SELECTION_LONG_PRESS_MS, repeat: false })
+              .onAction((event: GestureEvent) => {
+                this.handleLongPress(event);
+              })
+              .onActionEnd(() => {
+                if (this.selectionDragMode !== DRAG_NONE) {
+                  this.endSelectionDrag();
+                }
+              })
+              .onActionCancel(() => {
+                if (this.selectionDragMode !== DRAG_NONE) {
+                  this.endSelectionDrag();
+                }
+              }),
             // 双击快速缩放：已放大则恢复 1.0x，否则放大为 2.0x（完全对齐安卓端）
             TapGesture({ count: 2, distanceThreshold: 3 })
               .onAction((event: GestureEvent) => {
@@ -1484,6 +2298,17 @@ export struct SpreadsheetView {
               .onActionStart((event: GestureEvent) => {
                 this.stopFling();
                 this.stopZoomTween();
+                // 双指缩放接管手势：放弃进行中的选区拖拽（选区本身保留），并隐藏气泡
+                if (this.selectionDragMode !== DRAG_NONE) {
+                  this.selectionDragMode = DRAG_NONE;
+                  this.dragAnchor = null;
+                  this.stopEdgeScroll();
+                  if (this.isSelectionDragging) {
+                    this.isSelectionDragging = false;
+                  }
+                }
+                this.cancelBubbleTimer();
+                this.bubbleShown = false;
                 this.pinchStartScale = this.clampScale(this.scaleVal);
                 this.pinchStartOffsetX = this.offsetX;
                 this.pinchStartOffsetY = this.offsetY;
@@ -1514,21 +2339,26 @@ export struct SpreadsheetView {
                 this.settlePinchScale();
               }),
             // 单指拖拽平移表格，松手支持物理惯性平滑滑动 (Fling)
+            // 选区拖拽期间（长按扩选 / 手柄拉伸）本手势让步，焦点更新由 onTouch 驱动，
+            // 否则画布会与选区争夺同一根手指（与 DOCX 的 isSelectionDragging 屏蔽方式一致）
             PanGesture()
               .onActionStart(() => {
                 this.stopFling();
                 this.stopZoomTween();
+                if (this.isSelectionDragging) return;
                 this.panStartX = this.offsetX;
                 this.panStartY = this.offsetY;
               })
               .onActionUpdate((event: GestureEvent) => {
                 this.stopFling();
+                if (this.isSelectionDragging) return;
                 this.offsetX = this.panStartX + event.offsetX;
                 this.offsetY = this.panStartY + event.offsetY;
                 this.clampOffsets();
                 this.redraw();
               })
               .onActionEnd((event: GestureEvent) => {
+                if (this.isSelectionDragging) return;
                 const vx = event.velocityX ?? 0;
                 const vy = event.velocityY ?? 0;
                 if (Math.hypot(vx, vy) > 80) {
