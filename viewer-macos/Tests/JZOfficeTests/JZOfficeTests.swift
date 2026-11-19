@@ -2107,6 +2107,915 @@ struct JZOfficeTests {
         #expect(fallbackRuns.count <= 2, "非法序列应按实线绘制，实际 \(fallbackRuns)")
     }
 
+    // MARK: - XLSX 单元格选区与 TSV 复制（对齐 scripts/tests/SheetSelectionChecks.java）
+
+    /// 与 Java 参考套件一致的标头常量（Android 取 42/20，macOS 绘制常量为 42/22）
+    private enum SheetFixture {
+        static let headerWidth: CGFloat = 42
+        static let headerHeight: CGFloat = 20
+        static let rowHeight: CGFloat = 20
+        static let columnWidth: CGFloat = 64
+    }
+
+    /// 构造工作表：所有行高、列宽相同，按行列二维数组填充文本（`nil` 表示该格无单元格）
+    private func makeSheet(
+        grid: [[String?]],
+        rowHeight: CGFloat = SheetFixture.rowHeight,
+        columnWidth: CGFloat = SheetFixture.columnWidth,
+        merges: [OfficeCellRange] = []
+    ) -> OfficeSheet {
+        let rowCount = grid.count
+        let columnCount = rowCount == 0 ? 0 : grid[0].count
+        var cells: [OfficeCell] = []
+        // 单元格必须按行优先、行内列递增追加，满足 rowStarts 契约
+        for row in 0..<rowCount {
+            for column in 0..<columnCount {
+                guard let text = grid[row][column] else { continue }
+                cells.append(OfficeCell(
+                    row: row,
+                    column: column,
+                    text: text,
+                    numeric: !text.isEmpty && Double(text) != nil
+                ))
+            }
+        }
+        return OfficeSheet(
+            name: "Fixture",
+            rowHeights: [CGFloat](repeating: rowHeight, count: rowCount),
+            columnWidths: [CGFloat](repeating: columnWidth, count: columnCount),
+            cells: cells,
+            merges: merges
+        )
+    }
+
+    private func makeLayout(_ sheet: OfficeSheet) -> SheetSelectionModel.SheetSelectionLayout {
+        SheetSelectionModel.SheetSelectionLayout(
+            sheet: sheet,
+            headerWidth: SheetFixture.headerWidth,
+            headerHeight: SheetFixture.headerHeight
+        )
+    }
+
+    private func at(_ row: Int, _ column: Int) -> SheetSelectionModel.CellCoord {
+        SheetSelectionModel.CellCoord(row: row, column: column)
+    }
+
+    @Test("XLSX 合并单元格不动点闭包扩张（单区域与串联区域）")
+    func sheetSelectionMergeClosure() {
+        // 1. 单格落在合并区域内：闭包把选区拉回完整合并区域
+        let single = makeSheet(
+            grid: [["A1", "B1", "C1"], ["A2", "B2", "C2"], ["A3", "B3", "C3"]],
+            merges: [OfficeCellRange(startRow: 0, startColumn: 0, endRow: 1, endColumn: 1)]
+        )
+        let selection = SheetSelectionModel.resolve(sheet: single, anchor: at(1, 1), focus: at(1, 1))
+        #expect(selection != nil)
+        #expect(selection?.startRow == 0)
+        #expect(selection?.startColumn == 0)
+        #expect(selection?.endRow == 1)
+        #expect(selection?.endColumn == 1)
+        // 完全重合的单合并格视为逻辑单格
+        #expect(SheetSelectionModel.isSingleLogicalCell(sheet: single, selection: selection))
+
+        let layout = makeLayout(single)
+        let rect = SheetSelectionModel.docRect(layout: layout, selection: selection)
+        #expect(rect != nil)
+        #expect(Int(rect!.left.rounded()) == Int(SheetFixture.headerWidth.rounded()))
+        #expect(Int(rect!.right.rounded()) == Int((SheetFixture.headerWidth + 128).rounded()))
+        #expect(Int(rect!.top.rounded()) == Int(SheetFixture.headerHeight.rounded()))
+        #expect(Int(rect!.bottom.rounded()) == Int((SheetFixture.headerHeight + 40).rounded()))
+
+        // 2. 两个合并区域串联：单轮遍历不足，必须迭代到不动点
+        let chained = makeSheet(
+            grid: [
+                ["A1", "B1", "C1", "D1"],
+                ["A2", "B2", "C2", "D2"],
+                ["A3", "B3", "C3", "D3"],
+            ],
+            merges: [
+                OfficeCellRange(startRow: 0, startColumn: 0, endRow: 0, endColumn: 2), // A1:C1
+                OfficeCellRange(startRow: 0, startColumn: 2, endRow: 0, endColumn: 3), // C1:D1
+                OfficeCellRange(startRow: 1, startColumn: 0, endRow: 1, endColumn: 1), // A2:B2
+            ]
+        )
+        // 起点只在 A1：第一轮并入 A1:C1，第二轮因 C1 相交并入 C1:D1，稳定在 A1:D1
+        let chain = SheetSelectionModel.resolve(sheet: chained, anchor: at(0, 0), focus: at(0, 0))
+        #expect(chain?.startRow == 0)
+        #expect(chain?.startColumn == 0)
+        #expect(chain?.endRow == 0)
+        #expect(chain?.endColumn == 3)
+        #expect(!SheetSelectionModel.isSingleLogicalCell(sheet: chained, selection: chain))
+
+        // 触到底部合并区域：闭包下扩到 A2:B2 的末列
+        let lower = SheetSelectionModel.resolve(sheet: chained, anchor: at(1, 0), focus: at(1, 0))
+        #expect(lower?.startRow == 1)
+        #expect(lower?.endRow == 1)
+        #expect(lower?.startColumn == 0)
+        #expect(lower?.endColumn == 1)
+
+        // 未与任何合并区域相交的普通矩形保持原样
+        let plain = SheetSelectionModel.resolve(sheet: chained, anchor: at(2, 3), focus: at(2, 3))
+        #expect(plain?.startRow == 2)
+        #expect(plain?.endRow == 2)
+        #expect(plain?.startColumn == 3)
+        #expect(plain?.endColumn == 3)
+
+        // 3. 合并区域**声明顺序倒置**：单轮遍历只能扩到中间区域，必须迭代到不动点。
+        // 参考套件的区间恰好按从左到右声明，单轮遍历也能收敛，无法区分"单轮"与"不动点"；
+        // 这里把最右侧区域排到最前，并把区间设为真正**相交**（共用 C1 / D1），
+        // 于是只有循环到稳定才能扩到 E 列，单轮实现会停在 C 列。
+        let reversedOrder = makeSheet(
+            grid: [["A1", "B1", "C1", "D1", "E1"]],
+            merges: [
+                // 最右侧区域在前：起点为 A1 时第一轮与它不相交
+                OfficeCellRange(startRow: 0, startColumn: 3, endRow: 0, endColumn: 4), // D1:E1
+                OfficeCellRange(startRow: 0, startColumn: 2, endRow: 0, endColumn: 3), // C1:D1
+                OfficeCellRange(startRow: 0, startColumn: 0, endRow: 0, endColumn: 2), // A1:C1
+            ]
+        )
+        let fixpoint = SheetSelectionModel.resolve(sheet: reversedOrder, anchor: at(0, 0), focus: at(0, 0))
+        #expect(fixpoint?.startColumn == 0)
+        #expect(fixpoint?.endColumn == 4, "倒序且相交声明的合并区域必须迭代到不动点才能扩到 E 列")
+    }
+
+    @Test("XLSX 反向拖选规范化边界并保留锚点焦点")
+    func sheetSelectionReversedDrag() {
+        let sheet = makeSheet(grid: [
+            ["0,0", "0,1", "0,2"],
+            ["1,0", "1,1", "1,2"],
+            ["2,0", "2,1", "2,2"],
+        ])
+        let selection = SheetSelectionModel.resolve(sheet: sheet, anchor: at(2, 2), focus: at(0, 0))
+        #expect(selection?.startRow == 0)
+        #expect(selection?.startColumn == 0)
+        #expect(selection?.endRow == 2)
+        #expect(selection?.endColumn == 2)
+        #expect(selection?.anchor == at(2, 2))
+        #expect(selection?.focus == at(0, 0))
+        #expect(selection?.rowCount == 3)
+        #expect(selection?.columnCount == 3)
+        // 锚点或焦点缺失时不做闭包，直接返回 nil
+        #expect(SheetSelectionModel.resolve(sheet: sheet, anchor: nil, focus: at(0, 0)) == nil)
+        // CellCoord 构造时把负数钳位到 0
+        #expect(SheetSelectionModel.CellCoord(row: -3, column: -7) == at(0, 0))
+    }
+
+    @Test("XLSX 隐藏行列整条跳过且不留多余制表符")
+    func sheetSelectionHiddenRowsAndColumns() {
+        var sheet = makeSheet(grid: [
+            ["A1", "hidden", "C1"],
+            ["hiddenRow", "hiddenRow", "hiddenRow"],
+            ["A3", "hidden", "C3"],
+        ])
+        // B 列隐藏、第 2 行隐藏（需重建成 let 属性 → 用新的尺寸数组替换）
+        var heights = sheet.rowHeights
+        heights[1] = 0
+        var widths = sheet.columnWidths
+        widths[1] = 0
+        sheet = OfficeSheet(
+            name: sheet.name,
+            rowHeights: heights,
+            columnWidths: widths,
+            cells: sheet.cells,
+            merges: sheet.merges,
+            geometry: sheet.geometry
+        )
+        let layout = makeLayout(sheet)
+        // 隐藏行列不出现在 axis.visible 中
+        #expect(layout.rows.visible.count == 2)
+        #expect(layout.columns.visible.count == 2)
+
+        let selection = SheetSelectionModel.resolve(sheet: sheet, anchor: at(0, 0), focus: at(2, 2))
+        let text = SheetSelectionModel.selectedText(sheet: sheet, layout: layout, selection: selection)
+        #expect(text == "A1\tC1\nA3\tC3", "隐藏行列应整条跳过，实际 <\(text)>")
+
+        // 隐藏列上的单元格仍可被直接寻址（模型层不做额外过滤）
+        #expect(SheetSelectionModel.cellTextAt(sheet: sheet, layout: layout, row: 0, column: 1) == "hidden")
+    }
+
+    @Test("XLSX 单格与单合并格输出裸文本，多格输出矩形网格")
+    func sheetSelectionSingleAndMultiCellText() {
+        let sheet = makeSheet(
+            grid: [["标题", nil, nil], ["x", "y", "z"]],
+            merges: [OfficeCellRange(startRow: 0, startColumn: 0, endRow: 0, endColumn: 2)]
+        )
+        let layout = makeLayout(sheet)
+
+        // 单格：裸文本，不带制表符
+        let single = SheetSelectionModel.resolve(sheet: sheet, anchor: at(1, 1), focus: at(1, 1))
+        #expect(SheetSelectionModel.selectedText(sheet: sheet, layout: layout, selection: single) == "y")
+
+        // 单合并格：同样裸文本
+        let merged = SheetSelectionModel.resolve(sheet: sheet, anchor: at(0, 1), focus: at(0, 1))
+        #expect(SheetSelectionModel.isSingleLogicalCell(sheet: sheet, selection: merged))
+        #expect(SheetSelectionModel.selectedText(sheet: sheet, layout: layout, selection: merged) == "标题")
+
+        // 多格：合并区域从属位置留空，保持矩形对齐
+        let multi = SheetSelectionModel.resolve(sheet: sheet, anchor: at(0, 0), focus: at(1, 2))
+        let text = SheetSelectionModel.selectedText(sheet: sheet, layout: layout, selection: multi)
+        #expect(text == "标题\t\t\nx\ty\tz", "合并从属位置应留空，实际 <\(text)>")
+
+        // 空选区语义
+        #expect(SheetSelectionModel.selectedText(sheet: sheet, layout: layout, selection: nil) == "")
+    }
+
+    @Test("XLSX TSV 按 RFC 4180 转义制表符/换行/回车/双引号")
+    func sheetSelectionTsvEscaping() {
+        #expect(SheetSelectionModel.formatTsvCell(nil) == "")
+        #expect(SheetSelectionModel.formatTsvCell("") == "")
+        #expect(SheetSelectionModel.formatTsvCell("plain") == "plain")
+        #expect(SheetSelectionModel.formatTsvCell("a\tb") == "\"a\tb\"")
+        #expect(SheetSelectionModel.formatTsvCell("a\nb") == "\"a\nb\"")
+        #expect(SheetSelectionModel.formatTsvCell("a\rb") == "\"a\rb\"")
+        #expect(SheetSelectionModel.formatTsvCell("say \"hi\"") == "\"say \"\"hi\"\"\"")
+        #expect(SheetSelectionModel.formatTsvCell("\"") == "\"\"\"\"")
+        // CRLF 必须按回车触发包裹：Swift 会把 "\r\n" 聚成单个字形簇，
+        // 若按 Character 比较会漏判，导致复制的 TSV 被下游解析成两行
+        #expect(SheetSelectionModel.formatTsvCell("a\r\nb") == "\"a\r\nb\"", "CRLF 应触发引号包裹")
+
+        let sheet = makeSheet(grid: [["a\tb", "c"], ["d", "e"]])
+        let layout = makeLayout(sheet)
+        let selection = SheetSelectionModel.resolve(sheet: sheet, anchor: at(0, 0), focus: at(1, 1))
+        let text = SheetSelectionModel.selectedText(sheet: sheet, layout: layout, selection: selection)
+        #expect(text == "\"a\tb\"\tc\nd\te", "带引号的单元格应保持网格形状，实际 <\(text)>")
+    }
+
+    @Test("XLSX 全空选区导出空串")
+    func sheetSelectionAllBlankReturnsEmpty() {
+        let sheet = makeSheet(grid: [["only", nil, nil], [nil, nil, nil]])
+        let layout = makeLayout(sheet)
+        // 只能选中右下角空白矩形：A1 含文本但不在范围内
+        let blank = SheetSelectionModel.SheetSelection(
+            anchor: at(1, 1),
+            focus: at(1, 2),
+            startRow: 1,
+            startColumn: 1,
+            endRow: 1,
+            endColumn: 2
+        )
+        #expect(SheetSelectionModel.selectedText(sheet: sheet, layout: layout, selection: blank) == "")
+
+        // 显式空串单元格同样视为空
+        let withEmpty = makeSheet(grid: [["", ""]])
+        let emptyLayout = makeLayout(withEmpty)
+        let emptyRange = SheetSelectionModel.SheetSelection(
+            anchor: at(0, 0),
+            focus: at(0, 1),
+            startRow: 0,
+            startColumn: 0,
+            endRow: 0,
+            endColumn: 1
+        )
+        #expect(SheetSelectionModel.selectedText(sheet: withEmpty, layout: emptyLayout, selection: emptyRange) == "")
+    }
+
+    @Test("XLSX 冻结窗格命中测试：无冻结 / 冻结列 / 冻结行 / 交叉角")
+    func sheetSelectionHitTestFreezeQuadrants() {
+        // 1. 无冻结：等价于「文档坐标 = 视图坐标 + 滚动量」
+        let plain = makeSheet(grid: [
+            ["0,0", "0,1", "0,2"],
+            ["1,0", "1,1", "1,2"],
+            ["2,0", "2,1", "2,2"],
+        ])
+        let plainLayout = makeLayout(plain)
+        var hit = SheetSelectionModel.hitTest(
+            layout: plainLayout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 0, scrollDataY: 0,
+            viewX: SheetFixture.headerWidth + 1, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: false
+        )
+        #expect(hit == at(0, 0), "无冻结应命中 A1")
+        hit = SheetSelectionModel.hitTest(
+            layout: plainLayout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 64, scrollDataY: 20,
+            viewX: SheetFixture.headerWidth + 1, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: false
+        )
+        #expect(hit == at(1, 1), "滚动一列一行后同一点应命中 B2")
+
+        // 2. 冻结列：冻结区内 X 轴不叠加滚动量，滚动区照常叠加
+        let wide = makeSheet(grid: [
+            ["0,0", "0,1", "0,2", "0,3"],
+            ["1,0", "1,1", "1,2", "1,3"],
+        ])
+        let wideLayout = makeLayout(wide)
+        let frozenW: CGFloat = 64
+        hit = SheetSelectionModel.hitTest(
+            layout: wideLayout, effFrozenRows: 0, effFrozenCols: 1,
+            frozenDataW: frozenW, frozenDataH: 0, scrollDataX: 100, scrollDataY: 0,
+            viewX: SheetFixture.headerWidth + 10, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: false
+        )
+        #expect(hit?.column == 0, "冻结列忽略滚动量")
+        hit = SheetSelectionModel.hitTest(
+            layout: wideLayout, effFrozenRows: 0, effFrozenCols: 1,
+            frozenDataW: frozenW, frozenDataH: 0, scrollDataX: 64, scrollDataY: 0,
+            viewX: SheetFixture.headerWidth + frozenW + 1, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: false
+        )
+        #expect(hit?.column == 2, "可滚动列叠加滚动量")
+
+        // 3. 冻结行：8 行 × 20 = 160 的数据高度，scrollY = 60，滚动区应命中第 4 行
+        let tall = makeSheet(grid: (0..<8).map { ["r\($0)"] })
+        let tallLayout = makeLayout(tall)
+        let frozenH: CGFloat = 20
+        let scrollY: CGFloat = 60
+        hit = SheetSelectionModel.hitTest(
+            layout: tallLayout, effFrozenRows: 1, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: frozenH, scrollDataX: 0, scrollDataY: scrollY,
+            viewX: SheetFixture.headerWidth + 1, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: false
+        )
+        #expect(hit?.row == 0, "冻结行忽略滚动量")
+        hit = SheetSelectionModel.hitTest(
+            layout: tallLayout, effFrozenRows: 1, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: frozenH, scrollDataX: 0, scrollDataY: scrollY,
+            viewX: SheetFixture.headerWidth + 1, viewY: SheetFixture.headerHeight + frozenH + 1,
+            clampToBounds: false
+        )
+        #expect(hit?.row == 4, "可滚动行叠加滚动量后应命中第 4 行")
+
+        // 4. 双轴冻结：交叉角两轴都不叠加滚动量
+        let grid = (0..<10).map { row in (0..<8).map { "\(row),\($0)" } }
+        let corner = makeSheet(grid: grid)
+        let cornerLayout = makeLayout(corner)
+        let frozenWidth: CGFloat = 64
+        let frozenHeight: CGFloat = 40
+        let scrollX: CGFloat = 128
+        var cornerHit = SheetSelectionModel.hitTest(
+            layout: cornerLayout, effFrozenRows: 2, effFrozenCols: 1,
+            frozenDataW: frozenWidth, frozenDataH: frozenHeight, scrollDataX: scrollX, scrollDataY: 60,
+            viewX: SheetFixture.headerWidth + frozenWidth - 1,
+            viewY: SheetFixture.headerHeight + frozenHeight - 1,
+            clampToBounds: false
+        )
+        #expect(cornerHit == at(1, 0), "交叉角锁定两轴")
+        cornerHit = SheetSelectionModel.hitTest(
+            layout: cornerLayout, effFrozenRows: 2, effFrozenCols: 1,
+            frozenDataW: frozenWidth, frozenDataH: frozenHeight, scrollDataX: scrollX, scrollDataY: 60,
+            viewX: SheetFixture.headerWidth + 1,
+            viewY: SheetFixture.headerHeight + frozenHeight + 1,
+            clampToBounds: false
+        )
+        #expect(cornerHit?.column == 0 && cornerHit?.row == 5, "冻结列 + 滚动行应命中第 5 行第 0 列")
+        cornerHit = SheetSelectionModel.hitTest(
+            layout: cornerLayout, effFrozenRows: 2, effFrozenCols: 1,
+            frozenDataW: frozenWidth, frozenDataH: frozenHeight, scrollDataX: scrollX, scrollDataY: 60,
+            viewX: SheetFixture.headerWidth + frozenWidth + 1,
+            viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: false
+        )
+        #expect(cornerHit?.row == 0 && cornerHit?.column == 3, "冻结行 + 滚动列应命中第 0 行第 3 列")
+        cornerHit = SheetSelectionModel.hitTest(
+            layout: cornerLayout, effFrozenRows: 2, effFrozenCols: 1,
+            frozenDataW: frozenWidth, frozenDataH: frozenHeight, scrollDataX: scrollX, scrollDataY: 60,
+            viewX: SheetFixture.headerWidth + frozenWidth + 1,
+            viewY: SheetFixture.headerHeight + frozenHeight + 1,
+            clampToBounds: false
+        )
+        #expect(cornerHit == at(5, 3), "纯滚动区叠加两轴偏移")
+    }
+
+    @Test("XLSX 标头内不命中、越界按钳位开关返回 nil 或边缘格")
+    func sheetSelectionHitTestClampAndHeaders() {
+        let sheet = makeSheet(grid: [["0,0", "0,1"], ["1,0", "1,1"]])
+        let layout = makeLayout(sheet)
+        // 标头内：不产生单元格命中
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 0, scrollDataY: 0,
+            viewX: SheetFixture.headerWidth - 1, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: false
+        ) == nil, "列标内不应命中单元格")
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 0, scrollDataY: 0,
+            viewX: SheetFixture.headerWidth + 1, viewY: SheetFixture.headerHeight - 1,
+            clampToBounds: false
+        ) == nil, "行标内不应命中单元格")
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 0, scrollDataY: 0,
+            viewX: SheetFixture.headerWidth + 1, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: false
+        ) != nil, "正文内应命中单元格")
+
+        // 越过右下边界：不钳位返回 nil，钳位贴到末行末列
+        let farX = SheetFixture.headerWidth + 64 * 2 + 50
+        let farY = SheetFixture.headerHeight + 20 * 2 + 50
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 0, scrollDataY: 0,
+            viewX: farX, viewY: farY, clampToBounds: false
+        ) == nil, "越界且不钳位应返回 nil")
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 0, scrollDataY: 0,
+            viewX: farX, viewY: farY, clampToBounds: true
+        ) == at(1, 1), "越界钳位应贴到末行末列")
+
+        // 滚动量大于表格尺寸时数据坐标同样越界，钳位后仍落在合法末格（绝不返回负索引）
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 200, scrollDataY: 200,
+            viewX: SheetFixture.headerWidth + 1, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: true
+        ) == at(1, 1), "过度滚动钳位后应落在末格")
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 200, scrollDataY: 200,
+            viewX: SheetFixture.headerWidth + 1, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: false
+        ) == nil, "过度滚动且不钳位应返回 nil")
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 0, scrollDataY: 0,
+            viewX: SheetFixture.headerWidth, viewY: SheetFixture.headerHeight,
+            clampToBounds: true
+        ) == at(0, 0), "正文原点是首格")
+
+        // NaN 触点直接拒绝，避免污染二分结果
+        #expect(SheetSelectionModel.hitTest(
+            layout: layout, effFrozenRows: 0, effFrozenCols: 0,
+            frozenDataW: 0, frozenDataH: 0, scrollDataX: 0, scrollDataY: 0,
+            viewX: CGFloat.nan, viewY: SheetFixture.headerHeight + 1,
+            clampToBounds: true
+        ) == nil, "NaN 触点不应命中单元格")
+    }
+
+    @Test("XLSX 全选范围：空表返回 nil，非空表覆盖首个到末个可见格")
+    func sheetSelectionAllRangeRequiresText() {
+        // 全空表
+        let blank = makeSheet(grid: [[nil, nil], [nil, nil]])
+        #expect(SheetSelectionModel.allRange(sheet: blank, layout: makeLayout(blank)) == nil)
+        // 只有空白文本的单元格也算空
+        let spaces = makeSheet(grid: [["", ""]])
+        #expect(SheetSelectionModel.allRange(sheet: spaces, layout: makeLayout(spaces)) == nil)
+
+        // 有文本的表：覆盖全部可见行列
+        let sheet = makeSheet(grid: [["A1", "B1", "C1"], ["A2", "B2", "C2"]])
+        let layout = makeLayout(sheet)
+        let all = SheetSelectionModel.allRange(sheet: sheet, layout: layout)
+        #expect(all != nil)
+        #expect(all?.startRow == 0)
+        #expect(all?.startColumn == 0)
+        #expect(all?.endRow == 1)
+        #expect(all?.endColumn == 2)
+        #expect(
+            SheetSelectionModel.selectedText(sheet: sheet, layout: layout, selection: all)
+                == "A1\tB1\tC1\nA2\tB2\tC2"
+        )
+
+        // 末列/末行隐藏时全选跟随可见范围收缩
+        let source = makeSheet(grid: [["A1", "B1", "C1"], ["A2", "B2", "C2"]])
+        var widths = source.columnWidths
+        widths[2] = 0
+        var heights = source.rowHeights
+        heights[1] = 0
+        let hiddenTail = OfficeSheet(
+            name: source.name,
+            rowHeights: heights,
+            columnWidths: widths,
+            cells: source.cells,
+            merges: source.merges
+        )
+        let hiddenLayout = makeLayout(hiddenTail)
+        let shrunk = SheetSelectionModel.allRange(sheet: hiddenTail, layout: hiddenLayout)
+        #expect(shrunk != nil)
+        #expect(shrunk?.endRow == 0, "隐藏末行应排除")
+        #expect(shrunk?.endColumn == 1, "隐藏末列应排除")
+        #expect(
+            SheetSelectionModel.selectedText(sheet: hiddenTail, layout: hiddenLayout, selection: shrunk) == "A1\tB1"
+        )
+    }
+
+    @Test("XLSX 行列标头联动高亮判定")
+    func sheetSelectionHeaderLinkage() {
+        let sheet = makeSheet(grid: [
+            ["a", "b", "c", "d"],
+            ["e", "f", "g", "h"],
+            ["i", "j", "k", "l"],
+        ])
+        let selection = SheetSelectionModel.resolve(sheet: sheet, anchor: at(1, 1), focus: at(2, 2))
+        #expect(selection != nil)
+        guard let selection else { return }
+
+        #expect(selection.containsRow(1))
+        #expect(selection.containsRow(2))
+        #expect(!selection.containsRow(0))
+        #expect(!selection.containsRow(3))
+
+        #expect(selection.containsColumn(1))
+        #expect(selection.containsColumn(2))
+        #expect(!selection.containsColumn(0))
+        #expect(!selection.containsColumn(3))
+
+        #expect(selection.covers(row: 1, column: 2))
+        #expect(!selection.covers(row: 0, column: 0))
+    }
+
+    @Test("XLSX 选区矩形几何与越界安全返回")
+    func sheetSelectionDocRectGeometry() {
+        let sheet = makeSheet(grid: [["a", "b", "c"], ["d", "e", "f"], ["g", "h", "i"]])
+        let layout = makeLayout(sheet)
+        let selection = SheetSelectionModel.resolve(sheet: sheet, anchor: at(1, 1), focus: at(2, 2))
+        let rect = SheetSelectionModel.docRect(layout: layout, selection: selection)
+        #expect(rect != nil)
+        #expect(Int(rect!.left.rounded()) == Int((SheetFixture.headerWidth + 64).rounded()))
+        #expect(Int(rect!.right.rounded()) == Int((SheetFixture.headerWidth + 192).rounded()))
+        #expect(Int(rect!.top.rounded()) == Int((SheetFixture.headerHeight + 20).rounded()))
+        #expect(Int(rect!.bottom.rounded()) == Int((SheetFixture.headerHeight + 60).rounded()))
+        #expect(Int(rect!.width.rounded()) == 128)
+        #expect(Int(rect!.height.rounded()) == 40)
+        #expect(!rect!.isEmpty)
+
+        // 越界选区安全返回 nil，避免渲染层数组越界
+        let outOfBounds = SheetSelectionModel.SheetSelection(
+            anchor: at(0, 0), focus: at(9, 9),
+            startRow: 0, startColumn: 0, endRow: 9, endColumn: 9
+        )
+        #expect(SheetSelectionModel.docRect(layout: layout, selection: outOfBounds) == nil)
+        #expect(SheetSelectionModel.docRect(layout: layout, selection: nil) == nil)
+
+        // 合并区域的矩形与选区矩形使用同一套坐标系
+        let mergeRange = OfficeCellRange(startRow: 0, startColumn: 0, endRow: 0, endColumn: 1)
+        let merged = makeSheet(grid: [["a", "b"], ["c", "d"]], merges: [mergeRange])
+        let mergeRect = SheetSelectionModel.mergeDocRect(layout: makeLayout(merged), merge: mergeRange)
+        #expect(mergeRect != nil)
+        #expect(Int(mergeRect!.width.rounded()) == 128)
+        #expect(SheetSelectionModel.mergeDocRect(
+            layout: makeLayout(merged),
+            merge: OfficeCellRange(startRow: 0, startColumn: 0, endRow: 9, endColumn: 9)
+        ) == nil)
+    }
+
+    @Test("XLSX 选区绘制：无冻结单象限与冻结四象限裁剪")
+    func sheetSelectionDrawQuadrants() throws {
+        // 未冻结：整块选区只产生 1 个绘制片段
+        let plain = makeSheet(grid: [["A1", "B1"], ["A2", "B2"]])
+        let plainViewport = CGRect(x: 0, y: 0, width: 300, height: 200)
+        let plainPlan = CGElementDrawer.sheetFreezePlan(sheet: plain, viewport: plainViewport)
+        #expect(!plainPlan.hasFrozen)
+        let plainLayout = CGElementDrawer.sheetSelectionLayout(sheet: plain)
+        let plainSelection = SheetSelectionModel.resolve(sheet: plain, anchor: at(0, 0), focus: at(1, 1))
+        let plainRect = SheetSelectionModel.docRect(layout: plainLayout, selection: plainSelection)
+        #expect(plainRect != nil)
+        let plainPieces = CGElementDrawer.clipSheetHighlight(
+            CGRect(x: plainRect!.left, y: plainRect!.top, width: plainRect!.width, height: plainRect!.height),
+            plan: plainPlan,
+            rowCount: 2,
+            columnCount: 2
+        )
+        #expect(plainPieces.count == 1)
+
+        // 冻结行列：跨冻结边界的选区拆到多个象限，且每片裁剪区域互不重叠
+        let frozen = try freezeSheet(frozenRows: 1, frozenColumns: 1)
+        let viewport = CGRect(x: 0, y: 0, width: 320, height: 220)
+        let plan = CGElementDrawer.sheetFreezePlan(sheet: frozen, viewport: viewport)
+        #expect(plan.effectiveRows == 1)
+        #expect(plan.effectiveColumns == 1)
+        let layout = CGElementDrawer.sheetSelectionLayout(sheet: frozen)
+        // 横跨交叉角与滚动区的选区
+        let selection = SheetSelectionModel.resolve(sheet: frozen, anchor: at(0, 0), focus: at(2, 2))
+        let rect = SheetSelectionModel.docRect(layout: layout, selection: selection)
+        #expect(rect != nil)
+        let pieces = CGElementDrawer.clipSheetHighlight(
+            CGRect(x: rect!.left, y: rect!.top, width: rect!.width, height: rect!.height),
+            plan: plan,
+            rowCount: 6,
+            columnCount: 6
+        )
+        #expect(pieces.count == 4, "跨四象限的选区应拆成 4 片，实际 \(pieces.count)")
+        for piece in pieces {
+            #expect(!piece.clip.isEmpty)
+        }
+
+        // 离屏绘制：带选区的输出必须包含选区填充色（说明选区真的画上去了）
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let width = 300, height = 240
+        var bytes = [UInt8](repeating: 255, count: width * height * 4)
+        let ctx = try #require(CGContext(
+            data: &bytes,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        ctx.translateBy(x: 0, y: CGFloat(height))
+        ctx.scaleBy(x: 1, y: -1)
+        let drawViewport = CGRect(x: 0, y: 0, width: 300, height: 240)
+        let drawSelection = SheetSelectionModel.resolve(sheet: frozen, anchor: at(0, 0), focus: at(1, 1))
+        CGElementDrawer.drawSpreadsheet(
+            in: ctx,
+            sheet: frozen,
+            styles: [],
+            viewport: drawViewport,
+            selection: drawSelection
+        )
+        // 选区填充为 15% Google Blue 与白底混合，取一点确认偏蓝
+        func pixelRGBA(_ x: Int, _ y: Int) -> (UInt8, UInt8, UInt8, UInt8) {
+            let idx = (y * width + x) * 4
+            return (bytes[idx], bytes[idx + 1], bytes[idx + 2], bytes[idx + 3])
+        }
+        let inside = pixelRGBA(82, 32)
+        #expect(Int(inside.2) > Int(inside.0), "选区内部应偏蓝，实际 \(inside)")
+        // 标头联动高亮应为 #D2E3FC
+        let headerPixel = pixelRGBA(120, 10)
+        #expect(
+            abs(Int(headerPixel.0) - 0xd2) <= 8
+                && abs(Int(headerPixel.1) - 0xe3) <= 8
+                && abs(Int(headerPixel.2) - 0xfc) <= 8,
+            "选中列的标头应为 #D2E3FC，实际 \(headerPixel)"
+        )
+        // 未选中列（第 2 列起）仍为常规底色 #F3F5F7
+        let plainHeaderPixel = pixelRGBA(220, 10)
+        #expect(
+            abs(Int(plainHeaderPixel.0) - 0xf3) <= 8
+                && abs(Int(plainHeaderPixel.1) - 0xf5) <= 8
+                && abs(Int(plainHeaderPixel.2) - 0xf7) <= 8,
+            "未选中列的标头应保持 #F3F5F7，实际 \(plainHeaderPixel)"
+        )
+    }
+
+    @Test("XLSX 模型布局复用 core 预计算几何，脏 rowStarts 回退重算")
+    func sheetSelectionLayoutReusesGeometry() {
+        // 预计算几何：模型必须复用它（前缀和等于 core 值 + 标头 gutter）
+        let geometry = OfficeSheetGeometry(
+            columnOffsets: [0, 70, 130],
+            rowOffsets: [0, 25, 55],
+            columnVisible: [0, 1],
+            rowVisible: [0, 1],
+            rowStarts: [0, 1, 2],
+            mergedCells: [false, false],
+            mergeRects: []
+        )
+        let sheet = OfficeSheet(
+            name: "Geom",
+            rowHeights: [25, 30],
+            columnWidths: [70, 60],
+            cells: [
+                OfficeCell(row: 0, column: 0, text: "A"),
+                OfficeCell(row: 1, column: 1, text: "B"),
+            ],
+            geometry: geometry
+        )
+        let layout = CGElementDrawer.sheetSelectionLayout(sheet: sheet)
+        #expect(layout.columns.offsets == [42, 112, 172])
+        #expect(layout.rows.offsets == [22, 47, 77])
+        // 与绘制层前缀和逐像素一致
+        let (colOffsets, rowOffsets, _, _) = CGElementDrawer.computeSheetExtents(sheet)
+        #expect(layout.columns.offsets == colOffsets)
+        #expect(layout.rows.offsets == rowOffsets)
+        #expect(SheetSelectionModel.cellTextAt(sheet: sheet, layout: layout, row: 1, column: 1) == "B")
+
+        // 脏 rowStarts（长度不符）→ 现场重算，定位仍然正确
+        let dirty = OfficeSheetGeometry(
+            columnOffsets: [0, 70, 130],
+            rowOffsets: [0, 25, 55],
+            columnVisible: [0, 1],
+            rowVisible: [0, 1],
+            rowStarts: [],
+            mergedCells: [],
+            mergeRects: []
+        )
+        let dirtySheet = OfficeSheet(
+            name: "Dirty",
+            rowHeights: [25, 30],
+            columnWidths: [70, 60],
+            cells: [
+                OfficeCell(row: 0, column: 0, text: "A"),
+                OfficeCell(row: 1, column: 1, text: "B"),
+            ],
+            geometry: dirty
+        )
+        let dirtyLayout = CGElementDrawer.sheetSelectionLayout(sheet: dirtySheet)
+        #expect(dirtyLayout.rowStarts == [0, 1, 2])
+        #expect(SheetSelectionModel.cellTextAt(sheet: dirtySheet, layout: dirtyLayout, row: 1, column: 1) == "B")
+
+        // 无 geometry：按尺寸现场累加，与 computeSheetExtents 回退分支一致
+        let bare = makeSheet(grid: [["a", "b"], ["c", "d"]])
+        let bareLayout = CGElementDrawer.sheetSelectionLayout(sheet: bare)
+        let (bareCols, bareRows, _, _) = CGElementDrawer.computeSheetExtents(bare)
+        #expect(bareLayout.columns.offsets == bareCols)
+        #expect(bareLayout.rows.offsets == bareRows)
+    }
+
+    @Test("XLSX 鼠标点换算为视图数据坐标并命中单元格")
+    @MainActor
+    func sheetSelectionMousePointConversion() throws {
+        // 用真实文档驱动视图，端到端校验「屏幕点 → 文档点 → 模型视图数据坐标」这条链路
+        let doc = try JSONDecoder().decode(OfficeDocument.self, from: """
+        {
+            "schemaVersion": 9,
+            "kind": "XLSX",
+            "sheets": [
+                {
+                    "name": "Grid",
+                    "rowHeights": [20, 20, 20],
+                    "columnWidths": [64, 64, 64],
+                    "cells": [
+                        {"row": 0, "column": 0, "text": "0,0", "style": 0, "numeric": false},
+                        {"row": 1, "column": 1, "text": "1,1", "style": 0, "numeric": false},
+                        {"row": 2, "column": 2, "text": "2,2", "style": 0, "numeric": false}
+                    ],
+                    "merges": []
+                }
+            ],
+            "cellStyles": []
+        }
+        """.data(using: .utf8)!)
+
+        let view = OfficeDocumentNSView()
+        view.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        view.setDocument(doc)
+        view.currentPage = 1
+        view.zoom = 1
+
+        // 未滚动：可见窗口原点为 (0,0)，视图点 (43,23) 落在 A1
+        let unrolled = CGRect(x: 0, y: 0, width: 400, height: 300)
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 43, y: 23), docVisible: unrolled, clampToBounds: false) == at(0, 0))
+        // 视图点 (150,45) 落在第 1 列第 1 行 = B2
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 150, y: 45), docVisible: unrolled, clampToBounds: false) == at(1, 1))
+
+        // 标头区域内不命中
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 20, y: 23), docVisible: unrolled, clampToBounds: false) == nil)
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 43, y: 10), docVisible: unrolled, clampToBounds: false) == nil)
+
+        // 滚动 (128,40)：可见窗口原点即滚动量，屏幕点 (171,63) 减去原点得模型坐标 (43,23)，
+        // 叠加滚动量后落在 C3 —— 证明「减 docVisible.origin」与抽屉的 scrollX 语义一致
+        let scrolled = CGRect(x: 128, y: 40, width: 400, height: 300)
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 171, y: 63), docVisible: scrolled, clampToBounds: false) == at(2, 2))
+        // 同一屏幕点在不滚动窗口中对应 A1，说明滚动量确实被消解掉了
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 171, y: 63), docVisible: unrolled, clampToBounds: false) == at(2, 2))
+
+        // 缩放 2：屏幕点翻倍后换算结果不变
+        view.zoom = 2
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 86, y: 46), docVisible: unrolled, clampToBounds: false) == at(0, 0))
+
+        // 越界：不钳位返回 nil，钳位贴到末格
+        view.zoom = 1
+        #expect(view.sheetCell(
+            atViewPoint: CGPoint(x: 900, y: 900), docVisible: unrolled, clampToBounds: false
+        ) == nil)
+        #expect(view.sheetCell(
+            atViewPoint: CGPoint(x: 900, y: 900), docVisible: unrolled, clampToBounds: true
+        ) == at(2, 2))
+
+        // 视图状态默认值：无文档时不构造布局
+        let empty = OfficeDocumentNSView()
+        #expect(empty.currentSheetLayout() == nil)
+        #expect(empty.sheetSelection == nil)
+        #expect(!empty.hasAnySelection)
+        #expect(empty.performSelectAll() == false)
+        #expect(empty.currentSelectedText() == "")
+    }
+
+    @Test("XLSX 选区状态在切表、换文档与清除时被丢弃")
+    @MainActor
+    func sheetSelectionStateLifecycle() throws {
+        let view = OfficeDocumentNSView()
+        let sheetA = makeSheet(grid: [["A1", "B1"], ["A2", "B2"]])
+        let selection = SheetSelectionModel.resolve(sheet: sheetA, anchor: at(0, 0), focus: at(1, 1))
+
+        // 两页文档：切表才有意义
+        let twoSheetDoc = try JSONDecoder().decode(OfficeDocument.self, from: """
+        {
+            "schemaVersion": 9,
+            "kind": "XLSX",
+            "sheets": [
+                {"name": "S1", "rowHeights": [20, 20], "columnWidths": [64, 64],
+                 "cells": [{"row": 0, "column": 0, "text": "A1", "style": 0, "numeric": false}], "merges": []},
+                {"name": "S2", "rowHeights": [20], "columnWidths": [64],
+                 "cells": [{"row": 0, "column": 0, "text": "B1", "style": 0, "numeric": false}], "merges": []}
+            ],
+            "cellStyles": []
+        }
+        """.data(using: .utf8)!)
+        view.setDocument(twoSheetDoc)
+        view.currentPage = 1
+
+        // 清除选区
+        view.sheetSelection = selection
+        #expect(view.hasAnySelection)
+        view.performClearSelection()
+        #expect(view.sheetSelection == nil)
+
+        // 切换工作表：必须丢弃（单元格坐标只对原表有意义）
+        view.sheetSelection = selection
+        view.currentPage = 2
+        #expect(view.sheetSelection == nil)
+
+        // setDocument 换文档：必须丢弃
+        let otherDoc = try JSONDecoder().decode(OfficeDocument.self, from: """
+        {
+            "schemaVersion": 9,
+            "kind": "XLSX",
+            "sheets": [
+                {"name": "Other", "rowHeights": [20], "columnWidths": [64],
+                 "cells": [{"row": 0, "column": 0, "text": "Z", "style": 0, "numeric": false}], "merges": []}
+            ],
+            "cellStyles": []
+        }
+        """.data(using: .utf8)!)
+        view.sheetSelection = selection
+        view.setDocument(otherDoc)
+        #expect(view.sheetSelection == nil)
+
+        // teardown 释放全部选区状态
+        view.sheetSelection = selection
+        view.teardown()
+        #expect(view.sheetSelection == nil)
+
+        // 非 XLSX 文档：DOCX 的字段区选语义不受影响，hasAnySelection 不把表格选区算进去
+        let docxDoc = try JSONDecoder().decode(OfficeDocument.self, from: """
+        {"schemaVersion": 9, "kind": "DOCX", "blocks": [], "pages": []}
+        """.data(using: .utf8)!)
+        let docxView = OfficeDocumentNSView()
+        docxView.setDocument(docxDoc)
+        docxView.sheetSelection = selection
+        #expect(!docxView.hasAnySelection, "DOCX 下不应把表格选区算作有效选区")
+    }
+
+    @Test("XLSX 选中文本与 TSV 写入剪贴板")
+    @MainActor
+    func sheetSelectionClipboardBridge() throws {
+        let controller = OfficePreviewController()
+        let view = OfficeDocumentNSView()
+        controller.attachCanvas(view)
+
+        // 未挂载文档时 5 个 API 全部安全降级
+        #expect(controller.selectAll() == false)
+        #expect(controller.hasSelection() == false)
+        #expect(controller.getSelectedText() == "")
+        #expect(controller.copySelection() == false)
+        controller.clearSelection()
+
+        // 注入表格文档后 API 走 XLSX 分支
+        let sheet = makeSheet(grid: [["A1", "B1"], ["A2", "B2"]])
+        let doc = try JSONDecoder().decode(OfficeDocument.self, from: """
+        {
+            "schemaVersion": 9,
+            "kind": "XLSX",
+            "sheets": [
+                {
+                    "name": "Sheet1",
+                    "rowHeights": [20, 20],
+                    "columnWidths": [64, 64],
+                    "cells": [
+                        {"row": 0, "column": 0, "text": "A1", "style": 0, "numeric": false},
+                        {"row": 0, "column": 1, "text": "B1", "style": 0, "numeric": false},
+                        {"row": 1, "column": 0, "text": "A2", "style": 0, "numeric": false},
+                        {"row": 1, "column": 1, "text": "B2", "style": 0, "numeric": false}
+                    ],
+                    "merges": []
+                }
+            ],
+            "cellStyles": []
+        }
+        """.data(using: .utf8)!)
+        view.setDocument(doc)
+        view.currentPage = 1
+        #expect(view.currentSheetLayout() != nil)
+
+        // 全选 → 整表 TSV
+        #expect(controller.selectAll())
+        #expect(controller.hasSelection())
+        #expect(controller.getSelectedText() == "A1\tB1\nA2\tB2")
+
+        // 复制 → 写入剪贴板并保持选区
+        #expect(controller.copySelection())
+        #expect(NSPasteboard.general.string(forType: .string) == "A1\tB1\nA2\tB2")
+        #expect(controller.hasSelection(), "复制不应清除选区")
+
+        // 单格 TSV 语义：选中一个单元格输出裸文本（无制表符）
+        let single = SheetSelectionModel.resolve(sheet: sheet, anchor: at(0, 0), focus: at(0, 0))
+        #expect(
+            SheetSelectionModel.selectedText(sheet: sheet, layout: view.currentSheetLayout(), selection: single) == "A1"
+        )
+
+        // 清除后 API 回到空态
+        controller.clearSelection()
+        #expect(!controller.hasSelection())
+        #expect(controller.getSelectedText() == "")
+
+        // 换一份空白表：全选必须失败（对应 Java allRange 返回 null 的语义）
+        let blankDoc = try JSONDecoder().decode(OfficeDocument.self, from: """
+        {
+            "schemaVersion": 9,
+            "kind": "XLSX",
+            "sheets": [
+                {"name": "Blank", "rowHeights": [20, 20], "columnWidths": [64, 64], "cells": [], "merges": []}
+            ],
+            "cellStyles": []
+        }
+        """.data(using: .utf8)!)
+        view.setDocument(blankDoc)
+        #expect(!view.canSelectAll(), "空白表不应允许全选")
+        #expect(!controller.selectAll())
+        #expect(controller.getSelectedText() == "")
+    }
+
     private func createTestCGImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         var bytes = [UInt8](repeating: 128, count: width * height * 4)

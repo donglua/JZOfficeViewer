@@ -1944,12 +1944,15 @@ public enum CGElementDrawer {
         in ctx: CGContext,
         sheet: OfficeSheet,
         styles: [OfficeCellStyle],
-        viewport: CGRect
+        viewport: CGRect,
+        selection: SheetSelectionModel.SheetSelection? = nil
     ) {
         let (colOffsets, rowOffsets, totalW, totalH) = computeSheetExtents(sheet)
         let rowCount = sheet.rowHeights.count
         let columnCount = sheet.columnWidths.count
         let plan = sheetFreezePlan(sheet: sheet, viewport: viewport)
+        // 选区几何与交互层共用同一份模型布局：绘制位置与鼠标命中位置因此不可能漂移
+        let selectionLayout = sheetSelectionLayout(sheet: sheet)
 
         ctx.saveGState()
         defer { ctx.restoreGState() }
@@ -1990,7 +1993,8 @@ public enum CGElementDrawer {
             rowOffsets: rowOffsets,
             drawW: min(totalW, viewport.maxX),
             drawH: min(totalH, viewport.maxY),
-            viewport: viewport
+            viewport: viewport,
+            selection: selection
         )
 
         // 3. 冻结分割线：区别于普通网格线与表头分隔线的中性蓝灰
@@ -2008,7 +2012,76 @@ public enum CGElementDrawer {
             }
             ctx.strokePath()
         }
+
+        // 4. 选区填充与描边：压在网格、合并单元格与标头之上，按冻结象限分别裁剪
+        // 放在最后是因为选区是交互反馈，不允许被任何单元格底色或网格线盖住
+        drawSheetSelection(
+            in: ctx,
+            layout: selectionLayout,
+            selection: selection,
+            plan: plan,
+            rowCount: rowCount,
+            columnCount: columnCount
+        )
     }
+
+    /// 构造与 `computeSheetExtents` 同一坐标系（含标头 gutter）的模型侧布局，供选区几何复用
+    public static func sheetSelectionLayout(sheet: OfficeSheet) -> SheetSelectionModel.SheetSelectionLayout {
+        SheetSelectionModel.SheetSelectionLayout(
+            sheet: sheet,
+            headerWidth: sheetHeaderWidth,
+            headerHeight: sheetHeaderHeight
+        )
+    }
+
+    /// 绘制选区：文档坐标矩形按四象限裁剪，滚动区与三个冻结象限各自绘制一份，绝不跨越冻结边界
+    private static func drawSheetSelection(
+        in ctx: CGContext,
+        layout: SheetSelectionModel.SheetSelectionLayout,
+        selection: SheetSelectionModel.SheetSelection?,
+        plan: SheetFreezePlan,
+        rowCount: Int,
+        columnCount: Int
+    ) {
+        guard let selection,
+              let cellRect = SheetSelectionModel.docRect(layout: layout, selection: selection) else { return }
+        let rect = CGRect(
+            x: cellRect.left,
+            y: cellRect.top,
+            width: cellRect.width,
+            height: cellRect.height
+        )
+        guard rect.width > 0, rect.height > 0 else { return }
+        let fillColor = argbToCGColor(SHEET_SELECTION_FILL)
+        let strokeColor = argbToCGColor(SHEET_SELECTION_STROKE)
+        // 按象限切分：与检索高亮复用同一套裁剪结果，滚动区选区绝不覆盖冻结区
+        for piece in clipSheetHighlight(rect, plan: plan, rowCount: rowCount, columnCount: columnCount) {
+            ctx.saveGState()
+            ctx.clip(to: piece.clip)
+            if let fillColor {
+                ctx.setFillColor(fillColor)
+                ctx.fill(piece.rect)
+            }
+            if let strokeColor {
+                // 描边宽度固定 1.5pt（设计文档 §3.2.1），不随缩放变化
+                ctx.setStrokeColor(strokeColor)
+                ctx.setLineWidth(SHEET_SELECTION_LINE_WIDTH)
+                ctx.stroke(piece.rect)
+            }
+            ctx.restoreGState()
+        }
+    }
+
+    /// 选区填充色 `#261A73E8`（15% 透明度 Google Blue），设计文档 §3.2.1
+    public static let SHEET_SELECTION_FILL: UInt32 = 0x261a73e8
+    /// 选区描边色 `#FF1A73E8`，设计文档 §3.2.1
+    public static let SHEET_SELECTION_STROKE: UInt32 = 0xff1a73e8
+    /// 选区描边线宽（pt），设计文档 §3.2.1 规定固定物理视觉宽度
+    public static let SHEET_SELECTION_LINE_WIDTH: CGFloat = 1.5
+    /// 选区联动高亮的标头背景色 `#D2E3FC`，设计文档 §3.2.1
+    public static let SHEET_HEADER_SELECTION_FILL: UInt32 = 0xffd2e3fc
+    /// 选区联动高亮的标头文字色 `#174EA6`，设计文档 §3.2.1
+    public static let SHEET_HEADER_SELECTION_TEXT: UInt32 = 0xff174ea6
 
     /// 裁剪 core 的 rowStarts 是否可用于按行遍历，不可用时返回 nil 走全表扫描回退
     private static func validRowStarts(sheet: OfficeSheet, rowCount: Int) -> [Int]? {
@@ -2127,6 +2200,11 @@ public enum CGElementDrawer {
     }
 
     /// 绘制表头：可滚动段正常滚动，冻结段锁定，左上角交汇块保持干净
+    ///
+    /// `selection` 非空时，落在选区列/行范围内的标头格改用联动高亮配色（设计文档 §3.2.1）。
+    /// 联动判定只依赖选区规范化边界，因此四个标头段（可滚动列、冻结列、可滚动行、冻结行）
+    /// 各自调用同一对 `drawColumnHeader` / `drawRowHeader` 就自动获得一致的联动效果，
+    /// 无需在每一段里重复写条件。
     private static func drawSheetHeaders(
         in ctx: CGContext,
         sheet: OfficeSheet,
@@ -2135,7 +2213,8 @@ public enum CGElementDrawer {
         rowOffsets: [CGFloat],
         drawW: CGFloat,
         drawH: CGFloat,
-        viewport: CGRect
+        viewport: CGRect,
+        selection: SheetSelectionModel.SheetSelection? = nil
     ) {
         let headerHeight = sheetHeaderHeight
         let headerWidth = sheetHeaderWidth
@@ -2148,9 +2227,13 @@ public enum CGElementDrawer {
         let bodyRight = min(max(plan.bodyMaxRight, headerLeft), max(drawW, headerLeft))
         let bodyBottom = min(max(plan.bodyMaxBottom, headerTop), max(drawH, headerTop))
         let headerFont = NSFont.systemFont(ofSize: 10, weight: .medium)
+        // 联动高亮使用独立的加粗字体与配色，常规标头保持原有字号字重不变
+        let headerSelectedFont = NSFont.systemFont(ofSize: 10, weight: .bold)
         let headerColor = argbToNSColor(0xff52606d)
+        let headerSelectedColor = argbToNSColor(SHEET_HEADER_SELECTION_TEXT)
         let gridColor = argbToCGColor(0xffdce1e5)
         let headerBg = argbToCGColor(0xfff3f5f7)
+        let headerSelectedBg = argbToCGColor(SHEET_HEADER_SELECTION_FILL)
 
         /// 顶部列头文本与分隔线
         func drawColumnHeader(_ column: Int, offsetX: CGFloat, clip: CGRect) {
@@ -2159,12 +2242,24 @@ public enum CGElementDrawer {
             guard width > 0 else { return }
             let rect = CGRect(x: left, y: headerTop, width: width, height: headerHeight)
             guard rect.intersects(clip) else { return }
+            // 标头联动：列号落在选区列范围内时替换底色并加粗文字
+            let highlighted = selection?.containsColumn(column) ?? false
+            if highlighted, let headerSelectedBg {
+                ctx.setFillColor(headerSelectedBg)
+                ctx.fill(rect)
+            }
             if let gridColor {
                 ctx.setStrokeColor(gridColor)
                 ctx.setLineWidth(0.5)
                 ctx.stroke(rect)
             }
-            drawCenteredSingleLine(in: ctx, text: columnLabel(for: column), font: headerFont, color: headerColor, rect: rect)
+            drawCenteredSingleLine(
+                in: ctx,
+                text: columnLabel(for: column),
+                font: highlighted ? headerSelectedFont : headerFont,
+                color: highlighted ? headerSelectedColor : headerColor,
+                rect: rect
+            )
         }
 
         /// 左侧行头文本与分隔线
@@ -2174,13 +2269,25 @@ public enum CGElementDrawer {
             guard height > 0 else { return }
             let cellRect = CGRect(x: headerLeft, y: top, width: headerWidth, height: height)
             guard cellRect.intersects(clip) else { return }
+            // 标头联动：行号落在选区行范围内时替换底色并加粗文字
+            let highlighted = selection?.containsRow(row) ?? false
+            if highlighted, let headerSelectedBg {
+                ctx.setFillColor(headerSelectedBg)
+                ctx.fill(cellRect)
+            }
             if let gridColor {
                 ctx.setStrokeColor(gridColor)
                 ctx.setLineWidth(0.5)
                 ctx.stroke(cellRect)
             }
             let textRect = CGRect(x: headerLeft, y: top, width: headerWidth, height: min(height, 32))
-            drawCenteredSingleLine(in: ctx, text: "\(row + 1)", font: headerFont, color: headerColor, rect: textRect)
+            drawCenteredSingleLine(
+                in: ctx,
+                text: "\(row + 1)",
+                font: highlighted ? headerSelectedFont : headerFont,
+                color: highlighted ? headerSelectedColor : headerColor,
+                rect: textRect
+            )
         }
 
         // 顶部列头底板：可滚动段 + 冻结段

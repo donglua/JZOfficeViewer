@@ -143,10 +143,70 @@ public final class OfficePreviewController: ObservableObject {
 
     public func selectSheet(_ sheetNumber: Int) {
         guard !sheetNames.isEmpty, sheetNumber >= 1 && sheetNumber <= sheetNames.count else { return }
+        // 切表必须立刻丢弃 XLSX 选区：单元格坐标只对原工作表有意义，跨表保留会指到不存在的位置
+        clearSelection()
         if currentPage != sheetNumber {
             currentPage = sheetNumber
             notifyPageListeners()
         }
+    }
+
+    // MARK: - 选区公开 API（与 Android `OfficePreviewView` / 鸿蒙 `OfficePreviewController` 对齐）
+
+    /// 承载画布的 NSView 弱引用：选区 API 统一转发到真正的视图，避免控制器与视图各存一份状态
+    private weak var canvasView: OfficeDocumentNSView?
+
+    @MainActor
+    internal func attachCanvas(_ view: OfficeDocumentNSView) {
+        canvasView = view
+    }
+
+    @MainActor
+    internal func detachCanvas(_ view: OfficeDocumentNSView) {
+        if canvasView === view {
+            canvasView = nil
+        }
+    }
+
+    /// 选中文档全部可选正文；XLSX 下选中整表可见数据区。
+    ///
+    /// - Returns: 选中成功返回 `true`；未加载文档、表格全空或无可见行列时返回 `false`
+    @MainActor
+    @discardableResult
+    public func selectAll() -> Bool {
+        canvasView?.performSelectAll() ?? false
+    }
+
+    /// 清除当前选区；无选区时为空操作
+    @MainActor
+    public func clearSelection() {
+        canvasView?.performClearSelection()
+    }
+
+    /// 当前是否存在非空选区（仅反映状态，不触发任何重绘）
+    @MainActor
+    public func hasSelection() -> Bool {
+        canvasView?.hasAnySelection ?? false
+    }
+
+    /// 返回当前选中的纯文本。
+    ///
+    /// DOCX / PPTX 跨段落与跨块以 `"\n"` 连接；XLSX 返回 TSV：同行以 `"\t"`、
+    /// 跨行以 `"\n"` 分隔，隐藏行列跳过、合并单元格从属位置留空。
+    ///
+    /// - Returns: 无选区时返回空串
+    @MainActor
+    public func getSelectedText() -> String {
+        canvasView?.currentSelectedText() ?? ""
+    }
+
+    /// 把当前选中文本写入系统剪贴板，选区保持不变。
+    ///
+    /// - Returns: 写入成功返回 `true`；无选区或文本为空时返回 `false`
+    @MainActor
+    @discardableResult
+    public func copySelection() -> Bool {
+        canvasView?.writeSelectionToPasteboard() ?? false
     }
 
     public func presentSearch() {
@@ -318,6 +378,7 @@ public struct OfficePreviewView: View {
                                     searchResults: controller.searchResults,
                                     currentMatchIndex: controller.currentMatchIndex,
                                     targetHighlightRect: controller.targetHighlightRect,
+                                    controller: controller,
                                     onPresentSearch: { controller.presentSearch() },
                                     onDismissSearch: { controller.dismissSearch() },
                                     onFindNext: { _ = controller.findNext() },
@@ -457,6 +518,7 @@ struct OfficeCanvasRepresentable: NSViewRepresentable {
     let searchResults: [OfficeSearchMatch]
     let currentMatchIndex: Int
     let targetHighlightRect: CGRect?
+    let controller: OfficePreviewController
     let onPresentSearch: () -> Void
     let onDismissSearch: () -> Void
     let onFindNext: () -> Void
@@ -476,6 +538,9 @@ struct OfficeCanvasRepresentable: NSViewRepresentable {
         view.onFindNext = onFindNext
         view.onFindPrevious = onFindPrevious
         view.updateSearchResults(searchResults, currentIndex: currentMatchIndex, targetRect: targetHighlightRect)
+        // 控制器把选区 API 转发到真正的视图，避免两侧各存一份状态
+        view.controllerRef = controller
+        controller.attachCanvas(view)
         return view
     }
 
@@ -491,11 +556,15 @@ struct OfficeCanvasRepresentable: NSViewRepresentable {
         nsView.onFindNext = onFindNext
         nsView.onFindPrevious = onFindPrevious
         nsView.updateSearchResults(searchResults, currentIndex: currentMatchIndex, targetRect: targetHighlightRect)
+        nsView.controllerRef = controller
+        controller.attachCanvas(nsView)
         nsView.needsDisplay = true
         nsView.evaluateViewport()
     }
 
     static func dismantleNSView(_ nsView: OfficeDocumentNSView, coordinator: ()) {
+        // 先摘掉控制器的画布回指，再释放视图状态，避免选区 API 命中已销毁的视图
+        nsView.controllerRef?.detachCanvas(nsView)
         nsView.teardown()
     }
 }
@@ -514,6 +583,11 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     var currentPage: Int = 1 {
         didSet {
             if currentPage != oldValue && !isEvaluatingViewport {
+                // 切表即丢弃选区：单元格坐标只对原工作表有意义
+                if document?.kind == .xlsx {
+                    releaseSheetSelectionState()
+                    needsDisplay = true
+                }
                 evaluateViewport()
             }
         }
@@ -532,11 +606,40 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     var onDismissSearch: (() -> Void)?
     var onFindNext: (() -> Void)?
     var onFindPrevious: (() -> Void)?
+    /// 控制器的弱引用：拆卸时用它摘掉控制器的画布回指
+    weak var controllerRef: OfficePreviewController?
 
     internal var docxLayoutPlan: CGElementDrawer.DocxLayoutPlan?
     private var lastScrolledMatchIndex: Int = -1
     private var textLayout: DocumentTextLayout?
     private var selection: TextSelection?
+    /// XLSX 二维网格选区（与 DOCX/PPTX 的 `selection` 互斥：同一时刻只有一种文档类型生效）
+    internal var sheetSelection: SheetSelectionModel.SheetSelection?
+    /// XLSX 拖拽锚点：按下时固定，拖拽期间焦点跟随鼠标，松手后清空
+    private var sheetDragAnchor: SheetSelectionModel.CellCoord?
+    /// XLSX 模型布局缓存：以「工作表指纹 + 页码」为键，同一份表在滚动/缩放期间不重复构造前缀和
+    private var sheetLayoutCache: (fingerprint: SheetLayoutFingerprint, layout: SheetSelectionModel.SheetSelectionLayout)?
+
+    /// 工作表指纹：工作表是值类型无法用引用比较，这里用廉价字段组合判定"是不是同一份表"。
+    /// 任何会改变前缀和或单元格定位的输入（行列数、单元格数、合并数、表名、页码）都参与，
+    /// 因此真实文档切换一定失效，而同一文档的重绘、滚动与缩放一定命中。
+    private struct SheetLayoutFingerprint: Equatable {
+        let page: Int
+        let name: String
+        let rowCount: Int
+        let columnCount: Int
+        let cellCount: Int
+        let mergeCount: Int
+
+        init(page: Int, sheet: OfficeSheet) {
+            self.page = page
+            self.name = sheet.name
+            self.rowCount = sheet.rowHeights.count
+            self.columnCount = sheet.columnWidths.count
+            self.cellCount = sheet.cells.count
+            self.mergeCount = sheet.merges.count
+        }
+    }
     private weak var observedClipView: NSClipView?
 
     override var isFlipped: Bool { true }
@@ -559,6 +662,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         imageLoader = nil
         textLayout = nil
         selection = nil
+        releaseSheetSelectionState()
     }
 
     override func viewDidMoveToSuperview() {
@@ -628,6 +732,11 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             selection = nil
         }
         document = newDoc
+        // 文档真的换了才丢弃 XLSX 选区：SwiftUI 每次重绘都会重入本方法，
+        // 无条件清理会把用户刚拖出来的选区在下一帧擦掉
+        if isDocChanged {
+            releaseSheetSelectionState()
+        }
         if isDocChanged || docxLayoutPlan == nil {
             docxLayoutPlan = newDoc.kind == .docx ? CGElementDrawer.layoutDocxBlocks(in: newDoc) : nil
             textLayout = nil
@@ -945,7 +1054,8 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 in: ctx,
                 sheet: sheet,
                 styles: doc.cellStyles,
-                viewport: docVisible
+                viewport: docVisible,
+                selection: sheetSelection
             )
             xlsxFreezePlan = CGElementDrawer.sheetFreezePlan(sheet: sheet, viewport: docVisible)
         }
@@ -1039,6 +1149,208 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         }
     }
 
+    // MARK: - XLSX 单元格选区
+
+    /// 当前工作表对象（非 XLSX 或没有工作表时返回 nil）
+    private func currentSheet() -> OfficeSheet? {
+        guard let document, document.kind == .xlsx, !document.sheets.isEmpty else { return nil }
+        let index = max(0, min(document.sheets.count - 1, currentPage - 1))
+        guard index < document.sheets.count else { return nil }
+        return document.sheets[index]
+    }
+
+    /// 当前工作表的模型侧布局（按工作表指纹缓存，前缀和构造代价与行列数成正比）
+    internal func currentSheetLayout() -> SheetSelectionModel.SheetSelectionLayout? {
+        guard let sheet = currentSheet() else { return nil }
+        let fingerprint = SheetLayoutFingerprint(page: currentPage, sheet: sheet)
+        if let cached = sheetLayoutCache, cached.fingerprint == fingerprint {
+            return cached.layout
+        }
+        let layout = CGElementDrawer.sheetSelectionLayout(sheet: sheet)
+        sheetLayoutCache = (fingerprint, layout)
+        return layout
+    }
+
+    /// 丢弃 XLSX 选区、拖拽锚点与布局缓存
+    internal func releaseSheetSelectionState() {
+        sheetSelection = nil
+        sheetDragAnchor = nil
+        sheetLayoutCache = nil
+    }
+
+    /// 是否存在任一格式的非空选区
+    var hasAnySelection: Bool {
+        if document?.kind == .xlsx { return sheetSelection != nil }
+        return selection != nil && selection?.isEmpty == false
+    }
+
+    /// 当前选区的纯文本：XLSX 为 TSV，DOCX/PPTX 为换行连接的正文
+    func currentSelectedText() -> String {
+        if document?.kind == .xlsx {
+            guard let sheetSelection, let sheet = currentSheet(), let layout = currentSheetLayout() else { return "" }
+            return SheetSelectionModel.selectedText(sheet: sheet, layout: layout, selection: sheetSelection)
+        }
+        guard let selection, !selection.isEmpty, let layout = ensureTextLayout() else { return "" }
+        return layout.selectedText(for: selection)
+    }
+
+    /// 当前工作表能否全选（存在至少一个非空文本单元格且有可见行列）
+    func canSelectAll() -> Bool {
+        if document?.kind == .xlsx {
+            guard let sheet = currentSheet(), let layout = currentSheetLayout() else { return false }
+            return SheetSelectionModel.allRange(sheet: sheet, layout: layout) != nil
+        }
+        return !(ensureTextLayout()?.blocks.isEmpty ?? true)
+    }
+
+    /// 选中全部内容；XLSX 下为整表可见数据区。返回是否成功建立选区
+    @discardableResult
+    func performSelectAll() -> Bool {
+        if document?.kind == .xlsx {
+            guard let sheet = currentSheet(), let layout = currentSheetLayout(),
+                  let all = SheetSelectionModel.allRange(sheet: sheet, layout: layout) else { return false }
+            sheetSelection = all
+            sheetDragAnchor = nil
+            needsDisplay = true
+            return true
+        }
+        guard let all = ensureTextLayout()?.allTextRange(), !all.isEmpty else { return false }
+        selection = all
+        needsDisplay = true
+        return true
+    }
+
+    /// 清除两种格式的选区；无选区时为空操作
+    func performClearSelection() {
+        let hadSheet = sheetSelection != nil
+        let hadText = selection != nil
+        releaseSheetSelectionState()
+        selection = nil
+        if hadSheet || hadText {
+            needsDisplay = true
+        }
+    }
+
+    /// 把当前选区写入系统剪贴板；返回是否真的写入了非空文本
+    @discardableResult
+    func writeSelectionToPasteboard() -> Bool {
+        let text = currentSelectedText()
+        guard !text.isEmpty else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string)
+    }
+
+    /// 把视图坐标下的鼠标点换算成模型需要的「视图数据坐标」，再交给命中测试。
+    ///
+    /// 模型的坐标约定（由 `scripts/tests/SheetSelectionChecks.java` 钉死）是：
+    /// 标头块占据 `[0, headerWidth)`，冻结列区紧接其后占据 `[headerWidth, headerWidth + frozenDataW)`，
+    /// 滚动区从 `headerWidth + frozenDataW` 起算并叠加 `scrollDataX`。也就是说原点落在
+    /// **当前可见窗口的左上角**，而不是整张工作表的左上角。
+    ///
+    /// 换算链条（与 `draw(_:)` 的绘制链条严格对应）：
+    ///
+    /// 1. `draw(_:)` 只做了 `ctx.scaleBy(x: zoom, y: zoom)`，没有平移；
+    ///    `drawSpreadsheet` 收到的 `viewport` 就是 `docVisible`，它把标头画在
+    ///    `plan.headerLeft = scrollX`、把滚动区单元格画在原始文档位置、把冻结区单元格
+    ///    平移 `scrollX` 后画在冻结边界内——三者都落在「文档坐标 == 视图坐标」这一套量纲里；
+    /// 2. 因此鼠标视图点除以 `zoom` 得到的就是文档坐标 `docX`；
+    /// 3. 再减去可见窗口原点 `docVisible.minX`，把「整表文档坐标」平移到「可见窗口原点」，
+    ///    正好对应模型期望的原点约定。
+    ///
+    /// 换算结果自检：滚动区单元格的文档位置是 `colOffsets[c]`，模型收到的
+    /// `viewX = colOffsets[c] - scrollX`，于是 `bodyX = viewX - headerWidth = cum[c] - scrollX`；
+    /// 因 `bodyX >= frozenDataW` 而叠加滚动量后 `dataX = cum[c]`，
+    /// `axis.first(headerWidth + dataX) = axis.first(colOffsets[c]) = c`，命中正确列。
+    /// 冻结列单元格的文档位置是 `colOffsets[c] + scrollX`，
+    /// `viewX = colOffsets[c]` 落在 `[headerWidth, headerWidth + frozenDataW)` 内、
+    /// 不叠加滚动量，同样命中正确列。两处都对得上，说明该换算在四象限内一致。
+    ///
+    /// - Parameters:
+    ///   - viewPoint: 视图坐标（`isFlipped` 为 true，原点在左上角，未除以缩放）
+    ///   - docVisible: 当前可见窗口的文档坐标矩形；`nil` 时按视图实时状态推导
+    func sheetCell(
+        atViewPoint viewPoint: CGPoint,
+        docVisible overrideDocVisible: CGRect? = nil,
+        clampToBounds: Bool
+    ) -> SheetSelectionModel.CellCoord? {
+        guard let sheet = currentSheet(), let layout = currentSheetLayout() else { return nil }
+        let docVisible = overrideDocVisible ?? currentDocVisibleRect()
+        let plan = CGElementDrawer.sheetFreezePlan(sheet: sheet, viewport: docVisible)
+        let safeZoom = max(0.01, zoom)
+        return SheetSelectionModel.hitTest(
+            layout: layout,
+            effFrozenRows: plan.effectiveRows,
+            effFrozenCols: plan.effectiveColumns,
+            frozenDataW: plan.frozenDataWidth,
+            frozenDataH: plan.frozenDataHeight,
+            scrollDataX: plan.scrollX,
+            scrollDataY: plan.scrollY,
+            viewX: viewPoint.x / safeZoom - docVisible.minX,
+            viewY: viewPoint.y / safeZoom - docVisible.minY,
+            clampToBounds: clampToBounds
+        )
+    }
+
+    /// 当前可见窗口在文档坐标系下的矩形（与 `draw(_:)` 里的 `docVisible` 同源）
+    private func currentDocVisibleRect() -> CGRect {
+        let safeZoom = max(0.1, zoom)
+        if visibleRect.width > 0, visibleRect.height > 0 {
+            return CGRect(
+                x: visibleRect.minX / safeZoom,
+                y: visibleRect.minY / safeZoom,
+                width: visibleRect.width / safeZoom,
+                height: visibleRect.height / safeZoom
+            )
+        }
+        return CGRect(
+            x: bounds.minX / safeZoom,
+            y: bounds.minY / safeZoom,
+            width: bounds.width / safeZoom,
+            height: bounds.height / safeZoom
+        )
+    }
+
+    /// 把鼠标事件命中成单元格坐标；`clampToBounds` 为 true 时越界钳位到边缘（拖拽扩选需要）
+    func sheetCell(at event: NSEvent, clampToBounds: Bool) -> SheetSelectionModel.CellCoord? {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        return sheetCell(atViewPoint: viewPoint, clampToBounds: clampToBounds)
+    }
+
+    /// XLSX 鼠标按下：建立单格选区并固定拖拽锚点
+    private func handleSheetMouseDown(with event: NSEvent) -> Bool {
+        guard document?.kind == .xlsx else { return false }
+        guard let sheet = currentSheet() else { return false }
+        guard let coord = sheetCell(at: event, clampToBounds: false) else {
+            // 落在标头或表格外：沿用系统行为，同时清掉旧选区
+            if sheetSelection != nil {
+                sheetSelection = nil
+                sheetDragAnchor = nil
+                needsDisplay = true
+            }
+            return false
+        }
+        sheetDragAnchor = coord
+        sheetSelection = SheetSelectionModel.resolve(sheet: sheet, anchor: coord, focus: coord)
+        needsDisplay = true
+        return true
+    }
+
+    /// XLSX 拖拽扩选：锚点固定，焦点跟随鼠标；拖出边缘时钳位以继续扩选
+    private func handleSheetMouseDragged(with event: NSEvent) {
+        guard document?.kind == .xlsx, let sheet = currentSheet() else { return }
+        guard let anchor = sheetDragAnchor else {
+            _ = handleSheetMouseDown(with: event)
+            return
+        }
+        guard let focus = sheetCell(at: event, clampToBounds: true) else { return }
+        let resolved = SheetSelectionModel.resolve(sheet: sheet, anchor: anchor, focus: focus)
+        if resolved != sheetSelection {
+            sheetSelection = resolved
+            needsDisplay = true
+        }
+    }
+
     // MARK: - 鼠标手势与文本框选
 
     private func documentPoint(for event: NSEvent) -> CGPoint {
@@ -1049,6 +1361,13 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        // XLSX 只做单元格点选，不构建文本索引（表格不参与自由划词）；
+        // 点在标头或表格外时回落系统行为，同时清掉旧选区
+        if document?.kind == .xlsx {
+            _ = handleSheetMouseDown(with: event)
+            super.mouseDown(with: event)
+            return
+        }
         let docPoint = documentPoint(for: event)
         guard let layout = ensureTextLayout() else {
             super.mouseDown(with: event)
@@ -1088,6 +1407,11 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
 
     override func mouseDragged(with event: NSEvent) {
         _ = autoscroll(with: event)
+        // XLSX：锚点固定、焦点随鼠标，拖出边缘时钳位继续扩选
+        if document?.kind == .xlsx {
+            handleSheetMouseDragged(with: event)
+            return
+        }
         let docPoint = documentPoint(for: event)
         guard let layout = ensureTextLayout() else {
             super.mouseDragged(with: event)
@@ -1105,6 +1429,12 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     }
 
     override func mouseUp(with event: NSEvent) {
+        // XLSX：松手结束拖拽，锚点保留在选区里（后续再按下会重新取锚点）
+        if document?.kind == .xlsx {
+            sheetDragAnchor = nil
+            super.mouseUp(with: event)
+            return
+        }
         if let sel = selection, sel.isEmpty {
             selection = nil
             needsDisplay = true
@@ -1145,27 +1475,20 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     }
 
     @objc func copy(_ sender: Any?) {
-        guard let sel = selection, !sel.isEmpty, let layout = ensureTextLayout() else { return }
-        let text = layout.selectedText(for: sel)
-        guard !text.isEmpty else { return }
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(text, forType: .string)
+        // XLSX 与文本共用同一出口：选区文本由 currentSelectedText 按文档类型分派
+        _ = writeSelectionToPasteboard()
     }
 
     @objc override func selectAll(_ sender: Any?) {
-        if let all = ensureTextLayout()?.allTextRange() {
-            selection = all
-            needsDisplay = true
-        }
+        _ = performSelectAll()
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(copy(_:)) {
-            return selection != nil && !selection!.isEmpty
+            return hasAnySelection
         }
         if menuItem.action == #selector(selectAll(_:)) {
-            return !(ensureTextLayout()?.blocks.isEmpty ?? true)
+            return canSelectAll()
         }
         return true
     }
@@ -1175,8 +1498,16 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu(title: "Context Menu")
 
-        // 若右键时未选中文本，尝试智能选词
-        if selection == nil || selection!.isEmpty {
+        if document?.kind == .xlsx {
+            // XLSX：右键落在未选中的单元格上时先选它，再展示菜单（与表格软件习惯一致）
+            if sheetSelection == nil, let coord = sheetCell(at: event, clampToBounds: false),
+               let sheet = currentSheet() {
+                sheetSelection = SheetSelectionModel.resolve(sheet: sheet, anchor: coord, focus: coord)
+                sheetDragAnchor = nil
+                needsDisplay = true
+            }
+        } else if selection == nil || selection!.isEmpty {
+            // 若右键时未选中文本，尝试智能选词
             let docPoint = documentPoint(for: event)
             if let layout = ensureTextLayout(),
                let pos = layout.hitTest(docPoint: docPoint),
@@ -1186,17 +1517,16 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             }
         }
 
-        let hasSel = selection != nil && !selection!.isEmpty
-        let copyItem = NSMenuItem(title: "拷贝", action: #selector(copy(_:)), keyEquivalent: "c")
+        let copyItem = NSMenuItem(title: "复制", action: #selector(copy(_:)), keyEquivalent: "c")
         copyItem.target = self
-        copyItem.isEnabled = hasSel
+        copyItem.isEnabled = hasAnySelection
         menu.addItem(copyItem)
 
         menu.addItem(NSMenuItem.separator())
 
         let selectAllItem = NSMenuItem(title: "全选", action: #selector(selectAll(_:)), keyEquivalent: "a")
         selectAllItem.target = self
-        selectAllItem.isEnabled = !(ensureTextLayout()?.blocks.isEmpty ?? true)
+        selectAllItem.isEnabled = canSelectAll()
         menu.addItem(selectAllItem)
 
         return menu

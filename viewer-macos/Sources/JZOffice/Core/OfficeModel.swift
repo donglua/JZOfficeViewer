@@ -521,6 +521,18 @@ public struct OfficeCell: Codable, Sendable {
     public let text: String
     public let style: Int
     public let numeric: Bool
+
+    /// 逐字段构造，供单元测试与离线用例直接拼装工作表。
+    ///
+    /// 属性全为 `let` 且只有 `Codable` 合成解码路径时，测试只能靠手写 JSON 造数据；
+    /// 该初始化器只补齐构造入口，不参与解码，因此对 `Codable` 行为零影响。
+    public init(row: Int = 0, column: Int = 0, text: String = "", style: Int = 0, numeric: Bool = false) {
+        self.row = row
+        self.column = column
+        self.text = text
+        self.style = style
+        self.numeric = numeric
+    }
 }
 
 public struct OfficeMergeRect: Codable, Sendable {
@@ -541,6 +553,27 @@ public struct OfficeSheetGeometry: Codable, Sendable {
     public let rowStarts: [Int]
     public let mergedCells: [Bool]
     public let mergeRects: [OfficeMergeRect]
+
+    /// 逐字段构造，供单元测试构造 core 预计算几何并验证模型侧的复用与回退分支。
+    ///
+    /// 与 `OfficeCell` 同理：只补构造入口，不参与解码，`Codable` 行为保持不变。
+    public init(
+        columnOffsets: [CGFloat] = [],
+        rowOffsets: [CGFloat] = [],
+        columnVisible: [Int] = [],
+        rowVisible: [Int] = [],
+        rowStarts: [Int] = [],
+        mergedCells: [Bool] = [],
+        mergeRects: [OfficeMergeRect] = []
+    ) {
+        self.columnOffsets = columnOffsets
+        self.rowOffsets = rowOffsets
+        self.columnVisible = columnVisible
+        self.rowVisible = rowVisible
+        self.rowStarts = rowStarts
+        self.mergedCells = mergedCells
+        self.mergeRects = mergeRects
+    }
 }
 
 public struct OfficeSheet: Codable, Sendable {
@@ -557,6 +590,31 @@ public struct OfficeSheet: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case name, rowHeights, columnWidths, cells, merges, geometry, frozenRows, frozenColumns
+    }
+
+    /// 逐字段构造，供单元测试直接拼装工作表（真实文档仍走下面的 `Codable` 解码路径）。
+    ///
+    /// 冻结行/列按与解码路径完全相同的规则钳位到行列维度：
+    /// 构造入口若不做同样的钳位，测试用例就会验证到解码永远不会产生的状态，
+    /// 而模型与绘制层都假设冻结数不越过表维度。
+    public init(
+        name: String = "Sheet",
+        rowHeights: [CGFloat] = [],
+        columnWidths: [CGFloat] = [],
+        cells: [OfficeCell] = [],
+        merges: [OfficeCellRange] = [],
+        geometry: OfficeSheetGeometry? = nil,
+        frozenRows: Int = 0,
+        frozenColumns: Int = 0
+    ) {
+        self.name = name
+        self.rowHeights = rowHeights
+        self.columnWidths = columnWidths
+        self.cells = cells
+        self.merges = merges
+        self.geometry = geometry
+        self.frozenRows = min(max(0, frozenRows), rowHeights.count)
+        self.frozenColumns = min(max(0, frozenColumns), columnWidths.count)
     }
 
     public init(from decoder: Decoder) throws {
