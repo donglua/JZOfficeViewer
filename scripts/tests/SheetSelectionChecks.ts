@@ -28,7 +28,8 @@ import {
   selectionCovers,
   selectionEquals,
   selectionIsSingleCell,
-  selectionRowCount
+  selectionRowCount,
+  selectionScreenRect
 } from '../../viewer-ohos/src/main/ets/render/SheetSelectionModel.ts';
 import { readFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
@@ -689,6 +690,32 @@ if (selectionIsSingleCell(normalised)) {
 }
 if (mergeAt(mergedRectSheet, 0, 1) === null || mergeAt(mergedRectSheet, 1, 0) !== null) {
   throw new Error('mergeAt 覆盖判定不正确');
+}
+
+// 冻结窗格下的屏幕外接矩形：冻结格在大滚动下保持可见、滚入冻结区遮挡的滚动格返回 null
+const frozenCornerSel = resolve(cornerSheet, at(0, 0), at(0, 0));
+const frozenCornerScreen = selectionScreenRect(
+  cornerLayout, frozenCornerSel, 2, 1, 64, 40, -500, -500, 2, 800, 600);
+if (frozenCornerScreen === null
+  || Math.round(frozenCornerScreen.left) !== HEADER_WIDTH
+  || Math.round(frozenCornerScreen.right) !== HEADER_WIDTH + 128
+  || Math.round(frozenCornerScreen.top) !== HEADER_HEIGHT
+  || Math.round(frozenCornerScreen.bottom) !== HEADER_HEIGHT + 40) {
+  throw new Error('冻结交叉角在大滚动下应保持正确的屏幕手柄矩形');
+}
+const hiddenScrollSel = resolve(cornerSheet, at(2, 1), at(2, 1));
+if (selectionScreenRect(cornerLayout, hiddenScrollSel, 2, 1, 64, 40, -200, -200, 1, 800, 600) !== null) {
+  throw new Error('完全滑入冻结区遮挡下的滚动区选区应返回 null');
+}
+const crossSel = resolve(cornerSheet, at(0, 0), at(2, 2));
+const crossScreen = selectionScreenRect(
+  cornerLayout, crossSel, 2, 1, 64, 40, -64, -20, 1, 800, 600);
+if (crossScreen === null
+  || Math.round(crossScreen.left) !== HEADER_WIDTH
+  || Math.round(crossScreen.right) !== HEADER_WIDTH + 64 + 64
+  || Math.round(crossScreen.top) !== HEADER_HEIGHT
+  || Math.round(crossScreen.bottom) !== HEADER_HEIGHT + 40) {
+  throw new Error('跨冻结边界且部分可见的选区应求出可见并集矩形');
 }
 
 // ---------------------------------------------------------------------------

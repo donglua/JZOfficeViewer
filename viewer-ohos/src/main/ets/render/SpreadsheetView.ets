@@ -37,7 +37,8 @@ import {
   selectedText,
   selectionContainsColumn,
   selectionContainsRow,
-  selectionEquals
+  selectionEquals,
+  selectionScreenRect as computeSelectionScreenRect
 } from './SheetSelectionModel';
 import { SelectionMenuBubble, copyTextToPasteboard } from './SelectionMenuBubble';
 
@@ -844,10 +845,8 @@ export struct SpreadsheetView {
   /**
    * 选区在屏幕坐标系下的外接矩形，用于放置浮动气泡与对角手柄。
    *
-   * <p>采用「文档矩形线性映射 + 收敛到正文可见区」的做法，与 Android
-   * `sheetSelectionScreenRect` 一致：未冻结时与单元格绘制完全重合；存在冻结窗格时，
-   * 跨冻结边界的选区会收敛到正文区内，手柄因此落在可见边缘而不是滚出屏幕的真实边缘上。
-   * 真正的四象限裁剪仍由绘制阶段完成，命中测试也不受此简化影响。
+   * <p>委托纯模型 {@link computeSelectionScreenRect} 按冻结边界把冻结段与滚动段各自裁剪后求并集：
+   * 冻结区内的选区在滚动后仍贴合屏幕上的冻结位置，滚动区完全被冻结区遮挡的选区返回 null。
    */
   private selectionScreenRect(): CellRect | null {
     const selection = this.selection;
@@ -855,27 +854,25 @@ export struct SpreadsheetView {
     const sheet = this.currentSheet();
     if (!sheet) return null;
     const layout = this.ensureSheetLayout(sheet);
-    const rect = docRect(this.selectionLayoutOf(layout), selection);
-    if (!rect) return null;
-    if (rect.right <= rect.left || rect.bottom <= rect.top) return null;
     const s = this.scaleVal > 0 ? this.scaleVal : 1;
-    // docRect 的坐标已含表头偏移（模型约定 offsets[0] = gutter），而表头本身不缩放，
-    // 所以先减去 gutter 得到纯正文文档坐标，再乘缩放并加回固定的表头宽高
-    const screenLeft = HEADER_WIDTH + this.offsetX + (rect.left - HEADER_WIDTH) * s;
-    const screenRight = HEADER_WIDTH + this.offsetX + (rect.right - HEADER_WIDTH) * s;
-    const screenTop = HEADER_HEIGHT + this.offsetY + (rect.top - HEADER_HEIGHT) * s;
-    const screenBottom = HEADER_HEIGHT + this.offsetY + (rect.bottom - HEADER_HEIGHT) * s;
-    // 选区整体滚出视口时不提供手柄几何，避免手柄钉在屏幕边缘误导用户
-    if (screenRight <= HEADER_WIDTH || screenLeft >= this.canvasWidth
-      || screenBottom <= HEADER_HEIGHT || screenTop >= this.canvasHeight) {
-      return null;
-    }
-    return {
-      left: Math.max(HEADER_WIDTH, screenLeft),
-      top: Math.max(HEADER_HEIGHT, screenTop),
-      right: Math.min(this.canvasWidth, screenRight),
-      bottom: Math.min(this.canvasHeight, screenBottom)
-    };
+    const frozen = this.resolveFrameFrozen(sheet, layout, s, this.canvasWidth, this.canvasHeight);
+    const frozenDataW = frozen.effFrozenCols > 0
+      ? (layout.columns.offsets[frozen.effFrozenCols] ?? 0) : 0;
+    const frozenDataH = frozen.effFrozenRows > 0
+      ? (layout.rows.offsets[frozen.effFrozenRows] ?? 0) : 0;
+    return computeSelectionScreenRect(
+      this.selectionLayoutOf(layout),
+      selection,
+      frozen.effFrozenRows,
+      frozen.effFrozenCols,
+      frozenDataW,
+      frozenDataH,
+      this.offsetX,
+      this.offsetY,
+      s,
+      this.canvasWidth,
+      this.canvasHeight
+    );
   }
 
   // MARK: - XLSX 选区：边缘自动滚动

@@ -546,6 +546,99 @@ function resolveRangeRect(
   };
 }
 
+/** 单轴在屏幕可见区内的外接区间 */
+interface AxisScreenSpan {
+  start: number;
+  end: number;
+}
+
+/**
+ * 计算单轴上选区（冻结段与滚动段）在屏幕可见区内的外接区间；两段都不可见时返回 null。
+ *
+ * `headerSize` 为不随缩放变化的固定标头宽/高（vp）；`offsetPx <= 0` 为屏幕滚动偏移。
+ */
+function resolveAxisScreenSpan(
+  startIndex: number,
+  endIndex: number,
+  docStart: number,
+  docEnd: number,
+  frozenCount: number,
+  headerSize: number,
+  frozenDocExtent: number,
+  offsetPx: number,
+  scale: number,
+  canvasExtent: number
+): AxisScreenSpan | null {
+  if (scale <= 0 || canvasExtent <= headerSize) return null;
+  const bodyStart = docStart - headerSize;
+  const bodyEnd = docEnd - headerSize;
+  const frozenScreenEdge = Math.min(canvasExtent, headerSize + Math.max(0, frozenDocExtent) * scale);
+  let minOut = Number.POSITIVE_INFINITY;
+  let maxOut = Number.NEGATIVE_INFINITY;
+  if (frozenCount > 0 && startIndex < frozenCount) {
+    const segStart = headerSize + bodyStart * scale;
+    const segEnd = headerSize + Math.min(bodyEnd, frozenDocExtent) * scale;
+    const c0 = Math.max(headerSize, segStart);
+    const c1 = Math.min(frozenScreenEdge, segEnd);
+    if (c1 > c0) {
+      minOut = Math.min(minOut, c0);
+      maxOut = Math.max(maxOut, c1);
+    }
+  }
+  if (endIndex >= frozenCount) {
+    const scrollClipMin = frozenCount > 0 ? Math.max(headerSize, frozenScreenEdge) : headerSize;
+    const segBodyStart = frozenCount > 0 ? Math.max(bodyStart, frozenDocExtent) : bodyStart;
+    const segStart = headerSize + offsetPx + segBodyStart * scale;
+    const segEnd = headerSize + offsetPx + bodyEnd * scale;
+    const c0 = Math.max(scrollClipMin, segStart);
+    const c1 = Math.min(canvasExtent, segEnd);
+    if (c1 > c0) {
+      minOut = Math.min(minOut, c0);
+      maxOut = Math.max(maxOut, c1);
+    }
+  }
+  return maxOut > minOut ? { start: minOut, end: maxOut } : null;
+}
+
+/**
+ * 计算选区在屏幕坐标系（vp）下的可见外接矩形，用于放置对角手柄与浮动气泡。
+ *
+ * 按冻结边界把 X/Y 轴各自拆成冻结段与滚动段裁剪后求并集：冻结区选区在滚动后
+ * 仍贴合屏幕冻结位置，滚动区完全被冻结区遮挡的选区返回 null。
+ */
+export function selectionScreenRect(
+  layout: SelectionLayout | null,
+  selection: SheetSelection | null,
+  effFrozenRows: number,
+  effFrozenCols: number,
+  frozenDataW: number,
+  frozenDataH: number,
+  offsetX: number,
+  offsetY: number,
+  scale: number,
+  canvasWidth: number,
+  canvasHeight: number
+): CellRect | null {
+  if (layout === null || selection === null || scale <= 0) return null;
+  const rect = docRect(layout, selection);
+  if (rect === null || rect.right <= rect.left || rect.bottom <= rect.top) return null;
+  if (layout.columns.offsets.length === 0 || layout.rows.offsets.length === 0) return null;
+  const headerWidth = layout.columns.offsets[0];
+  const headerHeight = layout.rows.offsets[0];
+  const spanX = resolveAxisScreenSpan(selection.startColumn, selection.endColumn,
+    rect.left, rect.right, effFrozenCols, headerWidth, frozenDataW, offsetX, scale, canvasWidth);
+  if (spanX === null) return null;
+  const spanY = resolveAxisScreenSpan(selection.startRow, selection.endRow,
+    rect.top, rect.bottom, effFrozenRows, headerHeight, frozenDataH, offsetY, scale, canvasHeight);
+  if (spanY === null) return null;
+  return {
+    left: spanX.start,
+    top: spanY.start,
+    right: spanX.end,
+    bottom: spanY.end
+  };
+}
+
 // ---------------------------------------------------------------------------
 // TSV 格式化
 // ---------------------------------------------------------------------------
