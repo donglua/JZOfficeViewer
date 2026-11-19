@@ -85,6 +85,19 @@ jobs:
             scripts/tests/TextSelectionChecks.java
           java -cp "$classes" cn.jingzhuan.lib.office.TextSelectionChecks
 
+      - name: Run sheet selection checks
+        shell: bash
+        run: |
+          classes="$RUNNER_TEMP/sheet-selection-checks"
+          mkdir -p "$classes"
+          javac --release 11 -Xlint:all -Werror -d "$classes" \
+            viewer/src/main/java/cn/jingzhuan/lib/office/OfficeDocument.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/SpreadsheetDocument.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/SheetLayout.java \
+            viewer/src/main/java/cn/jingzhuan/lib/office/SheetSelectionModel.java \
+            scripts/tests/SheetSelectionChecks.java
+          java -cp "$classes" cn.jingzhuan.lib.office.SheetSelectionChecks
+
   android:
     name: Android Build & Lint
     runs-on: ubuntu-24.04

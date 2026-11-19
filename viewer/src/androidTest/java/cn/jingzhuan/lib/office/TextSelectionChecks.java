@@ -298,27 +298,102 @@ final class TextSelectionChecks {
     }
 
     // ------------------------------------------------------------------
-    // XLSX：不支持自由划词的边界
+    // XLSX：单元格与区域选择、TSV 复制、长按选格与切表清选区
     // ------------------------------------------------------------------
 
     private static void spreadsheet(OfficeInstrumentation instrumentation, PreviewTestActivity activity,
                                     OfficePreviewView view) throws Exception {
         open(instrumentation, view, "sample.xlsx", "XLSX");
         instrumentation.runOnMainChecked(() -> view.layout(0, 0, 1080, 1600));
-        instrumentation.check(!read(instrumentation, view::selectAll), "XLSX select-all is refused");
-        instrumentation.check(!read(instrumentation, view::hasSelection), "XLSX has no selection");
-        instrumentation.check(!read(instrumentation, view::copySelection), "XLSX copy is refused");
-        instrumentation.check(!hasAction(instrumentation, view, actionId("ACTION_SELECT_ALL"), "全选文本"),
-            "Spreadsheet exposes no select-all action");
 
-        float x = read(instrumentation, () -> view.getWidth() / 2f);
-        float y = read(instrumentation, () -> view.getHeight() / 3f);
+        // 1. 未选中时的默认态
+        instrumentation.check(!read(instrumentation, view::hasSelection), "XLSX starts without a selection");
+        instrumentation.check("".equals(read(instrumentation, view::getSelectedText)),
+            "XLSX fresh selection text is empty");
+        instrumentation.check(!read(instrumentation, view::copySelection),
+            "XLSX copy without a selection is refused");
+
+        // 2. 全选：sample.xlsx 含文本，selectAll 必须成功并覆盖整表可见数据区
+        instrumentation.check(read(instrumentation, view::selectAll), "XLSX select-all succeeds");
+        instrumentation.check(read(instrumentation, view::hasSelection), "XLSX select-all leaves a selection");
+        String all = read(instrumentation, view::getSelectedText);
+        instrumentation.check(!all.isEmpty(), "XLSX select-all yields TSV text");
+        // TSV 结构：行内以制表符分隔、行间以换行分隔，且不含空行
+        instrumentation.check(all.contains("\t"), "XLSX TSV uses tab separators between columns");
+        instrumentation.check(all.contains("\n"), "XLSX TSV uses newlines between rows");
+        instrumentation.check(!all.startsWith("\n") && !all.endsWith("\n"),
+            "XLSX TSV carries no leading or trailing newline");
+        instrumentation.check(!all.contains("\n\n"), "XLSX TSV carries no blank row");
+
+        // 3. 选区高亮参与绘制
+        int changed = read(instrumentation, () -> highlightPixels(view, 1080, 1600));
+        instrumentation.check(changed > MIN_HIGHLIGHT_PIXELS,
+            "XLSX selection highlight changes rendered pixels: " + changed);
+
+        // 4. 剪贴板写入 TSV 且保留选区
+        instrumentation.check(read(instrumentation, view::copySelection), "XLSX copy succeeds");
+        instrumentation.check(all.equals(clipboard(instrumentation, activity)),
+            "XLSX clipboard holds exactly the TSV text");
+        instrumentation.check(read(instrumentation, view::hasSelection),
+            "XLSX programmatic copy keeps the selection");
+
+        // 5. 清除
+        instrumentation.runOnMainChecked(view::clearSelection);
+        instrumentation.check(!read(instrumentation, view::hasSelection)
+            && "".equals(read(instrumentation, view::getSelectedText)), "XLSX clear selection resets state");
+
+        // 6. 无障碍动作对 XLSX 同样开放
+        instrumentation.check(hasAction(instrumentation, view, actionId("ACTION_SELECT_ALL"), "全选文本"),
+            "Spreadsheet exposes the select-all accessibility action");
+
+        // 7. 长按选格：命中单元格即建立选区并进入可扩选状态
+        float x = read(instrumentation, () -> SheetRenderer.HEADER_WIDTH + 24f);
+        float y = read(instrumentation, () -> SheetRenderer.HEADER_HEIGHT + 12f);
         long down = SystemClock.uptimeMillis();
         feed(instrumentation, view, down, down, MotionEvent.ACTION_DOWN, x, y);
         SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 150L);
-        feed(instrumentation, view, down, down + 150L, MotionEvent.ACTION_UP, x, y);
+        instrumentation.check(read(instrumentation, view::hasSelection),
+            "Long press starts a cell selection in a spreadsheet");
+        String cellText = read(instrumentation, view::getSelectedText);
+        instrumentation.check(!cellText.contains("\t") && !cellText.contains("\n"),
+            "Long press selects a single logical cell: " + cellText);
+
+        // 8. 长按后不抬手直接拖动扩选：向右下移动一个单元格，TSV 应变成 2x2 网格
+        float dragX = x + 80f;
+        float dragY = y + 40f;
+        feed(instrumentation, view, down, down + 400L, MotionEvent.ACTION_MOVE, dragX, dragY);
+        feed(instrumentation, view, down, down + 450L, MotionEvent.ACTION_UP, dragX, dragY);
+        String dragged = read(instrumentation, view::getSelectedText);
+        instrumentation.check(dragged.contains("\t") && dragged.contains("\n"),
+            "Dragging after long press extends into a multi-cell TSV grid: " + dragged.replace('\t', '|'));
+
+        // 9. 单击清除选区（双击的第一下不清除，因此用点击确认路径）
+        float tapX = read(instrumentation, () -> view.getWidth() / 2f);
+        float tapY = read(instrumentation, () -> view.getHeight() / 2f);
+        long tapDown = SystemClock.uptimeMillis();
+        feed(instrumentation, view, tapDown, tapDown, MotionEvent.ACTION_DOWN, tapX, tapY);
+        feed(instrumentation, view, tapDown, tapDown + 60L, MotionEvent.ACTION_UP, tapX, tapY);
+        SystemClock.sleep(ViewConfiguration.getDoubleTapTimeout() + 120L);
         instrumentation.check(!read(instrumentation, view::hasSelection),
-            "Long press never starts a selection in a spreadsheet");
+            "Single tap clears the spreadsheet selection");
+
+        // 10. 切表必须清除选区
+        instrumentation.check(read(instrumentation, view::selectAll), "XLSX select-all before sheet switch");
+        instrumentation.runOnMainChecked(() -> view.selectSheet(2));
+        instrumentation.check(!read(instrumentation, view::hasSelection),
+            "Switching sheets clears the spreadsheet selection");
+        instrumentation.runOnMainChecked(() -> view.selectSheet(1));
+
+        // 11. 单指滚动零退化：滚动后选区仍然不产生、页码稳定
+        instrumentation.check(!read(instrumentation, view::hasSelection), "Sheet switch left no selection");
+        long scrollDown = SystemClock.uptimeMillis();
+        feed(instrumentation, view, scrollDown, scrollDown, MotionEvent.ACTION_DOWN, tapX, tapY);
+        feed(instrumentation, view, scrollDown, scrollDown + 120L, MotionEvent.ACTION_MOVE, tapX, tapY - 260f);
+        feed(instrumentation, view, scrollDown, scrollDown + 200L, MotionEvent.ACTION_UP, tapX, tapY - 260f);
+        instrumentation.check(!read(instrumentation, view::hasSelection),
+            "Single-finger scrolling never creates a spreadsheet selection");
+        instrumentation.check(read(instrumentation, view::getCurrentPage) == 1,
+            "Scrolling keeps the current sheet");
     }
 
     // ------------------------------------------------------------------

@@ -71,6 +71,13 @@ public final class OfficePreviewView extends View {
     private static final float HANDLE_RADIUS_DP = 10f;
     /** 手柄圆心相对光标底端的下移量（dp） */
     private static final float HANDLE_CENTER_OFFSET_DP = 14f;
+    /**
+     * 表格选区对角手柄相对文本手柄的半径系数。
+     *
+     * <p>文本手柄做成水滴形便于对准字符间隙；表格手柄是矩形对角点，直径略小于
+     * 单元格最小高度（约 15pt）才不会挡住内容，因此取文本手柄半径的 0.6 倍。
+     */
+    private static final float SHEET_HANDLE_RADIUS_RATIO = 0.6f;
     /** 拖拽手柄时触点 Y 的向上补偿量（dp），避免指腹遮挡正在对准的文字行 */
     private static final float DRAG_TOUCH_OFFSET_DP = 18f;
     /** 光标竖线宽度（dp） */
@@ -199,11 +206,23 @@ public final class OfficePreviewView extends View {
     private final List<SearchListener> searchListeners = new ArrayList<>();
     private final Paint highlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint highlightStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** 表格选区对角手柄画笔，与文本选区的 caretPaint 分开以避免样式互相污染 */
+    private final Paint sheetHandlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     /** 全文档文本索引；打开文档后按需构建，生命周期结束时置空 */
     private TextSelectionModel.DocumentTextLayout textLayout;
     /** 当前选区；{@code null} 表示无选区 */
     private TextSelectionModel.TextSelection selection;
+    /**
+     * XLSX 当前选区；{@code null} 表示无选区。
+     *
+     * <p>与 {@link #selection} 互斥：DOCX / PPTX 用字符偏移的文本选区，
+     * XLSX 用二维网格选区，两者的锚点、命中测试与高亮几何完全不同，
+     * 因此分成两个字段而不用一个联合类型，避免每次使用都要类型判定。
+     */
+    private SheetSelectionModel.SheetSelection sheetSelection;
+    /** XLSX 拖拽/长按扩选过程中的固定锚点单元格 */
+    private SheetSelectionModel.CellCoord sheetDragAnchor;
     /** 浮动操作气泡；惰性创建，销毁时释放 */
     private SelectionPopupMenu selectionMenu;
     /** 当前触摸状态，见 {@code TOUCH_*} 常量 */
@@ -284,7 +303,9 @@ public final class OfficePreviewView extends View {
             }
             @Override public boolean onDoubleTap(MotionEvent event) {
                 if (touchState != TOUCH_IDLE) return true;
-                // 双击缩放保留选区，缩放停稳后由 finishZoomChange 重贴手柄与气泡
+                // 双击缩放保留文本选区，缩放停稳后由 finishZoomChange 重贴手柄与气泡；
+                // 表格的选区是对具体单元格框选，缩放后旧选区已无参考意义，按设计约定直接清除
+                if (isSpreadsheet()) clearSelection();
                 animateZoomTo(zoom > 1.1f ? 1 : 2, event.getX(), event.getY()); return true;
             }
             @Override public boolean onFling(MotionEvent a, MotionEvent b, float vx, float vy) {
@@ -552,12 +573,11 @@ public final class OfficePreviewView extends View {
         if (zoom < MAX_ZOOM) info.addAction(action(ACTION_ZOOM_IN, "放大"));
         if (zoom > minZoom()) info.addAction(action(ACTION_ZOOM_OUT, "缩小"));
         if (zoom > 1.001f) info.addAction(action(ACTION_RESET_ZOOM, "重置缩放"));
-        if (document.kind != OfficeDocument.Kind.XLSX) {
-            info.addAction(action(ACTION_SELECT_ALL, "全选文本"));
-            if (hasSelection()) {
-                info.addAction(action(ACTION_COPY_SELECTION, "复制选中文本"));
-                info.addAction(action(ACTION_CLEAR_SELECTION, "清除选区"));
-            }
+        // 选区动作对 XLSX 同样可用：长按/点选可建立网格选区，全选选中整表数据区
+        info.addAction(action(ACTION_SELECT_ALL, "全选文本"));
+        if (hasSelection()) {
+            info.addAction(action(ACTION_COPY_SELECTION, "复制选中文本"));
+            info.addAction(action(ACTION_CLEAR_SELECTION, "清除选区"));
         }
         if (canScrollVertically(1)) info.addAction(action(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD, "向下滚动"));
         if (canScrollVertically(-1)) info.addAction(action(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD, "向上滚动"));
@@ -726,7 +746,7 @@ public final class OfficePreviewView extends View {
         updateCurrentPage(); invalidate();
         // 捏合进行中每一步都会走到这里：此时必须保持气泡隐藏，等松手停稳后再贴回选区
         if (hasSelection() && touchState == TOUCH_IDLE && !pinch.isInProgress()) {
-            ensureVisiblePagesTextLayout(screenToDocY(0f), screenToDocY(getHeight()));
+            if (!isSpreadsheet()) ensureVisiblePagesTextLayout(screenToDocY(0f), screenToDocY(getHeight()));
             showSelectionMenu();
         }
         refreshAccessibilityActions();
@@ -827,6 +847,7 @@ public final class OfficePreviewView extends View {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 if (beginHandleDrag(event)) return true;
+                if (beginSheetHandleDrag(event)) return true;
                 return false;
             case MotionEvent.ACTION_POINTER_DOWN:
                 // 第二根手指按下即视为缩放手势，放弃正在进行的选区拖拽
@@ -915,13 +936,19 @@ public final class OfficePreviewView extends View {
             drawSearchHighlights(canvas, visibleLeft, visibleTop, visibleRight, visibleBottom);
         }
         // 选区高亮在文档坐标系内绘制，与文字排版共用同一变换，保证“所见即所选”
-        if (hasSelection() && textLayout != null) {
+        if (isSpreadsheet()) {
+            // 表格选区自带四象限裁剪，线宽按缩放换算以保持 1.5 物理像素观感
+            float s = scale();
+            sheetRenderer.drawSelection(canvas, sheetViewport, s > 0 ? 1.5f / s : 1.5f);
+        } else if (hasSelection() && textLayout != null) {
             ensureVisiblePagesTextLayout(visibleTop, visibleBottom);
             drawSelectionHighlights(canvas, textLayout, visibleLeft, visibleTop, visibleRight, visibleBottom);
         }
         canvas.restore();
         // 手柄与光标竖线在屏幕坐标系绘制，缩放 0.5x..4x 时保持稳定物理尺寸
-        if (hasSelection() && textLayout != null) {
+        if (isSpreadsheet()) {
+            drawSheetSelectionHandles(canvas);
+        } else if (hasSelection() && textLayout != null) {
             drawSelectionHandles(canvas, textLayout);
         }
     }
@@ -956,16 +983,34 @@ public final class OfficePreviewView extends View {
         }
     }
 
-    // MARK: - 文本选区公开 API
+    // MARK: - 选区公开 API
 
     /**
-     * 选中文档全部可选正文（DOCX / PPTX）。
+     * 选中文档全部可选正文；XLSX 下选中整表可见数据区。
      *
-     * @return 选中成功返回 {@code true}；XLSX、未加载文档或无可选文本返回 {@code false}
+     * @return 选中成功返回 {@code true}；未加载文档、无可见行列或工作表全空时返回 {@code false}
      */
     public boolean selectAll() {
         requireMainThread();
-        if (document == null || isSpreadsheet()) return false;
+        if (document == null) return false;
+        if (isSpreadsheet()) {
+            SpreadsheetDocument.Sheet sheet = currentSheet();
+            SheetLayout layout = sheetRenderer.layout;
+            SheetSelectionModel.SheetSelection all = SheetSelectionModel.allRange(sheet, layout);
+            if (all == null) return false;
+            settleZoom();
+            scroller.forceFinished(true);
+            stopAutoScroll();
+            touchState = TOUCH_IDLE;
+            dragAnchor = null;
+            sheetDragAnchor = null;
+            sheetSelection = all;
+            syncSheetSelection();
+            invalidate();
+            showSelectionMenu();
+            refreshAccessibilityActions();
+            return true;
+        }
         TextSelectionModel.DocumentTextLayout layout = ensureTextLayout();
         if (layout == null || !layout.hasSelectableText()) return false;
         TextSelectionModel.TextSelection all = layout.allTextRange();
@@ -988,8 +1033,11 @@ public final class OfficePreviewView extends View {
         stopAutoScroll();
         touchState = TOUCH_IDLE;
         dragAnchor = null;
-        boolean had = selection != null;
+        sheetDragAnchor = null;
+        boolean had = selection != null || sheetSelection != null;
         selection = null;
+        sheetSelection = null;
+        syncSheetSelection();
         dismissSelectionMenu();
         if (had) {
             invalidate();
@@ -1000,16 +1048,28 @@ public final class OfficePreviewView extends View {
     /** 当前是否存在非空选区（仅反映状态，不触发任何重绘） */
     public boolean hasSelection() {
         requireMainThread();
+        if (isSpreadsheet()) return sheetSelection != null;
         return selection != null && !selection.isEmpty();
     }
 
     /**
-     * 返回当前选中的纯文本，跨段落与跨块以 {@code "\n"} 连接。
+     * 返回当前选中的纯文本。
      *
-     * @return 无选区或文本索引不可用时返回空串
+     * <p>DOCX / PPTX 跨段落与跨块以 {@code "\n"} 连接；XLSX 返回 TSV：同行以 {@code "\t"}、
+     * 跨行以 {@code "\n"} 分隔，隐藏行列跳过、合并单元格从属位置留空。
+     *
+     * @return 无选区或几何不可用时返回空串
      */
     public String getSelectedText() {
         requireMainThread();
+        if (isSpreadsheet()) {
+            if (sheetSelection == null) return "";
+            SpreadsheetDocument.Sheet sheet = currentSheet();
+            SheetLayout layout = sheetRenderer.layout;
+            if (sheet == null || layout == null) return "";
+            String text = SheetSelectionModel.selectedText(sheet, layout, sheetSelection);
+            return text == null ? "" : text;
+        }
         if (!hasSelection()) return "";
         TextSelectionModel.DocumentTextLayout layout = ensureTextLayout();
         if (layout == null) return "";
@@ -1076,9 +1136,163 @@ public final class OfficePreviewView extends View {
         touchState = TOUCH_IDLE;
         dragAnchor = null;
         selection = null;
+        sheetSelection = null;
+        sheetDragAnchor = null;
+        sheetRenderer.setSelection(null);
         dismissSelectionMenu();
         releaseSelectionMenu();
         textLayout = null;
+    }
+
+    // MARK: - XLSX 选区
+
+    /**
+     * 当前帧的冻结几何；工作表尚未绘制过时按整屏视口现场计算。
+     *
+     * <p>命中测试与选区绘制都必须使用<b>同一份</b>冻结几何，否则冻结区宽度与实际绘制
+     * 不一致会让选区边界与单元格错位。
+     */
+    private SheetRenderer.FreezePlan sheetFreezePlan() {
+        if (!isSpreadsheet() || sheetRenderer.layout == null) return null;
+        float s = scale();
+        if (s <= 0) return null;
+        return sheetRenderer.currentPlan(new RectF(offsetX / s, offsetY / s,
+            (offsetX + getWidth()) / s, (offsetY + getHeight()) / s));
+    }
+
+    /**
+     * 屏幕触点 → 工作表单元格坐标。
+     *
+     * <p>模型层约定全部浮点入参为"视图数据坐标"（已除以缩放、含表头原点），
+     * 因此这里先把屏幕坐标换算成文档坐标，再交给
+     * {@link SheetSelectionModel#hitTest} 消解冻结偏移；超出表头或表格范围时按
+     * {@code clampToBounds} 决定返回 null 还是贴边（拖拽扩选需要贴边持续扩展）。
+     */
+    private SheetSelectionModel.CellCoord hitTestSheetCell(float screenX, float screenY, boolean clampToBounds) {
+        SheetLayout layout = sheetRenderer.layout;
+        if (layout == null) return null;
+        SheetRenderer.FreezePlan plan = sheetFreezePlan();
+        int frozenRows = plan == null ? 0 : plan.effectiveRows;
+        int frozenColumns = plan == null ? 0 : plan.effectiveColumns;
+        float frozenW = plan == null ? 0f : plan.frozenDataWidth;
+        float frozenH = plan == null ? 0f : plan.frozenDataHeight;
+        float scrollX = plan == null ? 0f : plan.scrollX;
+        float scrollY = plan == null ? 0f : plan.scrollY;
+        return SheetSelectionModel.hitTest(layout, frozenRows, frozenColumns, frozenW, frozenH,
+            scrollX, scrollY, screenToDocX(screenX), screenToDocY(screenY), clampToBounds);
+    }
+
+    /** 把当前工作表选区同步给渲染层（行列标头联动高亮的唯一数据来源） */
+    private void syncSheetSelection() {
+        sheetRenderer.setSelection(isSpreadsheet() ? sheetSelection : null);
+    }
+
+    /**
+     * 长按选格：把触点命中的单元格设为锚点与焦点，进入可继续扩选的状态。
+     *
+     * <p>与自由划词一致，长按后不抬手即可直接拖动扩选，因此这里进入
+     * {@link #TOUCH_LONG_PRESS_DRAG}；锚点固定为命中单元格，焦点随触点移动。
+     */
+    private void startLongPressSheetSelection(MotionEvent event) {
+        if (!isSpreadsheet() || document == null) return;
+        SheetSelectionModel.CellCoord hit = hitTestSheetCell(event.getX(), event.getY(), false);
+        if (hit == null) return;
+        SpreadsheetDocument.Sheet sheet = currentSheet();
+        if (sheet == null) return;
+        SheetSelectionModel.SheetSelection resolved = SheetSelectionModel.resolve(sheet, hit, hit);
+        if (resolved == null) return;
+        scroller.forceFinished(true);
+        settleZoom();
+        sheetSelection = resolved;
+        sheetDragAnchor = hit;
+        dragTouchX = event.getX();
+        dragTouchY = event.getY();
+        dragOffsetTouch = false;
+        touchState = TOUCH_LONG_PRESS_DRAG;
+        syncSheetSelection();
+        dismissSelectionMenu();
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        invalidate();
+        refreshAccessibilityActions();
+    }
+
+    /**
+     * 把触点映射为新的焦点单元格并刷新选区。
+     *
+     * <p>锚点始终固定为 {@link #sheetDragAnchor}，焦点可越过锚点，由
+     * {@link SheetSelectionModel#resolve} 给出规范化的闭区间边界并自动并入相交的合并区域。
+     */
+    private void applySheetSelectionFocus(float x, float y) {
+        if (sheetDragAnchor == null || document == null) return;
+        SheetSelectionModel.CellCoord focus = hitTestSheetCell(x, y, true);
+        if (focus == null) return;
+        SpreadsheetDocument.Sheet sheet = currentSheet();
+        if (sheet == null) return;
+        SheetSelectionModel.SheetSelection resolved =
+            SheetSelectionModel.resolve(sheet, sheetDragAnchor, focus);
+        if (resolved == null) return;
+        sheetSelection = resolved;
+        syncSheetSelection();
+        invalidate();
+    }
+
+    /** 命中 XLSX 左上/右下角手柄时接管本次触摸，返回是否已接管 */
+    private boolean beginSheetHandleDrag(MotionEvent event) {
+        if (!isSpreadsheet() || sheetSelection == null) return false;
+        RectF rect = sheetSelectionScreenRect();
+        if (rect == null) return false;
+        float x = event.getX(), y = event.getY();
+        // 手柄重叠时优先右下角，与文本选区的手感保持一致
+        boolean onEnd = hitHandle(x, y, rect.right, rect.bottom);
+        boolean onStart = hitHandle(x, y, rect.left, rect.top);
+        if (!onStart && !onEnd) return false;
+        touchState = onEnd ? TOUCH_DRAG_END : TOUCH_DRAG_START;
+        // 拖起始手柄时锚点固定在选区右下角，拖结束手柄时锚点固定在左上角
+        SheetSelectionModel.CellCoord first = new SheetSelectionModel.CellCoord(
+            sheetSelection.startRow, sheetSelection.startColumn);
+        SheetSelectionModel.CellCoord last = new SheetSelectionModel.CellCoord(
+            sheetSelection.endRow, sheetSelection.endColumn);
+        sheetDragAnchor = onEnd ? first : last;
+        dragTouchX = x;
+        dragTouchY = y;
+        dragOffsetTouch = false;
+        scroller.forceFinished(true);
+        settleZoom();
+        dismissSelectionMenu();
+        if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+        return true;
+    }
+
+    /**
+     * 选区在屏幕坐标系下的外接矩形，用于放置浮动气泡与对角手柄。
+     *
+     * <p>采用"文档矩形直接线性映射 + 收敛到正文可见区"的做法：未冻结时与单元格
+     * 绘制完全重合；存在冻结窗格时，跨冻结边界的选区会被收敛到正文区内，
+     * 手柄因此落在可见边缘而不是滚出屏幕的真实边缘上——这正是手柄应处的交互位置。
+     * 冻结几何本身仍由 {@link #hitTestSheetCell} 精确处理，拖拽扩选的命中不受此简化影响。
+     */
+    private RectF sheetSelectionScreenRect() {
+        SheetLayout layout = sheetRenderer.layout;
+        if (layout == null || sheetSelection == null) return null;
+        SheetSelectionModel.CellRect rect = SheetSelectionModel.docRect(layout, sheetSelection);
+        if (rect == null || rect.isEmpty()) return null;
+        float headerWidth = SheetRenderer.HEADER_WIDTH, headerHeight = SheetRenderer.HEADER_HEIGHT;
+        float screenLeft = docToScreenX(rect.left);
+        float screenRight = docToScreenX(rect.right);
+        float screenTop = docToScreenY(rect.top);
+        float screenBottom = docToScreenY(rect.bottom);
+        // 选区整体滚出视口时不提供手柄几何
+        if (screenRight <= headerWidth || screenLeft >= getWidth()
+            || screenBottom <= headerHeight || screenTop >= getHeight()) return null;
+        return new RectF(Math.max(headerWidth, screenLeft), Math.max(headerHeight, screenTop),
+            Math.min(getWidth(), screenRight), Math.min(getHeight(), screenBottom));
+    }
+
+    /** 当前工作表；非 XLSX 或页码越界时返回 {@code null} */
+    private SpreadsheetDocument.Sheet currentSheet() {
+        if (!isSpreadsheet() || document == null) return null;
+        int index = currentPage - 1;
+        return index >= 0 && index < document.sheets.size() ? document.sheets.get(index) : null;
     }
 
     // MARK: - 坐标转换
@@ -1108,11 +1322,16 @@ public final class OfficePreviewView extends View {
     // MARK: - 手势
 
     /**
-     * 长按选词：命中有效文本位置即按词建立选区，并进入不抬手可直接扩选的状态。
-     * 双指缩放过程中、XLSX 或未铺满布局时忽略。
+     * 长按选词/选格：命中有效文本位置即按词建立选区，XLSX 下则按单元格建立网格选区，
+     * 两者都进入不抬手可直接扩选的状态。双指缩放过程中或未铺满布局时忽略。
      */
     private void startLongPressSelection(MotionEvent event) {
-        if (document == null || isSpreadsheet() || pinch.isInProgress()) return;
+        if (document == null || pinch.isInProgress()) return;
+        // XLSX 走二维网格选区：命中单元格而非字符位置
+        if (isSpreadsheet()) {
+            startLongPressSheetSelection(event);
+            return;
+        }
         TextSelectionModel.DocumentTextLayout layout = ensureTextLayout();
         if (layout == null) return;
         ensureVisiblePagesTextLayout(screenToDocY(0f), screenToDocY(getHeight()));
@@ -1187,8 +1406,14 @@ public final class OfficePreviewView extends View {
      *
      * <p>锚点始终固定为 {@link #dragAnchor}，焦点可以自由越过锚点，
      * {@link TextSelectionModel.TextSelection#start()} / {@code end()} 自动给出逻辑先后顺序。
+     * XLSX 使用独立的二维网格焦点 {@link #applySheetSelectionFocus}。
      */
     private void applySelectionFocus(float x, float y) {
+        if (isSpreadsheet()) {
+            // 表格不涉及手柄防遮挡补偿：单元格远大于手指偏移量
+            applySheetSelectionFocus(x, y);
+            return;
+        }
         TextSelectionModel.DocumentTextLayout layout = textLayout;
         if (layout == null || dragAnchor == null) return;
         float docX = screenToDocX(x);
@@ -1209,10 +1434,13 @@ public final class OfficePreviewView extends View {
         boolean wasDragging = touchState != TOUCH_IDLE;
         touchState = TOUCH_IDLE;
         dragAnchor = null;
+        sheetDragAnchor = null;
         dragOffsetTouch = false;
         if (!wasDragging) return;
         if (!hasSelection()) {
             selection = null;
+            sheetSelection = null;
+            syncSheetSelection();
             dismissSelectionMenu();
             invalidate();
             refreshAccessibilityActions();
@@ -1294,12 +1522,23 @@ public final class OfficePreviewView extends View {
         if (!hasSelection()) { dismissSelectionMenu(); return; }
         // 未附着到窗口（或宿主正在销毁）时弹窗没有可用 token，直接跳过，避免 BadTokenException
         if (!isAttachedToWindow() || getWindowToken() == null) { dismissSelectionMenu(); return; }
-        TextSelectionModel.DocumentTextLayout layout = ensureTextLayout();
-        if (layout == null) { dismissSelectionMenu(); return; }
-        if (!computeSelectionScreenBounds(layout, selection)) { dismissSelectionMenu(); return; }
-        TextSelectionModel.TextSelection all = layout.allTextRange();
-        boolean allSelected = all != null && all.start().equals(selection.start())
-            && all.end().equals(selection.end());
+        boolean allSelected;
+        if (isSpreadsheet()) {
+            // 表格选区直接复用对角手柄的屏幕矩形定位气泡；是否已全选按边界比较
+            RectF rect = sheetSelectionScreenRect();
+            if (rect == null) { dismissSelectionMenu(); return; }
+            selectionScreenBounds.set(rect);
+            SheetSelectionModel.SheetSelection all =
+                SheetSelectionModel.allRange(currentSheet(), sheetRenderer.layout);
+            allSelected = all != null && all.equals(sheetSelection);
+        } else {
+            TextSelectionModel.DocumentTextLayout layout = ensureTextLayout();
+            if (layout == null) { dismissSelectionMenu(); return; }
+            if (!computeSelectionScreenBounds(layout, selection)) { dismissSelectionMenu(); return; }
+            TextSelectionModel.TextSelection all = layout.allTextRange();
+            allSelected = all != null && all.start().equals(selection.start())
+                && all.end().equals(selection.end());
+        }
         if (selectionMenu == null) {
             selectionMenu = new SelectionPopupMenu(this, new SelectionPopupMenu.ActionHandler() {
                 @Override public void onCopy() {
@@ -1424,8 +1663,33 @@ public final class OfficePreviewView extends View {
         canvas.restore();
     }
 
-    // MARK: - 全文检索控制器 API 与高亮绘制
+    /**
+     * 绘制 XLSX 选区左上/右下两个对角拖拽手柄。
+     *
+     * <p>固定物理尺寸（不随缩放变化），实心圆 + 白色描边，与文本选区的 caret 手柄区分：
+     * 表格选区是矩形，对角手柄天然表达"拉伸两条边"的语义。
+     */
+    private void drawSheetSelectionHandles(Canvas canvas) {
+        if (sheetSelection == null) return;
+        RectF rect = sheetSelectionScreenRect();
+        if (rect == null) return;
+        drawSheetHandle(canvas, rect.left, rect.top);
+        drawSheetHandle(canvas, rect.right, rect.bottom);
+    }
 
+    /** 单个圆形拖拽手柄：实心圆点 + 白色描边，热区由 {@link #hitHandle} 单独判定 */
+    private void drawSheetHandle(Canvas canvas, float x, float y) {
+        float radius = handleRadius * SHEET_HANDLE_RADIUS_RATIO;
+        sheetHandlePaint.setStyle(Paint.Style.FILL);
+        sheetHandlePaint.setColor(SheetRenderer.SELECTION_STROKE_COLOR);
+        canvas.drawCircle(x, y, radius, sheetHandlePaint);
+        sheetHandlePaint.setStyle(Paint.Style.STROKE);
+        sheetHandlePaint.setStrokeWidth(Math.max(1f, radius * 0.25f));
+        sheetHandlePaint.setColor(0xffffffff);
+        canvas.drawCircle(x, y, radius, sheetHandlePaint);
+    }
+
+    // MARK: - 全文检索控制器 API 与高亮绘制
     public void search(String query) {
         search(query, null);
     }

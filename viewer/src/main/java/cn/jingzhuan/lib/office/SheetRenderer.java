@@ -24,6 +24,14 @@ final class SheetRenderer {
     private static final int HEADER_SEPARATOR_COLOR = 0xffbfc7cd;
     /** 冻结交界线使用中性蓝灰，区别于普通网格线与表头分隔线 */
     private static final int FREEZE_DIVIDER_COLOR = 0xff9aa5b1;
+    /** 选区填充：15% 透明度 Google Blue，叠在单元格文本之下不影响可读性 */
+    static final int SELECTION_FILL_COLOR = 0x261A73E8;
+    /** 选区描边：不透明 Google Blue，线宽按 1.5 物理像素换算，缩放时观感恒定 */
+    static final int SELECTION_STROKE_COLOR = 0xff1a73e8;
+    /** 命中选区的行列标头背景与文字色，与未选中标头形成明确对比 */
+    static final int HEADER_SELECTED_COLOR = 0xffd2e3fc;
+    static final int HEADER_SELECTED_TEXT_COLOR = 0xff174ea6;
+    private static final float SELECTION_STROKE_WIDTH = 1.5f;
     private static final int MAX_CACHED_LAYOUTS = 256, MAX_LAYOUT_COST = 256 * 1024;
     private static final int BUCKET_ROW_SIZE = 64;
 
@@ -45,17 +53,40 @@ final class SheetRenderer {
     private final RectF shiftedBounds = new RectF();
     /** 当前帧的冻结几何，draw 计算出后供各绘制阶段与外部高亮避让复用 */
     private FreezePlan plan;
+    /** 当前选区（供行列标头联动高亮使用）；由 {@link #setSelection} 由外部同步 */
+    private SheetSelectionModel.SheetSelection selection;
+    private final Paint selectionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint selectionFont = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF selectionRect = new RectF();
+    private final RectF quadrantSelection = new RectF();
 
     SheetRenderer() {
         headerFont.setTextSize(10);
         headerFont.setColor(0xff52606d);
+        selectionFont.setTextSize(10);
+        selectionFont.setFakeBoldText(true);
+        selectionFont.setColor(HEADER_SELECTED_TEXT_COLOR);
+    }
+
+    /**
+     * 同步当前选区，供行列标头联动高亮使用。
+     *
+     * <p>选区填充与外框不在此绘制：它们需要屏幕坐标系下手柄与表头一起叠加，
+     * 由 {@code OfficePreviewView} 在同一 Canvas 变换下统一绘制；
+     * 但表头是 {@link #drawHeaders} 的一部分，必须共享同一份选区状态，
+     * 否则滚动与冻结分区时表头高亮会和选区脱离。
+     *
+     * @param current 当前选区，{@code null} 表示清除高亮
+     */
+    void setSelection(SheetSelectionModel.SheetSelection current) {
+        selection = current;
     }
 
     void clear() {
         sheet = null; styles = Collections.emptyList(); rows = columns = null;
         layout = null; width = height = 0;
         merges.clear(); visibleMerges.clear(); layouts.clear(); layoutCost = 0;
-        mergeBuckets = null; plan = null;
+        mergeBuckets = null; plan = null; selection = null;
     }
 
     void setSheet(SpreadsheetDocument.Sheet selected, List<SpreadsheetDocument.CellStyle> cellStyles) {
@@ -423,7 +454,7 @@ final class SheetRenderer {
             float x = columns.offsets[column];
             if (x >= viewport.right) break;
             cellBounds.set(x, top, columns.offsets[column + 1], headerBottom);
-            header(canvas, columnName(column), cellBounds, cellBounds.centerX());
+            header(canvas, columnName(column), cellBounds, cellBounds.centerX(), highlightsColumn(column));
         }
         canvas.restoreToCount(save);
         // 冻结列头：[frozenOriginX..frozenRight]，X 锁定
@@ -435,7 +466,7 @@ final class SheetRenderer {
                 if (column >= plan.effectiveColumns) break;
                 float x = columns.offsets[column] + plan.scrollX;
                 cellBounds.set(x, top, columns.offsets[column + 1] + plan.scrollX, headerBottom);
-                header(canvas, columnName(column), cellBounds, cellBounds.centerX());
+                header(canvas, columnName(column), cellBounds, cellBounds.centerX(), highlightsColumn(column));
             }
             canvas.restoreToCount(save);
         }
@@ -449,7 +480,7 @@ final class SheetRenderer {
             float y = rows.offsets[row];
             if (y >= viewport.bottom) break;
             cellBounds.set(left, y, headerRight, rows.offsets[row + 1]);
-            header(canvas, Integer.toString(row + 1), cellBounds, headerRight - 6);
+            header(canvas, Integer.toString(row + 1), cellBounds, headerRight - 6, highlightsRow(row));
         }
         canvas.restoreToCount(save);
         // 冻结行头：[frozenOriginY..frozenBottom]，Y 锁定
@@ -461,7 +492,7 @@ final class SheetRenderer {
                 if (row >= plan.effectiveRows) break;
                 float y = rows.offsets[row] + plan.scrollY;
                 cellBounds.set(left, y, headerRight, rows.offsets[row + 1] + plan.scrollY);
-                header(canvas, Integer.toString(row + 1), cellBounds, headerRight - 6);
+                header(canvas, Integer.toString(row + 1), cellBounds, headerRight - 6, highlightsRow(row));
             }
             canvas.restoreToCount(save);
         }
@@ -496,10 +527,93 @@ final class SheetRenderer {
     }
 
     private void header(Canvas canvas, String text, RectF bounds, float x) {
+        header(canvas, text, bounds, x, false);
+    }
+
+    /** 行号标头是否应联动高亮：该行落在当前选区的行范围内 */
+    private boolean highlightsRow(int row) {
+        return selection != null && selection.containsRow(row);
+    }
+
+    /** 列标标头是否应联动高亮：该列落在当前选区的列范围内 */
+    private boolean highlightsColumn(int column) {
+        return selection != null && selection.containsColumn(column);
+    }
+
+    /**
+     * 绘制选区半透明填充与外框，按冻结象限分别平移并裁剪。
+     *
+     * <p>这是选区高亮的关键约束：冻结窗格下同一个选区矩形在不同象限有不同滚动量，
+     * 若整块矩形只按一套偏移绘制，落在冻结区的部分会盖住冻结列/行，或滚动区部分
+     * 绘制到冻结区之上。因此复用 {@link #quadrants} 的四象限切分，逐象限
+     * {@code save → clipRect → 平移绘制 → restore}，与单元格、网格线、检索高亮
+     * （{@code drawHighlightByQuadrant}）完全一致的裁剪语义。
+     *
+     * <p>填充与外框都在象限内绘制：跨冻结边界的选区在冻结交界处被切开，
+     * 每个象限只显示属于自己的那一段（含该段的可见边缘），这与 Excel / WPS
+     * 在冻结窗格下的选区观感一致；这也正是设计文档要求的"各象限分别裁剪绘制"。
+     *
+     * @param canvas   已应用"文档坐标 → 屏幕"变换的画布
+     * @param viewport 当前可见的文档坐标视口
+     * @param strokeWidth 外框线宽（文档坐标；调用方按 {@code 1.5f / scale} 换算物理宽度）
+     */
+    void drawSelection(Canvas canvas, RectF viewport, float strokeWidth) {
+        if (selection == null || sheet == null || layout == null || viewport.isEmpty()) return;
+        SheetSelectionModel.CellRect rect = SheetSelectionModel.docRect(layout, selection);
+        if (rect == null || rect.isEmpty()) return;
+        selectionRect.set(rect.left, rect.top, rect.right, rect.bottom);
+        // 完全不可见时直接跳过，避免为屏幕外选区做多次 clip
+        if (selectionRect.right <= viewport.left || selectionRect.left >= viewport.right
+            || selectionRect.bottom <= viewport.top || selectionRect.top >= viewport.bottom) return;
+        float lineWidth = strokeWidth > 0 ? strokeWidth : SELECTION_STROKE_WIDTH;
+
+        List<Quadrant> quadrants = plan != null ? quadrants(plan) : Collections.emptyList();
+        if (quadrants.isEmpty()) {
+            // 没有可用冻结几何（尚未绘制过）时退化为整块直接绘制
+            selectionPaint.setStyle(Paint.Style.FILL);
+            selectionPaint.setColor(SELECTION_FILL_COLOR);
+            canvas.drawRect(selectionRect, selectionPaint);
+            selectionPaint.setStyle(Paint.Style.STROKE);
+            selectionPaint.setColor(SELECTION_STROKE_COLOR);
+            selectionPaint.setStrokeWidth(lineWidth);
+            canvas.drawRect(selectionRect, selectionPaint);
+            return;
+        }
+        for (int q = 0; q < quadrants.size(); q++) {
+            Quadrant quadrant = quadrants.get(q);
+            if (quadrant.isEmpty()) continue;
+            quadrantSelection.set(selectionRect);
+            quadrantSelection.offset(quadrant.translateX, quadrant.translateY);
+            if (quadrantSelection.right <= quadrant.clipLeft || quadrantSelection.left >= quadrant.clipRight
+                || quadrantSelection.bottom <= quadrant.clipTop || quadrantSelection.top >= quadrant.clipBottom) continue;
+            int save = canvas.save();
+            canvas.clipRect(quadrant.clipLeft, quadrant.clipTop, quadrant.clipRight, quadrant.clipBottom);
+            selectionPaint.setStyle(Paint.Style.FILL);
+            selectionPaint.setColor(SELECTION_FILL_COLOR);
+            canvas.drawRect(quadrantSelection, selectionPaint);
+            // 描边在填充之后、同一象限裁剪内绘制，避免线宽被相邻象限的填充覆盖
+            selectionPaint.setStyle(Paint.Style.STROKE);
+            selectionPaint.setColor(SELECTION_STROKE_COLOR);
+            selectionPaint.setStrokeWidth(lineWidth);
+            canvas.drawRect(quadrantSelection, selectionPaint);
+            canvas.restoreToCount(save);
+        }
+    }
+
+    /**
+     * 单个表头格：先铺底色（命中选区时换成选中色），再描网格线，最后居中/右对齐文本。
+     *
+     * @param selected 该列/行是否落在当前选区内，命中时改用 {@link #HEADER_SELECTED_COLOR}
+     *                 底色与加粗深蓝文字，形成"选区 → 对应行列标头"的联动反馈
+     */
+    private void header(Canvas canvas, String text, RectF bounds, float x, boolean selected) {
+        if (selected) fill(canvas, bounds, HEADER_SELECTED_COLOR);
         stroke(canvas, bounds, GRID_COLOR, .5f);
         int save = canvas.save();
         canvas.clipRect(bounds);
-        canvas.drawText(text, x, bounds.centerY() - (headerFont.ascent() + headerFont.descent()) / 2, headerFont);
+        Paint font = selected ? selectionFont : headerFont;
+        font.setTextAlign(headerFont.getTextAlign());
+        canvas.drawText(text, x, bounds.centerY() - (font.ascent() + font.descent()) / 2, font);
         canvas.restoreToCount(save);
     }
 
