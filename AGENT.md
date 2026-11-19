@@ -114,7 +114,27 @@ javac --release 11 -Xlint:all -Werror -d /tmp/jz-selection-checks \
     viewer/src/main/java/cn/jingzhuan/lib/office/TextSelectionModel.java \
     scripts/tests/TextSelectionChecks.java
 java -cp /tmp/jz-selection-checks cn.jingzhuan.lib.office.TextSelectionChecks
+
+# 5. XLSX 单元格选区模型检查（纯 Java 11，零 Android 依赖）
+mkdir -p /tmp/jz-sheet-selection-checks
+javac --release 11 -Xlint:all -Werror -d /tmp/jz-sheet-selection-checks \
+    viewer/src/main/java/cn/jingzhuan/lib/office/OfficeDocument.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/SpreadsheetDocument.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/SheetLayout.java \
+    viewer/src/main/java/cn/jingzhuan/lib/office/SheetSelectionModel.java \
+    scripts/tests/SheetSelectionChecks.java
+java -cp /tmp/jz-sheet-selection-checks cn.jingzhuan.lib.office.SheetSelectionChecks
 ```
+
+鸿蒙端的纯 TS 逻辑模块由 Node.js 直接执行（Node 22+ 原生支持类型剥离，无需 tsx）：
+
+```sh
+node scripts/tests/SheetSelectionChecks.ts   # XLSX 选区模型，与 Java 端语义逐条对齐
+node scripts/tests/SheetFreezeChecks.ts      # 冻结窗格四象限几何
+node scripts/tests/OhosGestureChecks.ts      # 手势与缩放数学
+node scripts/tests/TextSelectionChecks.ts    # 文本选区模型
+node scripts/tests/DocxWrapLayoutChecks.ts   # DOCX 折行
+node scripts/tests/PptxViewportChecks.ts     # PPTX 视口
 
 ### 4.3 Android 构建与设备 Instrumentation 测试
 
@@ -146,7 +166,7 @@ adb shell am instrument -w cn.jingzhuan.lib.office.online.test/cn.jingzhuan.lib.
 - `pptx` / `pptx-geometry` / `backgrounds`：组合变换、折线图/柱状图/横向条形图/饼图/环形图、虚线描边与连接线箭头、渐变文字、换行对照、背景图与 Display P3 色差容差（±1）
 - `images` / `image-cache`：图片按需解码、清晰度升级、LRU 复用与 256 MiB 累计读取限制
 - `layout` / `limits`：DOCX 流式排版、页码回调、异常容器与超限拦截
-- `selection`：DOCX / PPTX 文本选区与复制；覆盖 `selectAll` 无空段占位、高亮像素比对、剪贴板往返、程序化复制保留选区、真实长按选词与拖拽扩选/手柄收窄、单击清除、单指拖拽零退化，以及 XLSX `selectAll()` 返回 `false` 且长按不产生选区
+- `selection`：DOCX / PPTX / XLSX 选区与复制；覆盖 `selectAll` 无空段占位、高亮像素比对、剪贴板往返、程序化复制保留选区、真实长按选词与拖拽扩选/手柄收窄、单击清除、单指拖拽零退化；XLSX 段额外验证全选整表 TSV、Tab/换行结构、长按选中单元格、拖动扩选成多格网格、切表清除选区与单指滚动不误建选区
 - `accessibility`：读屏摘要、自定义动作菜单、动作执行、Fling 停稳播报与失败态摘要清理；`accessibility` 末段会尝试启用测试探针服务验证播报事件流。部分厂商 ROM（如 MIUI）禁止以 shell 启用无障碍服务，模拟器与部分受限环境则会接受设置写入但不向测试服务下发绑定，两种场景都自动 SKIP 并保持其余断言生效
 - `demo-samples` / `demo-xlsx`：需先安装 `demo-debug.apk`，验证内置综合样例加载、翻页与无障碍切表
 
