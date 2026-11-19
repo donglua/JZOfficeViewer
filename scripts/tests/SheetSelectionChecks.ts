@@ -733,6 +733,16 @@ expectIntegration(/this\.document !== this\.lastDocument[\s\S]{0,400}this\.reset
 expectIntegration(/if \(resetOffsets\) \{\s*this\.clearSelection\(\);/.test(viewSource),
   '缩放复位未清除选区');
 
+// 滚动、惯性与缩放结束时必须隐藏并重新贴回气泡
+expectIntegration(/PanGesture\(\)[\s\S]{0,300}this\.hideBubble\(\);/.test(viewSource),
+  'PanGesture 开始时未隐藏浮动气泡');
+expectIntegration(/PanGesture\(\)[\s\S]{0,1500}this\.rescheduleBubbleIfSelected\(\);/.test(viewSource),
+  'PanGesture 结束时未重新定位气泡');
+expectIntegration(/settlePinchScale\(\): void[\s\S]{0,300}this\.rescheduleBubbleIfSelected\(\);/.test(viewSource),
+  'Pinch 停稳后未重新定位气泡');
+expectIntegration(/stepFlingWithDt\(dt: number\): void[\s\S]{0,600}this\.rescheduleBubbleIfSelected\(\);/.test(viewSource),
+  'Fling 停稳后未重新定位气泡');
+
 // 父视图必须把 XLSX 的选区钩子转交出去
 expectIntegration(/registerControls: \(\s*selectSheet:[\s\S]{0,600}selection\?: SelectionControlHooks[\s\S]{0,400}this\.applySelectionHooks\(selection\);/
   .test(previewSource), 'OfficePreviewView 的 XLSX 分支未转交选区钩子');

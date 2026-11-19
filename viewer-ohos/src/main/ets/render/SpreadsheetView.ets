@@ -547,6 +547,7 @@ export struct SpreadsheetView {
     this.offsetY = target.offsetY;
     this.clampOffsets();
     this.redraw();
+    this.rescheduleBubbleIfSelected();
   }
 
   /** 解析单元格或合并区域的文档矩形；行列超出表维度时返回 null */
@@ -961,6 +962,19 @@ export struct SpreadsheetView {
 
   // MARK: - XLSX 选区：浮动气泡
 
+  /** 立即隐藏气泡并取消延迟调度定时器 */
+  private hideBubble(): void {
+    this.cancelBubbleTimer();
+    this.bubbleShown = false;
+  }
+
+  /** 若当前存在非拖拽态选区，在手势/动画停稳后重新把气泡贴回选区 */
+  private rescheduleBubbleIfSelected(): void {
+    if (this.hasSelection() && this.selectionDragMode === DRAG_NONE) {
+      this.scheduleBubble();
+    }
+  }
+
   /** 手势停稳后延迟一拍再定位气泡，避免在滚动/缩放过程中反复布局 */
   private scheduleBubble(): void {
     this.cancelBubbleTimer();
@@ -1186,6 +1200,7 @@ export struct SpreadsheetView {
   private stepFlingWithDt(dt: number): void {
     if (!this.flingRunning || (this.flingVx === 0 && this.flingVy === 0)) {
       this.stopFling();
+      this.rescheduleBubbleIfSelected();
       return;
     }
 
@@ -1197,6 +1212,7 @@ export struct SpreadsheetView {
 
     if (Math.hypot(this.flingVx, this.flingVy) < 25) {
       this.stopFling();
+      this.rescheduleBubbleIfSelected();
       return;
     }
 
@@ -1211,6 +1227,7 @@ export struct SpreadsheetView {
     if (this.flingVx === 0 && this.flingVy === 0) {
       this.stopFling();
       this.redraw();
+      this.rescheduleBubbleIfSelected();
       return;
     }
 
@@ -1314,6 +1331,8 @@ export struct SpreadsheetView {
     // 选区在归零后的坐标系里不再对应原来的数据，必须一并清除（设计文档 §全局约束）
     if (resetOffsets) {
       this.clearSelection();
+    } else if (this.hasSelection()) {
+      this.hideBubble();
     }
     if (duration <= 0 || Math.abs(to - from) < 0.002) {
       if (resetOffsets) {
@@ -1322,6 +1341,7 @@ export struct SpreadsheetView {
       }
       this.applyScaleAt(to, focusX, focusY);
       this.redraw();
+      this.rescheduleBubbleIfSelected();
       return;
     }
     this.zoomTweenFrom = from;
@@ -1349,6 +1369,8 @@ export struct SpreadsheetView {
     this.redraw();
     if (progress < 1) {
       this.zoomTweenTimer = setTimeout(this.stepZoomTween, 16);
+    } else {
+      this.rescheduleBubbleIfSelected();
     }
   };
 
@@ -1359,10 +1381,13 @@ export struct SpreadsheetView {
     }
   }
 
-  /** 捏合松手：越界量用一段减速动画弹回已夹的缩放值，未越界时保持原样 */
+  /** 捏合松手：越界量用一段减速动画弹回已夹的缩放值，未越界时直接把气泡贴回选区 */
   private settlePinchScale(): void {
     const settled = this.clampScale(this.scaleVal);
-    if (Math.abs(settled - this.scaleVal) <= 0.002) return;
+    if (Math.abs(settled - this.scaleVal) <= 0.002) {
+      this.rescheduleBubbleIfSelected();
+      return;
+    }
     const focusX = this.pinchFocusX > 0 ? this.pinchFocusX : (this.canvasWidth / 2);
     const focusY = this.pinchFocusY > 0 ? this.pinchFocusY : (this.canvasHeight / 2);
     this.startZoomTween(settled, focusX, focusY, ZOOM_TWEEN_MS);
@@ -2346,6 +2371,7 @@ export struct SpreadsheetView {
                 this.stopFling();
                 this.stopZoomTween();
                 if (this.isSelectionDragging) return;
+                this.hideBubble();
                 this.panStartX = this.offsetX;
                 this.panStartY = this.offsetY;
               })
@@ -2363,6 +2389,13 @@ export struct SpreadsheetView {
                 const vy = event.velocityY ?? 0;
                 if (Math.hypot(vx, vy) > 80) {
                   this.startFling(vx, vy);
+                } else {
+                  this.rescheduleBubbleIfSelected();
+                }
+              })
+              .onActionCancel(() => {
+                if (!this.isSelectionDragging) {
+                  this.rescheduleBubbleIfSelected();
                 }
               })
           )
